@@ -64,6 +64,11 @@
 
 这回答了「hypothesis 状态变更必须附证据，这条规则在哪里强制执行」：**在 MCP tool 里**，而不是靠 prompt 里的一句要求。
 
+两条从 Phase 0 实测中得到的补充原则：
+
+- **校验类工具做“保证可见”，相关性判断交给 agent**。`check_dead_ends` 最初用词汇重叠过滤，结果英文查询打不中中文 dead-end——而 State 里论文是英文、讨论是中文，这种混合必然发生。静默返回“没找到”比没有这个工具更危险：agent 会理直气壮地重走死路。改为全部列出、由 agent 判断。凡是漏报代价远大于误报的检索，都该这样设计。
+- **簿记归工具，不归 agent**。`record_evidence` 最初不回写假设的 `evidence` 字段，agent 只能手动编辑文件补上。凡是可由工具确定性维护的反向引用与索引，都不应该交给 agent 手写。
+
 ### 0.5 5 小时工作窗口是系统的基本节拍
 
 Claude Code Max 5x 的 5 小时滚动窗口会强制结束 session。**系统不是一个连续运行的 daemon，而是一串离散的「班次(Shift)」**，且班次可能在任何一个任务的中途被切断。三条推论：
@@ -74,7 +79,11 @@ Claude Code Max 5x 的 5 小时滚动窗口会强制结束 session。**系统不
 
 ### 0.6 Autonomy 是策略问题，且策略落在 CLI 的权限旗标上
 
-需求 §13 要的不是全自动或全手动，而是按**代价、可逆性、是否改变研究方向**分级。分级不自己造引擎，直接映射到 Claude Code 已有的能力（`--allowedTools` / `--permission-mode` / `--add-dir`）。
+需求 §13 要的不是全自动或全手动，而是按**代价、可逆性、是否改变研究方向**分级。分级不自己造引擎，直接映射到 Claude Code 已有的能力。
+
+> **Phase 0 实测修正（重要）**：`--allowedTools` 是**免批准白名单**，并**不移除**未列出的工具——smoke test 中 agent 在白名单外照常调用了 `Bash` 与 `ToolSearch`。真正的禁用要靠 `--disallowedTools`（deny-list）或 `--restricted`（移除执行类工具与 WebFetch）。
+>
+> 这条纠正是实质性的：若按原假设实现，M2.5 的“自动档不给 Bash”与 M11 的“物理上做不到检索”**都会是假的保证**。凡是安全性依赖“某工具不可用”的地方，必须用 deny-list 表达，白名单只用来消除权限弹窗。
 
 ### 0.7 不污染宿主机是硬约束，不是加分项
 
@@ -174,9 +183,14 @@ Claude Code Max 5x 的 5 小时滚动窗口会强制结束 session。**系统不
 
 1. **核心对象建模**（文件化，非 schema 定义）
    - `ResearchProject` / `Question`（成熟度：vague → scoped → formalized）
+   - `DeadEnd` 的一条约束：**不内嵌实验结果，而是引用关闭它的 `Evidence` / `Experiment`**。Phase 0 中 10 次 trial 有 6 次把 `source` 写成 dead-end id，因为 fixture 里 D001 内嵌了一份内部复现结果而这份结果没有独立的实验记录。结果就是证据的出处链断在 dead-end 上，追不到原始实验。
    - `Idea`：自演进模式的产出——直觉层面的陈述 + 证伪条件 + 推演中新引入的前提清单 + 接地标注 + 与既有假设的关系。不要求工程细节。
    - `Foundation`（基本盘）：某一轮自演进进入时对 State 取的只读快照，作为该轮推演的约束面。
    - `Assumption`：当前被默认为真、整个方向据以成立的**前提**，带 examined / unexamined 标记。与 `Hypothesis` 区分开是为了抓住“整条研究方向建立在一条从没人检查过的前提上”这个失败模式。
+
+     > **Phase 0 实测修正**：原先的定义（“前提” vs “待验证命题”）在实践中分类不稳定——5 次独立 trial 对同一条命题（“感知不是瓶颈”）给出了 3 种分类。原因是这条命题两者都像：它可证伪，同时又正在被用来剪枝而无人验证。
+     >
+     > **区分依据是当前角色，不是内在属性**：正在被**依赖**（用来剪枝或支撑其他推理）而未安排验证的 → `Assumption`；已**安排验证**的 → `Hypothesis`。同一命题可以先后是二者，`Assumption` 被安排验证时提升为 `Hypothesis` 并保留链接（M5.1b）。分类规则必须写进 agent 的协议提示，否则候选区的分类会随机。
    - `Hypothesis`：提出者（human / AI）、表述、可证伪条件、状态、置信度
    - `Evidence`：来源（论文 / 实验）、对某假设 support / contradict / neutral、强度
    - `Paper`、`Experiment`、`Decision`（“为什么现在做这个”）、`Uncertainty`、`DeadEnd`
@@ -203,7 +217,7 @@ Claude Code Max 5x 的 5 小时滚动窗口会强制结束 session。**系统不
 0. **模式门（Mode Gate）** —— 0.2 的落实处，优先于以下一切逻辑
    - State 持有当前 `mode`（`discussion` / `incubation` / `validation`），人拥有唯一切换权。
    - 讨论模式下，loop engine **不得**自主发起验证任务、实验或方向变更；只放行低成本文献查证。
-   - 自演进模式下，**检索类工具在 executor 层被物理移除**（非提示词约束），且不得发起实验或方向变更；详见 M11。
+   - 自演进模式下，**检索类工具由 `--disallowedTools` 在 executor 层真正移除**（非提示词约束，也非“白名单里不写”），且不得发起实验或方向变更；详见 M11。
    - **窗口预算分配**：自演进纯烧额度、无外部输入，而 5h 窗口是最稀缺的资源。应给它一个可配置的窗口份额，而不是无上限占用——它与文献、实验是竞争关系。
    - **交棒（Handoff）**：人从候选区挑选本轮要验证的 assumption / hypothesis 批次，确认后切到验证模式。交棒记录写入 `Decision`。
    - 验证模式产出重大结果后，主动建议切回讨论模式，而不是自行继续。
@@ -231,7 +245,8 @@ Claude Code Max 5x 的 5 小时滚动窗口会强制结束 session。**系统不
    - 开班：装配交接记录，恢复上一班未完成的工作。
    - 运行：在窗口内持续派发任务。
    - 额度耗尽：检测 5h 窗口终止，冻结当前进度，写交接记录，**前端通知**。
-   - 恢复：记录窗口起点、估算重置时间，窗口恢复后自动开下一班（默认开启，可关；无论自动与否都通知）。
+   - 恢复：**不需要估算**。stream-json 的 `rate_limit_event` 直接给出 `five_hour.resetsAt`（精确时间戳）、`five_hour.utilization` 与 `seven_day.utilization`。窗口恢复后自动开下一班（默认开启，可关；无论自动与否都通知）。
+   - 周额度同源可读，M2.0b 第 9 级“留额度”的判断因此有真实依据，而非拍脑袋。
    - 周级额度也需跟踪，避免窗口内可用但周上限已近。
 2. **研究阶段模型**：把需求 §1 的循环显式建模为可迁移阶段，允许跳转而非死板串行。
 3. **Next-action 选择**，依据至少包括：
@@ -248,7 +263,7 @@ Claude Code Max 5x 的 5 小时滚动窗口会强制结束 session。**系统不
 ### M2.5 Autonomy & Budget Policy
 
 1. **动作分级**：
-   - **自动**（搜索、阅读、思考、提假设、分析已有结果）：只给 Read/Grep/WebFetch + state MCP，**不给 Bash 和 Edit**。跑飞也只能写 State。
+   - **自动**（搜索、阅读、思考、提假设、分析已有结果）：白名单给 Read/Grep/WebFetch + state MCP，**并用 `--disallowedTools` 显式禁掉 Bash / Task / NotebookEdit 等**。跑飞也只能写 State。（禁用必须走 deny-list，见 §0.6 的实测修正。）
    - **通知后执行**（低成本验证、sim 小实验）：加 Bash/Edit，限定在实验 workspace 内。
    - **必须审批**（长训练、装系统级依赖、改研究方向、大数据集下载）：agent 先产出 plan 并停下，批准后才以更宽权限执行。
 2. **审批请求**：附带做什么、为什么、预计代价与磁盘/时间占用，推送前端。
@@ -266,7 +281,7 @@ Claude Code Max 5x 的 5 小时滚动窗口会强制结束 session。**系统不
 1. **执行方式**：子进程调用 `claude -p`，`--output-format stream-json --include-partial-messages` 取事件流。
    - 自定 `--session-id` 便于记账；`--resume` / `--fork-session` 用于续跑。
    - `--append-system-prompt` 注入 State 协议；briefing 以文件形式给出而非塞进 prompt。
-   - `--mcp-config` 挂 state server；`--allowedTools` / `--permission-mode` / `--add-dir` 实施 M2.5 分级。
+   - `--mcp-config` 挂 state server；`--allowedTools`（免批准）+ `--disallowedTools`（真禁用）+ `--permission-mode` + `--add-dir` 共同实施 M2.5 分级。二者语义不同，不可混用。
    - **不使用 `--bare`**：它强制走 API key、不读 OAuth，会破坏“复用订阅额度”的前提。
 2. **Session 生命周期**：创建、注入、流式收集、超时、中断、清理。session 是一次性的。
 3. **中断安全**：随时可能被额度耗尽或人工中断，需保证已完成部分已提交、可恢复。
@@ -414,7 +429,7 @@ Claude Code Max 5x 的 5 小时滚动窗口会强制结束 session。**系统不
 ### 环境卫生规则（0.7 的细则）
 
 1. **单一根目录**：系统与 agent 的全部写入收敛在一个根目录下（State 仓库、实验 workspace、venv、数据集、日志、产物）。删掉这个目录 = 系统对宿主机零残留。
-2. **禁止事项**（由 `--allowedTools` 白名单 + Bash 命令 deny-list 双重实施）：`sudo`、`apt`、全局 `pip install`、写入 `~/.bashrc` 等 shell 配置、写入 conda base 环境、根目录之外的任何写操作。
+2. **禁止事项**（由 `--disallowedTools` + Bash 命令 deny-list 双重实施；白名单不具备禁用能力）：`sudo`、`apt`、全局 `pip install`、写入 `~/.bashrc` 等 shell 配置、写入 conda base 环境、根目录之外的任何写操作。
 3. **每实验独立 venv**：统一用 `uv`，快且自包含，死掉的实验环境可直接回收。
 4. **docker 不交给 agent**：docker 组成员权限等价于 root，交给自主 agent 会使所有目录限制失效。需要系统级依赖时，agent 只能**提交** Dockerfile/compose spec，由 orchestrator 在审批后代为构建运行。
 5. **磁盘预算**：登记各实验与数据集占用，设总量上限，接近上限时告警并要求清理；大数据集下载走审批。
@@ -456,7 +471,7 @@ Claude Code Max 5x 的 5 小时滚动窗口会强制结束 session。**系统不
 
 1. **入场闸门**：仅当 `Question` 成熟度达到 `formalized` 时可进入。基本盘未成形就自演进，产出必然是空转。
 2. **基本盘冻结（Foundation Snapshot）**：进入时对 State 取只读快照——形式化问题定义、已确立事实、已知 dead-end、当前 assumption 集。运行期间不变，作为本轮推演的约束面。
-3. **搜索关闭的执行环境**：`--allowedTools` 不含 WebFetch / WebSearch / 检索类 MCP tool，只保留基本盘读取与推演记录写入。**物理上做不到检索，而不是靠提示词请它别搜**。
+3. **搜索关闭的执行环境**：用 `--disallowedTools` 显式禁掉 WebSearch / WebFetch / Bash / Task 等一切可能触达外部的工具（**仅从白名单里省略是不够的**，见 §0.6），只保留基本盘读取与推演记录写入。**物理上做不到检索，而不是靠提示词请它别搜**。
 4. **允许挑战基本盘，但必须显式**：推翻基本盘里的某条前提本身可能就是最有价值的 idea。但必须显式登记为“对 X 的挑战”，不能靠悄悄漂移。
 5. **新前提追踪（Assumption Trace）**：推演中每引入一条新前提，登记为一条 `Assumption`。终局可直接读出“这个 idea 建立在它自己发明的 N 条未检验前提上”。**最有效的机械质量信号**——N 大的大概率是流畅空话，N 小的才值得看。
 6. **短链累进循环，而非单条长链**：推演以较短的链为单位（量级上是十几分钟到半小时，不是数小时），每条链结束后立刻接一次接地核查，核查结果更新基本盘，再从**新的**基本盘开出下一条链：
@@ -498,7 +513,7 @@ Claude Code Max 5x 的 5 小时滚动窗口会强制结束 session。**系统不
 | 风险 | 说明 |
 |---|---|
 | **实验基座是真正瓶颈** | 本方向早期卡点不是想法而是基础设施（见 §2）。不设为显式里程碑，系统会长期停在文献综述阶段。 |
-| Agent 产出不可结构化 | Claude Code 编辑 State 文件的 schema 合法率直接决定 M1 数据质量。Phase 0 必须先测。 |
+| ~~Agent 产出不可结构化~~ | **Phase 0 已证伪此风险**：15/15 trial schema 全合法，124 次 MCP 调用零失败。§0.3「agent 直接编辑文件」成立，不需要 validator + 重试兜底。 |
 | 长期 State 退化 | 跑几个月后摘要失真、briefing 塞不下、检索失准。 |
 | 班次切断导致工作丢失 | 增量提交协议不到位的话，5h 截断会反复吃掉进度。 |
 | 额度节律未知 | 一个典型任务的消耗与一天能跑的任务数尚未实测，loop 心跳频率因此是猜的。 |
