@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AutoResearch</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <strong>AutoResearch</strong>
+    <span id="project-title" class="muted"></span>
+  </div>
+  <div class="mode">
+    <span id="mode-badge" class="badge mode-discussion">讨论模式</span>
+    <button id="handoff-btn" class="ghost" disabled title="交棒到验证模式在 Phase 2 实现">交棒 →</button>
+  </div>
+  <div class="shift">
+    <span id="shift-state" class="dot"></span>
+    <span id="shift-label">—</span>
+    <div class="quota" title="直接读自 rate_limit_event">
+      <label>5h</label><div class="bar"><i id="q5"></i></div><span id="q5t">?</span>
+      <label>7d</label><div class="bar"><i id="q7"></i></div><span id="q7t">?</span>
+    </div>
+    <button id="pause-btn" class="ghost">暂停</button>
+    <button id="cutoff-btn" class="ghost danger" title="SIGKILL 在飞任务、写交接、60 秒后自动开下一班">模拟切断</button>
+    <button id="notes-btn" class="ghost">通知 <span id="notes-count" class="count"></span></button>
+  </div>
+</header>
+
+<div id="notes-panel" class="notes hidden"></div>
+
+<main>
+  <nav class="discussions">
+    <div class="nav-head">
+      <span>讨论</span>
+      <button id="new-ds" class="ghost small">＋ 新讨论</button>
+    </div>
+    <ul id="ds-list"></ul>
+  </nav>
+
+  <section class="chat">
+    <div class="chat-head">
+      <div>
+        <h2 id="ds-title">选择或新建一个讨论</h2>
+        <div id="ds-meta" class="muted small"></div>
+      </div>
+      <div class="chat-actions">
+        <button id="distill-btn" class="ghost" disabled>蒸馏到候选区</button>
+        <button id="close-ds-btn" class="ghost" disabled>结束讨论</button>
+      </div>
+    </div>
+    <details id="summary-box" class="summary hidden">
+      <summary>滚动摘要（新 session 看到的前情）</summary>
+      <div id="summary-body" class="md"></div>
+    </details>
+    <div id="turns" class="turns"></div>
+    <form id="composer" class="composer">
+      <textarea id="input" rows="3" placeholder="说说你的想法…（Ctrl+Enter 发送）" disabled></textarea>
+      <button id="send" type="submit" disabled>发送</button>
+    </form>
+  </section>
+
+  <aside class="side">
+    <div class="tabs">
+      <button data-tab="cands" class="active">候选区 <span id="cand-count" class="count"></span></button>
+      <button data-tab="overview">研究总览</button>
+      <button data-tab="handoffs">交接</button>
+      <button data-tab="activity">活动</button>
+    </div>
+    <div id="tab-cands" class="tab"></div>
+    <div id="tab-overview" class="tab hidden"></div>
+    <div id="tab-handoffs" class="tab hidden"></div>
+    <div id="tab-activity" class="tab hidden"></div>
+  </aside>
+</main>
+
+<dialog id="dlg">
+  <form method="dialog" id="dlg-form">
+    <h3 id="dlg-title"></h3>
+    <div id="dlg-body"></div>
+    <menu>
+      <button value="cancel" class="ghost">取消</button>
+      <button value="ok" id="dlg-ok">确定</button>
+    </menu>
+  </form>
+</dialog>
+
+<script src="/app.js"></script>
+</body>
+</html>

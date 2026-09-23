@@ -59,7 +59,8 @@ class DaemonTest(unittest.TestCase):
         os.environ["FAKE_MODE"] = "distill"
         self.until(lambda: discussion.covers_through(self.st, self.ds) == 4)
         self.assertEqual([c["id"] for c in candidates.list_all(self.st, "pending")], ["C001"])
-        self.assertEqual(self.st.dirty_paths(), [])
+        with self.st.locked():      # 写入与提交在同一把锁内完成，持锁观察才不会撞上中间态
+            self.assertEqual(self.st.dirty_paths(), [])
         # 摘要生效后，新 session 的 briefing 用摘要替代原文
         os.environ["FAKE_MODE"] = "reply"
         self.d.human_message(self.ds, "继续。")
