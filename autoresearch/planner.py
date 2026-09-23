@@ -59,6 +59,12 @@ def next_step(store, ledger, cfg, targets, tasks, tag):
     mine = [t for t in tasks if t.get(tag[0]) == tag[1]]
     read_papers = {t.get("paper") for t in tasks if t["kind"] == "read_paper"
                    and t["status"] in LIVE | {"done", "blocked_on_human"}}
+    # 读的时候只有摘要、后来全文到了（上传或补取）：值得再读一遍
+    for m, _ in store.list("paper"):
+        if m["id"] in read_papers and m.get("fulltext") in ("open", "uploaded") \
+                and m.get("read") != "fulltext" and not any(
+                    t.get("paper") == m["id"] and t["status"] in LIVE for t in tasks):
+            read_papers.discard(m["id"])
     # 前提在前（阶梯第 3 级：未检验前提的核查直接喂养基本盘），假设在后（第 4 级）
     for target in sorted(targets, key=lambda x: (not x.startswith("A"), x)):
         if target_done(store, target):

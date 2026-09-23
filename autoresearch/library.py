@@ -71,7 +71,7 @@ def http_get(url, timeout=60):
                 return r.read()
         except urllib.error.HTTPError as e:
             last = e
-            if e.code in (429, 503) and attempt < 2:
+            if e.code in (406, 429, 500, 502, 503) and attempt < 2:   # arXiv 偶发 406，重试即好
                 time.sleep(4 * (attempt + 1))
                 continue
             raise NetError(f"HTTP {e.code}：{url}") from e

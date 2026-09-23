@@ -56,6 +56,14 @@ def cmd_serve(cfg, a):
         print("已停止。", flush=True)
 
 
+def cmd_repair_papers(cfg, a):
+    from . import papers
+    from .library import Library
+    st = Store(cfg.state, cfg.lock)
+    for pid, msg in papers.repair_arxiv_dois(st, Library(cfg.library)):
+        print(pid, msg)
+
+
 def cmd_status(cfg, a):
     for name in ("daemon.json", "quota.json"):
         p = cfg.run / name
@@ -74,10 +82,12 @@ def main(argv=None):
     p.add_argument("--discussion", default=None)
     sub.add_parser("serve", help="启动 daemon 与前端")
     sub.add_parser("status", help="查看班次与额度状态")
+    sub.add_parser("repair-papers", help="补取按 arXiv DOI 登记、却没取全文的论文")
     a = ap.parse_args(argv)
     cfg = config.load()
     fn = {"init": cmd_init, "validate": cmd_validate, "brief": cmd_brief,
-          "serve": cmd_serve, "status": cmd_status}[a.cmd]
+          "serve": cmd_serve, "status": cmd_status,
+          "repair-papers": cmd_repair_papers}[a.cmd]
     return fn(cfg, a) or 0
 
 

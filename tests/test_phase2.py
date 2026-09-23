@@ -333,3 +333,23 @@ class DaemonPhase2Test(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ArxivDoiTest(Base):
+    def test_arxiv_doi_is_treated_as_arxiv(self):
+        pid, new, msg = papers.register(self.st, self.lib, "10.48550/arXiv.2401.00001", for_targets=["H001"])
+        m, _ = self.st.read_obj(pid)
+        self.assertEqual((m["arxiv"], m["fulltext"]), ("2401.00001", "open"))
+        self.assertTrue(self.lib.has_fulltext(pid))
+        self.assertEqual(papers.register(self.st, self.lib, "2401.00001")[0], pid)   # 两种写法去重
+
+    def test_repair_old_doi_registrations(self):
+        with self.st.tx("旧登记", actor="agent") as tx:
+            tx.write_obj("P001", {"id": "P001", "type": "paper", "title": "T", "doi": "10.48550/arxiv.2401.00001",
+                                  "read": "abstract", "fulltext": "requested", "created": "2026-09-23"}, "x\n")
+        rid, _ = papers.request_paper(self.st, "P001", "要全文")
+        self.assertEqual(papers.repair_arxiv_dois(self.st, self.lib)[0][0], "P001")
+        m, _ = self.st.read_obj("P001")
+        self.assertEqual((m["arxiv"], m["fulltext"]), ("2401.00001", "open"))
+        self.assertEqual(self.st.read_obj(rid)[0]["status"], "fulfilled")
+        self.assertEqual(self.errors(), [])

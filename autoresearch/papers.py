@@ -24,6 +24,8 @@ def _as_list(v):
 # ---------------------------------------------------------------- 论文登记
 
 def find_paper(store, arxiv=None, doi=None, url=None):
+    if arxiv and not doi:
+        doi = f"10.48550/arxiv.{arxiv}".lower()
     for m, _ in store.list("paper"):
         if (arxiv and m.get("arxiv") == arxiv) or (doi and m.get("doi") == doi) or \
                 (url and m.get("url") == url):
@@ -39,6 +41,11 @@ def _resolve_ref(ref):
         return "arxiv", L.norm_arxiv(m.group(1))
     if L.norm_arxiv(ref):
         return "arxiv", L.norm_arxiv(ref)
+    doi = L.norm_doi(ref)
+    if doi and doi.startswith("10.48550/arxiv."):      # arXiv 自己的 DataCite DOI：就是 arXiv 论文
+        aid = L.norm_arxiv(doi[len("10.48550/arxiv."):])
+        if aid:
+            return "arxiv", aid
     if L.norm_doi(ref):
         return "doi", L.norm_doi(ref)
     if ref.startswith(("http://", "https://")):
@@ -117,6 +124,41 @@ def read_paper_locked(store, pid):
         if hm:
             meta = hm
     return meta, body
+
+
+def repair_arxiv_dois(store, lib, actor="system"):
+    """修复：早先按 arXiv DOI（10.48550/arxiv.*）登记的论文当成了普通 DOI，没去 arXiv 取全文。
+    补上 arxiv 字段、取回全文，并把因此发出的全文请求标为已解决。返回 [(pid, 说明)]。"""
+    out = []
+    for m, _ in store.list("paper"):
+        doi = str(m.get("doi") or "").lower()
+        if m.get("arxiv") or not doi.startswith("10.48550/arxiv."):
+            continue
+        aid = L.norm_arxiv(doi[len("10.48550/arxiv."):])
+        if not aid:
+            continue
+        pid = m["id"]
+        if m.get("fulltext") == "uploaded":
+            set_paper_fields(store, pid, {"arxiv": aid}, f"paper {pid}: 补 arXiv 编号", actor)
+            out.append((pid, "已有你上传的全文，只补 arXiv 编号"))
+            continue
+        try:
+            meta = L.arxiv_meta(aid) or {}
+        except L.NetError:
+            meta = {}
+        ok, msg = lib.fetch_arxiv(pid, aid, m.get("title"), meta.get("abstract"))
+        set_paper_fields(store, pid, {"arxiv": aid, "fulltext": "open" if ok else "none",
+                                      "fulltext_sha": lib.meta(pid).get("sha")},
+                         f"paper {pid}: 按 arXiv {aid} 补取全文", actor)
+        for r, rb in store.list("request"):
+            if r.get("paper") == pid and r.get("status") == "open" and ok:
+                with store.tx(f"request {r['id']}: 系统从 arXiv 取回全文", actor=actor) as tx:
+                    r.update(status="fulfilled", decided=today())
+                    tx.write_obj(r["id"], r, rb.rstrip() + f"\n\n## 处理（{today()}）\n\n"
+                                 f"这篇在 arXiv 上开放（{aid}），系统已自动取回全文，不需要研究者上传。"
+                                 "（登记时 arXiv 的 DOI 被当成了普通 DOI，这是系统缺陷。）\n")
+        out.append((pid, msg))
+    return out
 
 
 def set_paper_fields(store, pid, fields, message, actor="agent", task=None):

@@ -725,6 +725,8 @@ State 的每次写入在写入者手里立即提交，没有“任务结束统�
   登记时工具去权威源取元数据（arXiv API；DOI 走 Crossref，失败再试 OpenAlex；纯 URL 要求可访问），**取不到就拒绝登记**。
   agent 报一个记错的 arXiv id，结果是“查无此文”，而不是一条虚构的 P###。
 - 同一 arXiv id / DOI 重复登记返回已有的 P###（去重归工具）。
+- arXiv 自己的 DataCite DOI（`10.48550/arXiv.*`）按 arXiv 论文处理、去 arXiv 取全文——首轮夜间预习里 agent 全用这种写法登记，被当成普通 DOI 取不到全文，只好请研究者上传（已修，`./ar repair-papers` 补救旧登记）。
+- 读的时候只有摘要、后来全文到了（上传或补取）的论文，planner 会再安排精读一次。
 - 阅读状态字段也归工具：`read`: none / abstract / fulltext（**实际读到了哪一层**，由工具在 agent 取全文时更新，不由 agent 自报）；
   `fulltext`: none / open / uploaded / requested / unavailable；`for`：为哪些 H### / A### 而读（合并写入）；`found_via`：发现它的任务与查询。
 - 正文是**阅读笔记**，agent 可以用 Edit/Write 直接写（问题、方法、结论、实验设置、局限，M4.3）。这是系统第一次让 agent 直接编辑 State 文件：
