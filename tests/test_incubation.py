@@ -103,11 +103,15 @@ class FoundationTest(Base):
         eid, _, _ = papers.record_evidence(
             self.st, self.lib, iid, "contradict", self.pid, "反驳这条想法的外部证据",
             locator=["s4.2-p1"], quote="success on peg insertion  plateaus at 41% after 500 demonstrations")
-        gid = papers.annotate_grounding(self.st, iid, "contradicted", [self.pid, eid], "外部核查：被直接反驳")
+        title = self.st.read_obj(self.pid)[0]["title"]
+        gid = papers.annotate_grounding(self.st, iid, "contradicted", [self.pid, eid],
+                                        f"外部核查：被直接反驳，见 {title}")
         f2 = incubation.next_foundation(self.st, self.did, 1, [eid, gid])
         m, b = self.st.read_obj(f2)
         self.assertEqual((m["parent"], m["round"], m["delta"]), (self.fid, "2", [eid, gid]))
         self.assertIn("外部核查：被直接反驳", b)
+        self.assertNotIn(title, b)                       # 接地的话里带的论文名换成编号（§5.11 不给标题）
+        self.assertIn(f"见 {self.pid}", b)
         self.assertIn(eid, b)
         self.assertNotIn("反馈频率比数据规模更关键", b)   # 不取 Idea 原文，只取接地自己的话
         self.assertIn(f"{f2} ← {self.fid}：+{eid}（{gid}）", self.st.log(limit=1)[0]["subject"])

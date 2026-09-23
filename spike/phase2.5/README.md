@@ -56,3 +56,25 @@ register_paper / open_paper、ListMcpResources / ReadMcpResource，最后让它�
   修法：judge 任务也加 `--restricted`（它们本就只需要 cwd + State + library）。待用户确认后再改（改动的是 Phase 2 行为）。
 - MCP server 在 `AR_TOOLSET` 为空时注册**全部**工具（fail-open）。runner 总会设它，但推演任务的安全性不该依赖这一点；
   改为未设置即只给 checkpoint（fail-closed）。
+
+## 真实 claude 管线冒烟（`smoke.py`，$2.37，5h 窗口 19% → 28%）
+
+**不是验收 3**：在 scratch 里克隆了真实 State，副本里临时把 Q001 标成 formalized（真实的 Q001 还是 scoped，要等研究者一起形式化），
+跑 1 轮 × 2 条推演链 + 每条 Idea 的接地，只看落盘与 stream。完整报告 `runs/smoke.md`。
+
+| 看什么 | 结果 |
+|---|---|
+| 推演链的执行环境 | 两条链 init 里只有 Read/Grep/Glob + check_dead_ends/checkpoint/record_idea；cmd 有 `--restricted`、无 `--add-dir`。实际只调用了 Read（briefing）×1、checkpoint ×3、check_dead_ends ×1、record_idea ×1，**没有任何检索尝试、没有被拒的调用** |
+| 角度 | 两条链都自己选角度并写进 checkpoint；第二条链看到了第一条的角度，主动换了方向（“T00002 看的是 interface 本身的误差，我换了一个问题”） |
+| Idea | 各 1 条，都带多条件的证伪实验（oracle interface 替换 / 接触段屏蔽 interface），N=4 条新前提，写得具体；都没有自评新颖性 |
+| 接地 | 两条都是 prior_work（有相近工作、无直接反驳），正确地把相近工作当线索而不是扣分；记了 4 条证据（其中 1 条 weak contradict 触及 I001 的证伪条件，接地判断“粗粒度任务上不足以推翻”）；各发现 2 条未登记前提 |
+| 只标注不改写 | Idea 文件的提交历史只有登记与状态回填（`接地 GR003 → shortlisted`），正文未被改动 |
+| 基本盘 | `F002 ← F001：+E007 E008 E009 E010（GR003 GR004）`，第 8 节追加了外部证据与接地结论 |
+| 交卷 | 轮数上限停止，Decision 列出两条过关的（按 N 排序）；State 校验 0 错误 |
+
+冒烟发现并修掉的：
+- **F002 里出现了论文名**（HAMSTER、RT-Affordance……）：接地任务自己写的话被原样放进基本盘，违背“基本盘不给标题”。
+  改为生成基本盘时按已登记论文的标题与冒号前简称机械替换成 P###。接地自己起的缩写（如 “MS-Bot”）不在标题里，管不到——
+  推演仍然读不到任何全文，漏出的只是名字，记为已知的不完美。
+- 其他观察：arXiv API 在这段时间持续 406，接地新登记的论文只拿到元数据，接地在结论里如实写了“只读了元数据”。
+  副本里最后一次人的发言早于 90 分钟，daemon 一启动先开了一个夜间预习任务；切进自演进后排队的被取消、在跑的跑完再让出通道（符合设计）。

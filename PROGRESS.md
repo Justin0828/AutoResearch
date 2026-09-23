@@ -135,6 +135,15 @@ daemon / runner / briefing / MCP server / 前端的相应扩展。测试 72 个�
   Phase 2 judge 不加 `--restricted`（旁路记为已知缺口）；推演看得到 Insight、看不到 origin；切入角度不固定，由提示词引导模型自选；
   prior_work 不淘汰（要的是思想不是实现），只有被直接反驳才筛掉；自演进内容（推演记录、全部 Idea）都留存，人分诊时可送验证或记成理解。
 
+- **代码**：`incubation.py`（入场闸门、基本盘装配与轮间更新、record_idea 机械闸门、推演记录、停止与交卷、分诊）；
+  tasks / runner（推演任务 `--restricted`、不挂目录、开跑自检）/ MCP（fail-closed、record_idea、接地可记证据）/ briefing / daemon（按轮调度）/ server / 前端
+  （Ideas 页、Inbox 的 Ideas 分诊、Incubate 入口、问题成熟度编辑）。测试 90 个全过（新增 16 个，假 claude）。
+  顺带修了两个 Phase 1/2 就有的竞态（人在回复写入的瞬间发言会被漏掉；按秒区分重跑的工具调用）。
+- **真实 claude 管线冒烟**（$2.37，副本里临时 formalized，**不算验收**）：推演链只调用了 Read / checkpoint / check_dead_ends / record_idea，无检索尝试；
+  两条链自选了不同角度，各出 1 条带证伪实验、N=4 的 Idea；接地把相近工作当线索（prior_work）、没改写 Idea；F002 由 4 条外部证据 + 2 条接地结论推出。
+  发现基本盘里混进论文名，已修。详见 `spike/phase2.5/README.md`。
+- **待做**：和研究者一起把 Q001 形式化（讨论模式）→ 真实验收（6 条，DESIGN §7）→ 前端在浏览器里过一遍（我这边没有浏览器）。后端有改动，需要研究者重启 `./ar serve`。
+
 ## 已知缺口（Phase 2 之后）
 
 - 挂起 → 上传 → 续跑待真实链路验证一次（见验收 3）。

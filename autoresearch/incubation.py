@@ -123,6 +123,23 @@ def real_assumptions(store):
 
 # ---------------------------------------------------------------- 基本盘（§5.11）
 
+def redact_titles(store, text):
+    """基本盘不给论文标题（§5.11，用户确认）：标题本身就是文献框架的名字。接地任务写的话、证据的 note 里常带着
+    论文名，这里按已登记论文的标题与冒号前的简称机械替换成 P###。作者名、未登记的论文名管不到——屏蔽不完美，
+    但推演读不到任何全文，漏出的只是名字。"""
+    names = []
+    for m, _ in store.list("paper"):
+        t = " ".join(str(m.get("title") or "").split())
+        if not t:
+            continue
+        names.append((t, m["id"]))
+        short = re.split(r"[:：]", t, 1)[0].strip()
+        if short != t and len(short) >= 4:
+            names.append((short, m["id"]))
+    for name, pid in sorted(names, key=lambda x: -len(x[0])):
+        text = re.sub(rf"(?<![\w-]){re.escape(name)}(?![\w-])", pid, text, flags=re.I)
+    return text
+
 def _ev_line(store, m, b):
     pm, _ = store.read_obj(m.get("source", "")) if str(m.get("source", "")).startswith("P") else (None, None)
     year = f"（{pm.get('year')}）" if pm and pm.get("year") else ""
@@ -206,7 +223,7 @@ def foundation_body(store):
     rv = [f"- {r['target']}（由 {r['trigger']} 被推翻而待重新审视）" for r in reviews.list_all(store, "open")]
     parts.append("## 7. 未决不确定性与待重新审视\n\n" + ("\n".join(unc + rv) or "（暂无。）"))
     parts.append("## 8. 本 session 外部核查带回的结果\n\n（暂无。）")
-    return "\n\n".join(parts) + "\n"
+    return redact_titles(store, "\n\n".join(parts) + "\n")
 
 
 def build_first(store, did, base=None):
@@ -252,7 +269,7 @@ def next_foundation(store, did, round_no, delta):
     before, _, after = pb.partition(head)
     after = after.strip()
     after = "" if after == "（暂无。）" else after
-    lines = _delta_lines(store, delta)
+    lines = [redact_titles(store, x) for x in _delta_lines(store, delta)]
     body = (before + head + "\n\n" + (after + "\n\n" if after else "")
             + f"第 {round_no} 轮之后：\n\n" + "\n\n".join(lines) + "\n")
     with store.tx("foundation", actor="system") as tx:
