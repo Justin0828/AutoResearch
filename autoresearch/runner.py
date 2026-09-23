@@ -201,7 +201,7 @@ class Runner:
                     self.store.git("checkout", "--", rel)
                 else:
                     (self.store.state / rel).unlink(missing_ok=True)
-            self.bus.notify("warn", f"{task['id']} 试图直接修改受保护路径 {rel}，已回滚",
+            self.bus.notify("warn", f"{task['id']} tried to edit the protected path {rel} directly; the change was rolled back.",
                             task=task["id"])
             return
         with self.store.locked():

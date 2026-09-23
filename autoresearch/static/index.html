@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -7,82 +7,150 @@
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<header class="top">
-  <div class="brand">
-    <strong>AutoResearch</strong>
-    <span id="project-title" class="muted"></span>
-  </div>
-  <div class="mode">
-    <span id="mode-badge" class="badge mode-discussion">讨论模式</span>
-    <button id="handoff-btn" class="ghost" disabled title="交棒到验证模式在 Phase 2 实现">交棒 →</button>
-  </div>
-  <div class="shift">
-    <span id="shift-state" class="dot"></span>
-    <span id="shift-label">—</span>
-    <div class="quota" title="直接读自 rate_limit_event">
-      <label>5h</label><div class="bar"><i id="q5"></i></div><span id="q5t">?</span>
-      <label>7d</label><div class="bar"><i id="q7"></i></div><span id="q7t">?</span>
-    </div>
-    <button id="pause-btn" class="ghost">暂停</button>
-    <button id="cutoff-btn" class="ghost danger" title="SIGKILL 在飞任务、写交接、60 秒后自动开下一班">模拟切断</button>
-    <button id="notes-btn" class="ghost">通知 <span id="notes-count" class="count"></span></button>
-  </div>
-</header>
-
-<div id="notes-panel" class="notes hidden"></div>
-
-<main>
-  <nav class="discussions">
-    <div class="nav-head">
-      <span>讨论</span>
-      <button id="new-ds" class="ghost small">＋ 新讨论</button>
-    </div>
-    <ul id="ds-list"></ul>
-  </nav>
-
-  <section class="chat">
-    <div class="chat-head">
-      <div>
-        <h2 id="ds-title">选择或新建一个讨论</h2>
-        <div id="ds-meta" class="muted small"></div>
+<div class="app">
+  <aside class="rail">
+    <div class="logo"><span class="mark">✦</span><span class="lbl">AutoResearch</span>
+      <button class="icon-btn" id="rail-toggle" title="Collapse sidebar (Ctrl+B)" aria-label="Toggle sidebar"><svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M9.5 4.5v15"/></svg></button></div>
+    <nav>
+      <a href="#/chat" data-page="chat">
+        <svg viewBox="0 0 24 24"><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4h13A1.5 1.5 0 0 1 20 5.5v9a1.5 1.5 0 0 1-1.5 1.5H9l-5 4z"/></svg>
+        <span>Chat</span>
+      </a>
+      <a href="#/inbox" data-page="inbox">
+        <svg viewBox="0 0 24 24"><path d="M4 13 6.5 5h11L20 13v6H4z"/><path d="M4 13h5l1 2h4l1-2h5"/></svg>
+        <span>Inbox</span><b class="badge" id="inbox-badge"></b>
+      </a>
+      <a href="#/research" data-page="research">
+        <svg viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/></svg>
+        <span>Research</span>
+      </a>
+      <a href="#/system" data-page="system">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 12l4-3"/><path d="M12 5.5v1.5M5.5 12H7M17 12h1.5"/></svg>
+        <span>System</span><b class="badge" id="sys-badge"></b>
+      </a>
+    </nav>
+    <div class="rail-foot">
+      <a class="shift-pill" href="#/system"><i class="dot" id="shift-dot"></i><span id="shift-label">—</span></a>
+      <div class="meter" title="Read directly from Claude's rate_limit_event">
+        <label>5h</label><div class="bar"><i id="q5"></i></div><span id="q5t">–</span>
       </div>
-      <div class="chat-actions">
-        <button id="distill-btn" class="ghost" disabled>蒸馏到候选区</button>
-        <button id="close-ds-btn" class="ghost" disabled>结束讨论</button>
+      <div class="meter" title="Weekly usage. Everything pauses at the weekly stop threshold.">
+        <label>7d</label><div class="bar"><i id="q7"></i></div><span id="q7t">–</span>
       </div>
     </div>
-    <details id="summary-box" class="summary hidden">
-      <summary>滚动摘要（新 session 看到的前情）</summary>
-      <div id="summary-body" class="md"></div>
-    </details>
-    <div id="turns" class="turns"></div>
-    <form id="composer" class="composer">
-      <textarea id="input" rows="3" placeholder="说说你的想法…（Ctrl+Enter 发送）" disabled></textarea>
-      <button id="send" type="submit" disabled>发送</button>
-    </form>
-  </section>
-
-  <aside class="side">
-    <div class="tabs">
-      <button data-tab="cands" class="active">候选区 <span id="cand-count" class="count"></span></button>
-      <button data-tab="overview">研究总览</button>
-      <button data-tab="handoffs">交接</button>
-      <button data-tab="activity">活动</button>
-    </div>
-    <div id="tab-cands" class="tab"></div>
-    <div id="tab-overview" class="tab hidden"></div>
-    <div id="tab-handoffs" class="tab hidden"></div>
-    <div id="tab-activity" class="tab hidden"></div>
   </aside>
-</main>
+
+  <main>
+    <!-- ================================================================ Chat -->
+    <section class="page" id="page-chat">
+      <div class="ds-col">
+        <div class="ds-head">
+          <h2>Discussions</h2>
+          <button id="new-ds" class="btn small">New</button>
+        </div>
+        <ul id="ds-list"></ul>
+      </div>
+      <div class="conv">
+        <header class="conv-head">
+          <button class="icon-btn" id="ds-toggle" title="Hide discussion list" aria-label="Toggle discussion list"><svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M9.5 4.5v15"/></svg></button>
+          <div class="conv-title">
+            <h1 id="ds-title">No discussion selected</h1>
+            <div id="ds-meta" class="meta"></div>
+          </div>
+          <div class="conv-actions">
+            <span class="pill accent" id="mode-pill">Discussion mode</span>
+            <button id="distill-btn" class="btn ghost small" disabled title="Extract research content into the Inbox">Distill</button>
+            <button id="close-ds-btn" class="btn ghost small" disabled>End</button>
+            <button class="btn ghost small" disabled title="Handing off to validation mode arrives in Phase 2">Hand off →</button>
+          </div>
+        </header>
+        <details id="summary-box" class="summary hidden">
+          <summary>Rolling summary <span class="meta">— what a fresh session sees before the recent turns</span></summary>
+          <div id="summary-body" class="md"></div>
+        </details>
+        <div id="turns" class="turns"></div>
+        <form id="composer" class="composer">
+          <textarea id="input" rows="1" placeholder="Share a thought…" disabled></textarea>
+          <button id="send" type="submit" class="send" disabled aria-label="Send">
+            <svg viewBox="0 0 24 24"><path d="M12 19V5M5.5 11.5 12 5l6.5 6.5"/></svg>
+          </button>
+        </form>
+        <div class="composer-hint">Ctrl + Enter to send · every reply comes from a fresh session that only knows the research state</div>
+      </div>
+    </section>
+
+    <!-- ================================================================ Inbox -->
+    <section class="page scroll" id="page-inbox">
+      <div class="page-inner">
+        <header class="page-head">
+          <div>
+            <h1>Inbox</h1>
+            <p class="lede">Things waiting for your judgment. Nothing becomes part of the research state until you accept it.</p>
+          </div>
+        </header>
+        <div class="seg" id="inbox-seg">
+          <button data-v="cands" class="on">Candidates <b id="seg-cands"></b></button>
+          <button data-v="reviews">Re-examine <b id="seg-reviews"></b></button>
+          <button data-v="history">History</button>
+        </div>
+        <div id="inbox-body"></div>
+      </div>
+    </section>
+
+    <!-- ================================================================ Research -->
+    <section class="page scroll" id="page-research">
+      <div class="page-inner">
+        <header class="page-head">
+          <div>
+            <div class="eyebrow">Research state</div>
+            <h1 id="project-title">—</h1>
+            <p class="lede" id="project-lede"></p>
+          </div>
+        </header>
+        <nav class="chips" id="research-chips">
+          <a data-s="sec-question">Question</a>
+          <a data-s="sec-insights">Understanding</a>
+          <a data-s="sec-assumptions">Assumptions</a>
+          <a data-s="sec-hypotheses">Hypotheses</a>
+          <a data-s="sec-uncertainties">Uncertainties</a>
+          <a data-s="sec-deadends">Dead ends</a>
+          <a data-s="sec-bias">Bias</a>
+        </nav>
+        <div id="research-body"></div>
+      </div>
+    </section>
+
+    <!-- ================================================================ System -->
+    <section class="page scroll" id="page-system">
+      <div class="page-inner">
+        <header class="page-head">
+          <div>
+            <h1>System</h1>
+            <p class="lede">Shifts, usage, tasks and handoffs. Work runs in shifts; each one ends with a handoff the next one picks up from.</p>
+          </div>
+        </header>
+        <div class="seg" id="sys-seg">
+          <button data-v="status" class="on">Status</button>
+          <button data-v="tasks">Tasks</button>
+          <button data-v="activity">Live activity</button>
+          <button data-v="handoffs">Handoffs</button>
+          <button data-v="notes">Notifications <b id="seg-notes"></b></button>
+        </div>
+        <div id="sys-body"></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="toasts"></div>
 
 <dialog id="dlg">
   <form method="dialog" id="dlg-form">
     <h3 id="dlg-title"></h3>
     <div id="dlg-body"></div>
     <menu>
-      <button value="cancel" class="ghost">取消</button>
-      <button value="ok" id="dlg-ok">确定</button>
+      <button value="cancel" class="btn ghost">Cancel</button>
+      <button value="ok" id="dlg-ok" class="btn">Confirm</button>
     </menu>
   </form>
 </dialog>

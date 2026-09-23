@@ -20,6 +20,8 @@ from .store import now, today
 from .tasks import Ledger
 
 MAX_ATTEMPTS = 3
+NOTE_REASON = {"quota_5h": "5-hour limit", "quota_7d": "weekly limit", "cutoff": "cut off",
+               "manual": "stopped", "crash": "the previous run crashed", "normal": "normal"}
 
 
 class Daemon:
@@ -65,7 +67,7 @@ class Daemon:
         with self.lock:
             sha, paths = self.store.sweep("recovered: 上次进程遗留的未提交改动", "system")
             if paths:
-                self.bus.notify("warn", f"启动时发现 {len(paths)} 个未提交的改动，已以 recovered 提交", sha=sha)
+                self.bus.notify("warn", f"Found {len(paths)} uncommitted change(s) left by the previous run; committed them as recovered.", sha=sha)
             self._reconcile()
             for t in self.ledger.all():
                 if t["status"] == "running":
@@ -121,8 +123,8 @@ class Daemon:
             if d.get("status") == "open" and d.get("awaiting_reply"):
                 self._enqueue_discuss(d["id"], priority=1)
         self.bus.publish("shift", self.shift_view())
-        self.bus.notify("info", f"开班 {self.st['shift']['id']}" +
-                        (f"，重新接上被截断的任务 {', '.join(requeued)}" if requeued else ""))
+        self.bus.notify("info", f"Shift {self.st['shift']['id']} started" +
+                        (f"; picking up interrupted task(s) {', '.join(requeued)}" if requeued else "") + ".")
 
     def _end_shift(self, reason, detail=""):
         """结束当前班次并写交接记录。调用方持锁，且此时不应有在飞任务。"""
@@ -156,7 +158,7 @@ class Daemon:
         self._save_state()
         self.bus.publish("shift", self.shift_view())
         self.bus.notify("warn" if reason != "normal" else "info",
-                        f"班次 {sh['id']} 结束（{reason}{'：' + detail if detail else ''}），交接记录 {hid}",
+                        f"Shift {sh['id']} ended ({NOTE_REASON.get(reason, reason)}). Handoff saved as {hid}.",
                         handoff=hid)
         return hid
 
@@ -168,12 +170,13 @@ class Daemon:
                             "since": now(), "detail": detail}
         self._save_state()
         when = time.strftime("%m-%d %H:%M", time.localtime(resume_at)) if resume_at else None
-        msg = {"quota_5h": "5h 额度窗口用尽，已暂停",
-               "quota_7d": f"周额度 ≥{round(self.cfg.weekly_stop * 100)}%，全面暂停（保护项目外的 Claude Code 使用）",
-               "cutoff": "窗口被切断",
-               "manual": "已人工暂停"}.get(reason, reason)
+        msg = {"quota_5h": "The 5-hour usage window is exhausted. Work is paused",
+               "quota_7d": f"Weekly usage reached {round(self.cfg.weekly_stop * 100)}%. Everything is paused to protect your other Claude Code usage",
+               "cutoff": "Work was cut off",
+               "manual": "Paused by you"}.get(reason, reason)
         if when:
-            msg += f"，预计 {when} 恢复" + ("（自动开下一班）" if self.cfg.auto_resume and not manual else "")
+            msg += f"; expected to resume around {when}" + (" (automatically)" if self.cfg.auto_resume and not manual else "")
+        msg += "."
         self.bus.notify("warn", msg)
         self.bus.publish("shift", self.shift_view())
         if not self.runners:
@@ -251,7 +254,7 @@ class Daemon:
             try:
                 self.tick()
             except Exception:
-                self.bus.notify("error", "dispatch 异常：" + traceback.format_exc()[-800:])
+                self.bus.notify("error", "Dispatcher error: " + traceback.format_exc()[-800:])
             time.sleep(0.5)
 
     def tick(self):
@@ -335,7 +338,7 @@ class Daemon:
                 if self.st.get("pause") and not self.runners:
                     self._end_shift(self.st["pause"]["reason"], self.st["pause"].get("detail", ""))
                 if task["status"] == "failed":
-                    self.bus.notify("error", f"{task['id']} {task['kind']} 执行失败：{(task.get('error') or '')[:200]}",
+                    self.bus.notify("error", f"Task {task['id']} ({task['kind']}) failed: {(task.get('error') or '')[:200]}",
                                     task=task["id"])
 
     def _prompt(self, task):
@@ -392,7 +395,7 @@ class Daemon:
             try:
                 self.sweep_human_edits()
             except Exception:
-                self.bus.notify("error", "sweep 异常：" + traceback.format_exc()[-800:])
+                self.bus.notify("error", "Sweep error: " + traceback.format_exc()[-800:])
 
     def sweep_human_edits(self):
         sha, paths = self.store.sweep("human: 编辑器中的直接修改", "human")
@@ -401,15 +404,15 @@ class Daemon:
             errs, _ = schema.validate_repo(self.store.state)
             self.bus.publish("state", {"paths": paths, "sha": sha})
             self.bus.notify("warn" if errs else "info",
-                            f"已提交你在编辑器里的 {len(paths)} 处修改（{sha}）" +
-                            (f"；校验发现 {len(errs)} 个问题" if errs else ""))
+                            f"Committed {len(paths)} change(s) you made in an editor ({sha})" +
+                            (f"; validation found {len(errs)} problem(s)." if errs else "."))
         return sha, paths
 
     def _reconcile(self):
         new = reviews.reconcile(self.store)
         if new:
             self.bus.publish("state", {"reviews": new})
-            self.bus.notify("warn", f"有对象被推翻，{len(new)} 个相关对象需要你重新审视：{', '.join(new)}")
+            self.bus.notify("warn", f"Something was overturned: {len(new)} linked object(s) need re-examination ({', '.join(new)}).")
         return new
 
     # ------------------------------------------------------------ 视图
