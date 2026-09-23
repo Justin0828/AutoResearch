@@ -165,9 +165,11 @@ $("#close-ds-btn").onclick = async () => {
 };
 
 // ---------------------------------------------------------------- 候选区
-const KIND_CN = { assumption: "前提", hypothesis: "假设", question: "问题", uncertainty: "不确定性" };
+const KIND_CN = { assumption: "前提", hypothesis: "假设", question: "问题", uncertainty: "不确定性", insight: "理解" };
+const FIRM_CN = { hunch: "直觉", working: "工作理解", settled: "稳固理解" };
 const FIELDS = {
-  assumption: [["relied_on_by", "支撑着"]],
+  assumption: [["relied_on_by", "支撑着"], ["derived_from", "派生自理解"]],
+  insight: [["firmness", "牢固程度"], ["basis", "根基"], ["basis_note", "根基说明"], ["informs", "影响"], ["change_mind", "什么会让我改观"]],
   hypothesis: [["falsifier", "证伪条件"], ["validation", "验证安排"], ["confidence", "置信度"]],
   question: [["maturity", "成熟度"]],
   uncertainty: [["importance", "重要性"]],
@@ -232,7 +234,10 @@ async function candAct(act, c) {
       const kinds = Object.entries(KIND_CN).map(([k, n]) => `<option value="${k}" ${k === c.kind ? "selected" : ""}>${n}</option>`).join("");
       const allFields = [["relied_on_by", "支撑着（前提必填，id 逗号分隔）"], ["falsifier", "证伪条件（假设必填）"],
         ["validation", "验证安排（假设必填）"], ["confidence", "置信度 low/medium/high"],
-        ["maturity", "成熟度 vague/scoped/formalized"], ["importance", "重要性 low/medium/high"]];
+        ["maturity", "成熟度 vague/scoped/formalized"], ["importance", "重要性 low/medium/high"],
+        ["firmness", "牢固程度 hunch/working/settled（理解必填）"], ["basis", "根基（理解：对象 id，逗号分隔）"],
+        ["basis_note", "根基说明（理解：State 之外的来源，如经验）"], ["informs", "影响（理解：对象 id）"],
+        ["change_mind", "什么会让我改观（理解，可选）"], ["derived_from", "派生自理解（前提：IN###）"]];
       const r = await ask(`修改 ${c.id}`,
         `<label>类别（按当前角色：被依赖而未安排验证 = 前提；已安排验证 = 假设）</label><select name="kind">${kinds}</select>
          <label>陈述</label><textarea name="statement" rows="3">${esc(c.statement)}</textarea>
@@ -263,6 +268,14 @@ async function loadOverview() {
       <div class="acts"><button class="small" data-act="resolved">已据此调整</button><button class="ghost small" data-act="dismissed">判断不受影响</button></div>
     </div>`).join("");
   const hs = o.hypotheses.map((x) => item(x, `<span class="kind hypothesis">${x.status} · ${x.confidence}</span><span class="muted small">证据 ${fmtv(x.evidence) || "无"}</span>`)).join("");
+  const insAll = o.insights || [];
+  const insOrder = { settled: 0, working: 1, hunch: 2 };
+  const ins = insAll.filter((x) => x.status === "active").sort((a, b) => insOrder[a.firmness] - insOrder[b.firmness])
+    .map((x) => item(x, `<span class="kind insight">${FIRM_CN[x.firmness] || x.firmness}</span><span class="muted small">根基 ${fmtv(x.basis) || "—"}${x.basis_note ? "；" + esc(x.basis_note) : ""}</span>`,
+      `${x.change_mind ? `<div class="small muted">什么会让我改观：${esc(x.change_mind)}</div>` : ""}<div class="acts"><button class="ghost small" data-act="revise">修订</button><button class="ghost small danger" data-act="abandon">放弃</button></div>`)).join("");
+  const insOld = insAll.filter((x) => x.status !== "active");
+  const insHist = insOld.length ? `<details><summary class="muted small">演变历史（${insOld.length} 条已被取代或放弃）</summary>${insOld.map((x) =>
+    item(x, `<span class="kind">${x.status === "superseded" ? "已被 " + x.superseded_by + " 取代" : "已放弃"}</span>`)).join("")}</details>` : "";
   const us = o.uncertainties.filter((x) => x.status !== "resolved").map((x) => item(x, `<span class="kind uncertainty">${x.importance}</span>`)).join("");
   const de = o.dead_ends.map((x) => item(x, `<span class="kind">${x.status}</span>`)).join("");
   const bias = o.bias.length ? `<table class="bias"><tr><th>提出者</th><th>总数</th><th>已有结论</th><th>被反驳</th><th>反驳率</th></tr>
@@ -273,6 +286,9 @@ async function loadOverview() {
     ${v.errors.length ? `<div class="card"><h4 class="flag">State 校验：${v.errors.length} 个错误</h4><div class="small">${v.errors.map(esc).join("<br>")}</div></div>` : ""}
     ${rv ? `<div class="sect">待重新审视（${o.reviews.length}）</div><p class="muted small">这些对象与已被推翻的前提或假设相关。系统不会自动改写它们，由你判断。</p>${rv}` : ""}
     <div class="sect">研究问题</div>${q}
+    <div class="sect">当前理解（是理解，不是证据）</div>
+    <div class="acts" style="margin-bottom:8px"><button class="ghost small" data-act="new-insight">＋ 记下一个理解</button></div>
+    ${ins || `<p class="muted small">研究中形成的看法与直觉会出现在这里。可以只是一种感觉，但要说出它从哪来。</p>`}${insHist}
     <div class="sect">前提（unexamined 在前）</div>${as || `<p class="muted">暂无</p>`}
     <div class="sect">假设</div>${hs || `<p class="muted">暂无</p>`}
     <div class="sect">未决不确定性</div>${us || `<p class="muted">暂无</p>`}
@@ -288,6 +304,37 @@ async function loadOverview() {
       const res = await api("POST", `/api/assumptions/${id}/invalidate`, { reason: r.reason });
       toast(res.reviews.length ? `已推翻。${res.reviews.length} 个相关对象待你重新审视。` : "已推翻。没有依赖它的对象。");
     } catch (err) { toast(err.message); }
+    loadOverview();
+  });
+  const firmSel = (cur) => `<select name="firmness">${Object.entries(FIRM_CN).map(([k, n]) => `<option value="${k}" ${k === cur ? "selected" : ""}>${n}（${k}）</option>`).join("")}</select>`;
+  const nb = tab.querySelector('[data-act="new-insight"]');
+  if (nb) nb.onclick = async () => {
+    const r = await ask("记下一个理解", `<label>这种理解 / 直觉（可以是描述性的）</label><textarea name="statement" rows="4" required></textarea>
+      <label>牢固程度</label>${firmSel("hunch")}
+      <label>根基：State 里的对象 id，逗号分隔（如 DS001, H002）</label><input name="basis">
+      <label>或者根基说明：State 之外的来源（如“做装配多年的手感”）</label><input name="basis_note">
+      <label>它影响了哪些判断（对象 id，可选）</label><input name="informs">
+      <label>什么会让我改观（可选）</label><input name="change_mind">`);
+    if (!r) return;
+    try { const res = await api("POST", "/api/insights", r); toast(`已记下 ${res.id}`); } catch (err) { toast(err.message); }
+    loadOverview();
+  };
+  tab.querySelectorAll('[data-act="revise"]').forEach((b) => b.onclick = async () => {
+    const id = b.closest(".card").dataset.id, x = insAll.find((i) => i.id === id);
+    const r = await ask(`修订 ${id}`, `<p class="small">不会覆盖：新建一条取代它，旧的留在演变历史里。根基与影响沿用，并把 ${id} 本身列为根基。</p>
+      <label>修订后的理解</label><textarea name="statement" rows="4">${esc((x.body || "").split("\n## ")[0])}</textarea>
+      <label>牢固程度</label>${firmSel(x.firmness)}
+      <label>什么会让我改观</label><input name="change_mind" value="${esc(x.change_mind || "")}">
+      <label>为什么修订</label><input name="note">`);
+    if (!r) return;
+    try { const res = await api("POST", `/api/insights/${id}/revise`, r); toast(`已修订为 ${res.id}`); } catch (err) { toast(err.message); }
+    loadOverview();
+  });
+  tab.querySelectorAll('[data-act="abandon"]').forEach((b) => b.onclick = async () => {
+    const id = b.closest(".card").dataset.id;
+    const r = await ask(`放弃 ${id}`, `<p class="small">由它派生的前提会列入“待重新审视”。</p><label>理由</label><textarea name="reason" rows="3" required></textarea>`);
+    if (!r) return;
+    try { await api("POST", `/api/insights/${id}/abandon`, r); } catch (err) { toast(err.message); }
     loadOverview();
   });
   tab.querySelectorAll("[data-review] button").forEach((b) => b.onclick = async () => {

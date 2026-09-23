@@ -31,8 +31,8 @@ KINDS = {k.type: k for k in [
          {"status": {"unexamined", "examined", "promoted", "retired", "invalidated"},
           "fragile": {"true", "false"}},
          nonempty=("relied_on_by",),
-         refs={"relied_on_by": ("Q", "A", "H", "I", "U"), "promoted_to": ("H",),
-               "invalidated_by": ("E", "DEC")}),
+         refs={"relied_on_by": ("Q", "A", "H", "I", "U", "IN"), "promoted_to": ("H",),
+               "invalidated_by": ("E", "DEC"), "derived_from": ("IN",)}),
     Kind("hypothesis", "hypotheses", "H",
          ("status", "confidence", "falsifier", "validation", "evidence"),
          {"status": {"proposed", "investigating", "supported", "refuted",
@@ -49,13 +49,19 @@ KINDS = {k.type: k for k in [
     Kind("dead-end", "dead-ends", "D", ("status", "closed_by"),
          {"status": {"closed", "reopened"}},
          nonempty=("closed_by",), refs={"closed_by": ("E", "X")}),
+    # 理解（DESIGN.md M1 Insight）：研究的产出，可以是描述性的直觉，不要求可证伪，但必须说出根基
+    Kind("insight", "insights", "IN", ("status", "firmness"),
+         {"status": {"active", "superseded", "abandoned"},
+          "firmness": {"hunch", "working", "settled"}},
+         refs={"basis": ("Q", "A", "H", "E", "P", "X", "U", "IN", "DS", "D"),
+               "informs": ("Q", "A", "H", "U", "IN"), "superseded_by": ("IN",)}),
     Kind("uncertainty", "uncertainties", "U", ("status", "importance"),
          {"status": {"open", "reduced", "resolved"},
           "importance": {"low", "medium", "high"}}),
     Kind("decision", "decisions", "DEC", ("kind", "refs"),
          {"kind": {"research", "curation", "mode", "handoff"}}, tool_only=True),
     Kind("candidate", "candidates", "C", ("kind", "status", "origin", "source", "turns"),
-         {"kind": {"assumption", "hypothesis", "question", "uncertainty"},
+         {"kind": {"assumption", "hypothesis", "question", "uncertainty", "insight"},
           "status": {"pending", "accepted", "rejected", "superseded"},
           "origin": {"human", "ai", "unclear"}},
          refs={"source": ("DS",)}, tool_only=True),
@@ -64,9 +70,9 @@ KINDS = {k.type: k for k in [
          tool_only=True),
     # 推翻的传播（DESIGN.md M5.6b）：只由对账函数生成，人经前端处理
     Kind("review", "reviews", "R", ("trigger", "event", "target", "status", "depth"),
-         {"event": {"hypothesis_refuted", "assumption_invalidated"},
+         {"event": {"hypothesis_refuted", "assumption_invalidated", "insight_withdrawn"},
           "status": {"open", "resolved", "dismissed"}},
-         refs={"trigger": ("A", "H"), "target": ("Q", "A", "H", "U", "C", "I")},
+         refs={"trigger": ("A", "H", "IN"), "target": ("Q", "A", "H", "U", "C", "I", "IN")},
          tool_only=True),
 ]}
 
@@ -78,6 +84,7 @@ CANDIDATE_FIELDS = {
     "hypothesis": ("falsifier", "validation"),
     "question": ("maturity",),
     "uncertainty": ("importance",),
+    "insight": ("firmness",),          # basis / basis_note 至少其一，单独检查
 }
 
 PROJECT_MODES = {"discussion", "incubation", "validation"}
@@ -155,6 +162,11 @@ def check_object(meta, kind, ids, rel):
     if kind.type == "assumption" and meta.get("status") == "invalidated" \
             and not _as_list(meta.get("invalidated_by")):
         errs.append(f"{rel}: status=invalidated 但没有 invalidated_by（证据或人的推翻决定）")
+    if kind.type == "insight" or (kind.type == "candidate" and meta.get("kind") == "insight"):
+        if not _as_list(meta.get("basis")) and not str(meta.get("basis_note") or "").strip():
+            errs.append(f"{rel}: 理解必须说出根基（basis 或 basis_note 至少其一）")
+    if kind.type == "insight" and meta.get("status") == "superseded" and not meta.get("superseded_by"):
+        errs.append(f"{rel}: status=superseded 但没有 superseded_by")
     if kind.type == "hypothesis":
         if meta.get("status") not in (None, "proposed") and not _as_list(meta.get("evidence")):
             errs.append(f"{rel}: status={meta['status']} 但没有任何 evidence")
@@ -227,7 +239,7 @@ def validate_repo(state):
                 errs.append(f"provenance.json: {ident} 的 origin 不在 {sorted(ORIGINS)}")
         for ident in ids:
             k = kind_of_id(ident)
-            if k and k.type in ("assumption", "hypothesis", "question", "uncertainty") \
+            if k and k.type in ("assumption", "hypothesis", "question", "uncertainty", "insight") \
                     and ident not in prov:
                 warns.append(f"{ident}: provenance.json 中没有 origin 记录")
     return errs, warns

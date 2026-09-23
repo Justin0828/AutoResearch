@@ -19,6 +19,7 @@ STATE_PROTOCOL = """你在一个持久的研究状态仓库（Research State）�
   papers/          论文笔记 P###
   dead-ends/       已关闭的方向 D###
   uncertainties/   不确定性 U###
+  insights/        理解 IN###（研究形成的看法与直觉，不是证据）
   decisions/       决策记录 DEC###
   candidates/      候选区 C###（待研究者确认）
   discussions/     讨论记录与摘要
@@ -40,8 +41,19 @@ CLASSIFY_RULE = """## 分类规则：Assumption 与 Hypothesis 按**当前角色
 - 典型陷阱：“感知不是瓶颈”这类命题既可证伪、又正在被拿来排除方向。若讨论里没人
   安排去验证它，它就是 assumption——正是这种“被依赖却没人检查”的前提最危险。
 - 可证伪与否不是分类依据；是否已安排验证才是。
-其余两类：question（一个尚待澄清的研究问题，给 maturity）、uncertainty（影响判断
-但暂时无法消除的未知，给 importance）。
+其余三类：question（一个尚待澄清的研究问题，给 maturity）、uncertainty（影响判断
+但暂时无法消除的未知，给 importance）、insight（理解，见下）。
+
+## insight（理解）：研究的产出，可以只是一种直觉
+
+- 做了一段研究后形成的看法、对事物的感觉，可以是描述性的，**不要求可证伪**。
+  它和 assumption 的区别：assumption 是研究据以成立的前提（输入），insight 是学到的东西（产出）。
+- **必须给出 basis**：它长自哪些对象（讨论 DS###、证据、假设、论文……的 id）。说不出根基的
+  “洞见”不要提交——读起来像洞见的空话恰恰最容易产出。
+- 给 firmness：hunch（直觉）/ working（工作理解）/ settled（稳固理解）。拿不准就写 hunch。
+- 鼓励写 change_mind：什么会让这个看法改变。
+- 理解不是证据，不要把它当证据引用。若讨论中**凭某条理解排除了一个方向**，把这个用法作为
+  assumption 提出，并用 derived_from 指向那条理解。
 """
 
 DISCUSS_PROTOCOL = STATE_PROTOCOL + """

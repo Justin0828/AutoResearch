@@ -9,14 +9,15 @@ import re
 from . import candidates, discussion, frontmatter, reviews, schema
 
 PROFILES = {
-    # redact: 是否剥离 origin；sections: 章节编号（见 §5.2 表）
-    "discuss": {"redact": False, "sections": range(1, 12)},
-    "distill": {"redact": False, "sections": range(1, 12)},
+    # redact: 是否剥离 origin；sections: 章节（见 §5.2 表），"3b" = 当前理解
+    "discuss": {"redact": False, "sections": [1, 2, 3, "3b", *range(4, 12)]},
+    "distill": {"redact": False, "sections": [1, 2, 3, "3b", *range(4, 12)]},
+    # 评判类看不到理解：评估证据只看证据，理解是解读框架，会带来锚定
     "judge": {"redact": True, "sections": [*range(1, 9), 11]},
 }
 
 BUDGET = {  # 每章字符预算；dead-end、任务、交接、问题不截断
-    4: 8000, 5: 12000, 6: 8000, 8: 4000, 9: 6000, 10: 24000,
+    "3b": 8000, 4: 8000, 5: 12000, 6: 8000, 8: 4000, 9: 6000, 10: 24000,
 }
 DISTILL_DISCUSSION_BUDGET = 80000
 
@@ -122,6 +123,26 @@ class Assembler:
         for m, b in others:
             out.append(f"### {m['id']}（成熟度 {m.get('maturity')}）\n\n{self._body(b, redact)}")
         return "\n\n".join(out)
+
+    def s_insights(self, redact):
+        items = [(m, b) for m, b in self.store.list("insight") if m.get("status") == "active"]
+        head = ("## 3b. 当前理解（是理解，不是证据）\n\n研究至今形成的看法与直觉。它们是解读框架，"
+                "不能当作证据引用；拿其中某条来排除方向时，要把这个用法作为 assumption 提出"
+                "（derived_from 指向该理解）。")
+        if not items:
+            return head + "\n\n（暂无。）"
+        order = {"settled": 0, "working": 1, "hunch": 2}
+        name = {"settled": "稳固理解", "working": "工作理解", "hunch": "直觉"}
+        items.sort(key=lambda x: (order.get(x[0].get("firmness"), 3), x[0]["id"]))
+        parts = []
+        for m, b in items:
+            h = (f"### {m['id']} · {name.get(m.get('firmness'), m.get('firmness'))} · "
+                 f"{_fm_line(m, ['basis', 'informs'])}{self._origin(m['id'], redact)}")
+            body = self._body(b, redact)
+            extra = "".join(f"\n- {k}：{m[f]}" for f, k in
+                            (("basis_note", "根基说明"), ("change_mind", "什么会让我改观")) if m.get(f))
+            parts.append((f"{h}\n\n{body}{extra}", f"{h} — {body.splitlines()[0] if body else ''}"))
+        return head + "\n\n" + _clip(parts, BUDGET["3b"], "insights/")
 
     def s_assumptions(self, redact):
         items = self.store.list("assumption")
@@ -249,6 +270,7 @@ class Assembler:
             1: lambda: self.s_task(task),
             2: self.s_handoff,
             3: lambda: self.s_question(redact),
+            "3b": lambda: self.s_insights(redact),
             4: lambda: self.s_assumptions(redact),
             5: lambda: self.s_hypotheses(redact),
             6: lambda: self.s_evidence(redact),

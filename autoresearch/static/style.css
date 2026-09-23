@@ -117,10 +117,12 @@ main { flex: 1; display: grid; grid-template-columns: 220px 1fr 420px; min-heigh
 .kind.assumption { background: #f3e8ff; color: #6b3fa0; }
 .kind.hypothesis { background: #e6f4ea; color: #2e7d4f; }
 .kind.uncertainty { background: #fdecea; color: #b33a3a; }
+.kind.insight { background: #fff4d6; color: #8a6100; }
 @media (prefers-color-scheme: dark) {
   .kind.assumption { background: #33264a; color: #c9a8f0; }
   .kind.hypothesis { background: #1f3527; color: #7fd49f; }
   .kind.uncertainty { background: #3d2323; color: #f0a0a0; }
+  .kind.insight { background: #3a3120; color: #f0cf7a; }
 }
 .flag { font-size: 11px; color: var(--warn); font-weight: 600; }
 .sect { margin: 14px 0 6px; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }

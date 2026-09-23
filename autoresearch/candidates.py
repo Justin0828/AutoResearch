@@ -9,15 +9,17 @@ from . import discussion, frontmatter, schema
 from .store import today
 
 TARGET_TYPE = {"assumption": "assumption", "hypothesis": "hypothesis",
-               "question": "question", "uncertainty": "uncertainty"}
+               "question": "question", "uncertainty": "uncertainty", "insight": "insight"}
 
 # 候选 frontmatter 中属于目标对象的字段
 TARGET_FIELDS = {
-    "assumption": ("relied_on_by", "fragile"),
+    "assumption": ("relied_on_by", "fragile", "derived_from"),
     "hypothesis": ("falsifier", "validation", "confidence", "promoted_from"),
     "question": ("maturity",),
     "uncertainty": ("importance",),
+    "insight": ("firmness", "basis", "basis_note", "informs", "change_mind"),
 }
+LIST_FIELDS = ("relied_on_by", "basis", "informs")
 
 
 def _sections(body):
@@ -101,6 +103,17 @@ def validate_proposal(store, kind, statement, rationale, origin, origin_note, so
         raise ValueError("importance 必须是 low / medium / high。")
     if fields.get("confidence") and fields["confidence"] not in ("low", "medium", "high"):
         raise ValueError("confidence 必须是 low / medium / high。")
+    if kind == "insight":
+        if fields.get("firmness") not in ("hunch", "working", "settled"):
+            raise ValueError("firmness 必须是 hunch（直觉）/ working（工作理解）/ settled（稳固理解）。")
+        if not fields.get("basis") and not (fields.get("basis_note") or "").strip():
+            raise ValueError("理解必须说出根基：basis（State 里的对象 id）或 basis_note。")
+    for f in ("basis", "informs"):
+        missing = [r for r in fields.get(f) or [] if not store.exists(r)]
+        if missing:
+            raise ValueError(f"{f} 中 {missing} 不存在；只能引用 State 里真实存在的对象。")
+    if fields.get("derived_from") and not store.exists(fields["derived_from"]):
+        raise ValueError(f"derived_from {fields['derived_from']} 不存在。")
 
 
 def _missing_hint(kind, f):
@@ -119,8 +132,12 @@ def propose(store, *, kind, statement, rationale, origin, source, turns,
             origin_note="", relates_to=None, task=None, actor="human", **fields):
     turns = [int(t) for t in _as_list(turns)]
     fields = {k: v for k, v in fields.items() if v not in (None, "", [])}
-    if "relied_on_by" in fields:
-        fields["relied_on_by"] = _as_list(fields["relied_on_by"])
+    for f in LIST_FIELDS:
+        if f in fields:
+            fields[f] = _as_list(fields[f])
+    if kind == "insight" and actor == "agent" and not fields.get("basis"):
+        raise ValueError("AI 提出的理解，basis 必须指向 State 里真实存在的对象（讨论、证据、假设、论文……），"
+                         "说不出根基的“洞见”不收。")
     validate_proposal(store, kind, statement, rationale, origin, origin_note, source,
                       turns, fields)
     rel = _as_list(relates_to)
@@ -151,7 +168,7 @@ def update(store, cid, changes, actor="human"):
     rationale = changes.pop("rationale", s.get("理由", ""))
     for k, v in changes.items():
         if k in ("kind", "origin", "origin_note", *sum(TARGET_FIELDS.values(), ())):
-            meta[k] = _as_list(v) if k == "relied_on_by" else v
+            meta[k] = _as_list(v) if k in LIST_FIELDS else v
     meta = {k: v for k, v in meta.items() if v not in (None, "")}
     with store.tx(f"candidate {cid}: 人修改", actor=actor) as tx:
         tx.write_obj(cid, meta, _body(statement, rationale))
@@ -188,6 +205,14 @@ def accept(store, cid, origin=None, changes=None, actor="human"):
             obj.update(maturity=fields["maturity"])
         elif ttype == "uncertainty":
             obj.update(status="open", importance=fields["importance"])
+        elif ttype == "insight":
+            basis = list(dict.fromkeys(_as_list(fields.get("basis")) + [meta["source"]]))
+            obj.update(status="active", firmness=fields["firmness"], basis=basis,
+                       basis_note=fields.get("basis_note"),
+                       informs=_as_list(fields.get("informs")) or None,
+                       change_mind=fields.get("change_mind"))
+        if ttype == "assumption" and fields.get("derived_from"):
+            obj["derived_from"] = fields["derived_from"]
         obj["created"] = today()
         text = s.get("陈述", "").strip() + "\n\n## 来由\n\n" + s.get("理由", "").strip() + \
             f"\n\n（经候选 {cid} 确认，出自讨论 {meta['source']} 第 {', '.join(map(str, _as_list(meta.get('turns'))))} 轮。）\n"

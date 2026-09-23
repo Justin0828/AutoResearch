@@ -114,6 +114,7 @@ daemon 被 SIGKILL 后重启的崩溃恢复（遗留改动以 recovered 提交�
 - origin 存 provenance.json 而非对象文件；Assumption/Hypothesis 以 relied_on_by / validation 结构化区分 → §5.1
 - 交接记录机械生成、不依赖 agent；与 briefing 共用一个装配器 → §5.2
 - 三层禁用：--tools 移除 + --disallowedTools 兜底 + MCP 按 toolset 注册 → §5.3
+- 新增 Insight（理解）：研究的产出，可以是描述性直觉、不要求可证伪，但必须说出根基；AI 可提（经候选区、根基须指向 State）；评判类任务看不到；凭理解剪枝须另建 Assumption（derived_from）→ M1（2026-09-23 用户确认）
 - 推翻的传播：假设被反驳 / 前提被推翻时，所有结构化相关对象进“待重新审视”（Review），只提醒不改写，幂等对账覆盖所有写入路径 → M5.6b（2026-09-23 用户同意）
 
 ## 已知风险（完整列表见 `DESIGN.md` §6）

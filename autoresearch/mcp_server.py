@@ -177,13 +177,15 @@ def t_log_decision(what="", why="", kind="research", refs=None):
 def t_propose_candidate(kind="", statement="", rationale="", origin="", source="",
                         turns=None, origin_note="", relied_on_by=None, falsifier="",
                         validation="", confidence="", maturity="", importance="",
-                        relates_to=None):
+                        relates_to=None, basis=None, firmness="", change_mind="",
+                        informs=None, derived_from=""):
     cid = candidates.propose(
         STORE, kind=kind, statement=statement, rationale=rationale, origin=origin,
         source=source, turns=turns, origin_note=origin_note, relates_to=relates_to,
         task=TASK, actor="agent", relied_on_by=relied_on_by, falsifier=falsifier,
         validation=validation, confidence=confidence, maturity=maturity,
-        importance=importance)
+        importance=importance, basis=basis, firmness=firmness, change_mind=change_mind,
+        informs=informs, derived_from=derived_from)
     log({"tool": "propose_candidate", "ok": True, "id": cid, "kind": kind, "origin": origin})
     return (f"已提交候选 {cid}（{kind}）。它在人确认前**不是**正式 State 对象；"
             "不要再为同一内容重复提交。")
@@ -240,8 +242,9 @@ TOOLS = [
      "把讨论中出现的研究内容提交到候选区，等人确认。按**当前角色**分类："
      "正在被依赖（支撑其他推理或用来剪枝）而未安排验证的 → assumption（必须给 relied_on_by）；"
      "讨论中已安排/约定了验证方式的 → hypothesis（必须给 falsifier 与 validation）。"
+     "研究中形成的看法、直觉 → insight（不要求可证伪，但必须给 basis 与 firmness）。"
      "闲聊、已被否定的猜测、与已有对象重复的内容不要提交。",
-     {"kind": (S, "assumption / hypothesis / question / uncertainty", True),
+     {"kind": (S, "assumption / hypothesis / question / uncertainty / insight", True),
       "statement": (S, "一句话陈述（可附简短展开）", True),
       "rationale": (S, "为什么这是研究内容、为什么归为这一类、与已有对象的关系", True),
       "origin": (S, "human / ai / unclear：按讨论记录里谁先提出。拿不准或与已有记录冲突就写 unclear", True),
@@ -254,7 +257,12 @@ TOOLS = [
       "confidence": (S, "hypothesis 可选：low / medium / high", False),
       "maturity": (S, "question 必填：vague / scoped / formalized", False),
       "importance": (S, "uncertainty 必填：low / medium / high", False),
-      "relates_to": (A, "相关的已有对象 id（细化、对立、重叠）", False)}),
+      "relates_to": (A, "相关的已有对象 id（细化、对立、重叠）", False),
+      "basis": (A, "insight 必填：这条理解的根基——State 里真实存在的对象 id（DS###、E###、H###、P###……）", False),
+      "firmness": (S, "insight 必填：hunch（直觉）/ working（工作理解）/ settled（稳固理解）", False),
+      "change_mind": (S, "insight 可选：什么会让这个看法改变", False),
+      "informs": (A, "insight 可选：它影响了哪些对象的判断", False),
+      "derived_from": (S, "assumption 可选：若这条前提来自“凭某条理解排除方向”，写那条理解的 id（IN###）", False)}),
     ("update_discussion_summary", t_update_discussion_summary,
      "更新某个讨论的滚动摘要。摘要必须覆盖从第 1 轮到 covers_through 的全部要点"
      "（在旧摘要基础上合并，而不是只写新增部分），因为之后的 session 只会看到摘要与其后的原文。",

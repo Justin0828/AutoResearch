@@ -191,6 +191,14 @@ Claude Code Max 5x 的 5 小时滚动窗口会强制结束 session。**系统不
      > **Phase 0 实测修正**：原先的定义（“前提” vs “待验证命题”）在实践中分类不稳定——5 次独立 trial 对同一条命题（“感知不是瓶颈”）给出了 3 种分类。原因是这条命题两者都像：它可证伪，同时又正在被用来剪枝而无人验证。
      >
      > **区分依据是当前角色，不是内在属性**：正在被**依赖**（用来剪枝或支撑其他推理）而未安排验证的 → `Assumption`；已**安排验证**的 → `Hypothesis`。同一命题可以先后是二者，`Assumption` 被安排验证时提升为 `Hypothesis` 并保留链接（M5.1b）。分类规则必须写进 agent 的协议提示，否则候选区的分类会随机。
+   - `Insight`（理解，已定 2026-09-23）：研究的**产出**而非输入——做了一段研究后形成的看法、直觉、对事物的感觉，可以是描述性的、**不要求可证伪**。需求 §14 把进展定义为“是否理解得更清楚了”，只承认 supported 的 Hypothesis 为结论会把这部分进展丢掉。
+     - 与 Assumption 的区别：Assumption 是研究据以成立的前提（输入），Insight 是研究学到的东西（产出）。与 Hypothesis 的区别：不强制证伪条件与验证安排（“什么会让我改观”鼓励写、不强制）。
+     - **必须说出根基**（`basis`）：它长自哪些讨论、证据、假设结果、论文。AI 提出的理解只能进候选区，且根基必须指向 State 里真实存在的对象——流畅地产出“像洞见”的话正是 AI 最容易空转的地方（§6），要求说出根基是主要防线。人提出的理解可以用 `basis_note` 写“经验 / 手感”一类 State 之外的来源。
+     - 牢固程度 `firmness`：hunch（直觉）/ working（工作理解）/ settled（稳固理解），由人判断。
+     - **演变可追溯**：修订不覆盖，新建一条并以 `superseded_by` 链接，旧的保留——“理解是怎么一步步变的”本身就是进展记录。
+     - **评判类任务看不到 Insight**：评估证据、决定状态迁移只看证据；理解是解读框架，会带来锚定。讨论类任务把它放在研究问题之后，并标明“是理解，不是证据”。
+     - **拿理解做决定要留痕**：一旦某条理解被用来剪枝或排除方向，这个用法按角色规则就是 Assumption——另建一条 Assumption，以 `derived_from` 链接回该理解。直觉本身不需要验证，但“凭感觉排除了 X”必须显式可见。
+     - 接入推翻的传播（M5.6b）：根基中的对象被推翻 → 该理解进待重新审视；理解被取代或放弃 → 由它派生的 Assumption 进待重新审视。
    - `Hypothesis`：提出者（`origin`，human / AI）、表述、可证伪条件、状态、置信度
 
      > **`origin` 的边界（已定）**：`origin` **被记录、被审计、被用于路由，但在做证据判断的那一刻对 agent 不可见**。
@@ -354,6 +362,7 @@ Claude Code Max 5x 的 5 小时滚动窗口会强制结束 session。**系统不
    - 相关的定义（按 State 里的结构化链接，不靠文本相似度）：
      - 被推翻的前提 A → `A.relied_on_by` 里的每个对象（它们失去了前提），并沿 assumption 的 `relied_on_by` 链**向下游传递**，标出间接受影响者与传递路径；以及 A 被提升成的假设（`promoted_to`）。
      - 被反驳的假设 H → 为它提供前提的 assumption（`relied_on_by` 含 H 者，它们是否还有存在意义）；H 的来源前提（`promoted_from`）——**假设被反驳即其来源前提被推翻**，按上一条继续传播；同组竞争假设（`group`）；关联它的待确认候选（`relates_to`）。
+   - 被推翻对象出现在某条 `Insight` 的 `basis` 里 → 该理解进清单；`Insight` 被取代（superseded）或放弃（abandoned）→ `derived_from` 指向它的 Assumption 进清单。
    - 实现为一个**幂等的对账函数**：扫描 State 里所有已推翻的对象，为每个 (触发者, 受影响者) 确保有一条 `Review`。无论状态是谁改的（工具、前端、人在编辑器里手改），对账都能补上，不存在绕过的写入路径。已处理过的 Review 不会重复生成。
    - 人处理 Review 时写明结论：`resolved`（已据此调整）或 `dismissed`（判断不受影响）。二者都保留，成为“为什么这条还站着”的可追溯记录。
    - 理由：`relied_on_by` 记下了依赖关系却不在推翻时使用，等于让“建立在已被推翻的前提上”这个失败模式重新溜回来——而抓住它正是 Assumption 与 Hypothesis 分开建模的原因（M1）。
@@ -566,6 +575,7 @@ $AR_ROOT/
 | `papers/P###.md` | Paper | agent / 人 |
 | `dead-ends/D###.md` | DeadEnd | agent / 人 |
 | `uncertainties/U###.md` | Uncertainty | agent / 人 |
+| `insights/IN###.md` | Insight（理解） | agent / 人（Phase 1 经候选区；人可直接记） |
 | `decisions/DEC###.md` | Decision | 仅 `log_decision` 与后端 |
 | `candidates/C###.md` | 候选对象 | 仅 `propose_candidate`；人经前端改 |
 | `discussions/DS###/transcript.md` | 讨论记录 | 仅后端追加 |
@@ -587,25 +597,26 @@ $AR_ROOT/
 |---|---|---|
 | `project` | `title` `mode` `main_question` | `mode`: discussion / incubation / validation |
 | `question` | `maturity` | vague / scoped / formalized |
-| `assumption` | `status` `relied_on_by` | `status`: unexamined / examined / promoted / retired / invalidated；`relied_on_by` 非空，元素须是已存在 id；可选 `fragile`（true/false）、`promoted_to`；invalidated 时须有 `invalidated_by`（E### 或 DEC###：证据，或人的推翻决定） |
+| `assumption` | `status` `relied_on_by` | `status`: unexamined / examined / promoted / retired / invalidated；`relied_on_by` 非空，元素须是已存在 id；可选 `fragile`（true/false）、`promoted_to`、`derived_from`（IN###，由某条理解派生）；invalidated 时须有 `invalidated_by`（E### 或 DEC###：证据，或人的推翻决定） |
 | `hypothesis` | `status` `confidence` `falsifier` `validation` `evidence` | `status`: proposed / investigating / supported / refuted / inconclusive / abandoned；`confidence`: low / medium / high；`falsifier` `validation` 非空；`evidence` 元素须存在；status≠proposed 时 evidence 非空；可选 `promoted_from`、`group` |
 | `evidence` | `hypothesis` `stance` `strength` `source` | `stance`: support / contradict / neutral；`strength`: weak / moderate / strong；`source` 必须是已存在的 `P###` 或 `X###`（**不得是 dead-end**） |
 | `paper` | `title` | 可选 `url` `venue` `year` `read` |
 | `dead-end` | `status` `closed_by` | `status`: closed / reopened；`closed_by` 非空，元素是 `E###` / `X###` |
+| `insight` | `status` `firmness`，以及 `basis` 或 `basis_note` 至少其一 | `status`: active / superseded / abandoned；`firmness`: hunch / working / settled；`basis` 元素须是已存在 id；可选 `informs`、`change_mind`、`superseded_by` |
 | `uncertainty` | `status` `importance` | `status`: open / reduced / resolved；`importance`: low / medium / high |
 | `decision` | `kind` `refs` | `kind`: research / curation / mode / handoff |
 | `candidate` | `kind` `status` `origin` `source` `turns` | 见下 |
 | `discussion` | `title` `status` | open / closed |
 | `discussion_summary` | `discussion` `covers_through` | 摘要覆盖到第几轮 |
 | `handoff` | `shift` `reason` `started` `ended` | `reason`: normal / quota_5h / quota_7d / cutoff / crash / manual |
-| `review` | `trigger` `event` `target` `status` `depth` | `event`: hypothesis_refuted / assumption_invalidated；`status`: open / resolved / dismissed；`depth` 为传递距离（1 = 直接相关） |
+| `review` | `trigger` `event` `target` `status` `depth` | `event`: hypothesis_refuted / assumption_invalidated / insight_withdrawn；`status`: open / resolved / dismissed；`depth` 为传递距离（1 = 直接相关） |
 
 几条容易做错、因此写死的规则：
 
 1. **`origin` 不进对象文件**，统一存在 `provenance.json`（`{ "H001": {"origin": "human", "source": "C003", "discussion": "DS001", "turns": [4, 6]} }`）。理由：origin 要在评判时对 agent **不可见**（M1），而 agent 有 Read 权限——只在 briefing 里删掉是假屏蔽，它会自己去读 `hypotheses/H001.md`。放进单独文件后，评判类任务可以用 `--disallowedTools "Read(provenance.json)"` 从路径上挡住（Phase 1 实测：`Read(path)` 拒绝规则同时让 Grep 搜不到该文件）。对象文件 frontmatter 里出现 `origin` 视为**校验错误**（泄漏）。
 2. **Assumption / Hypothesis 按当前角色区分**：被**依赖**（用来剪枝或支撑其他推理）而**未安排验证** → Assumption；**已安排验证** → Hypothesis。这条落在结构上而不只是提示词里：Assumption 必须填 `relied_on_by`（它支撑着谁），Hypothesis 必须填 `validation`（验证怎么安排的）。说不出“怎么验证”就还不是 Hypothesis。
 3. **DeadEnd 不内嵌实验结果**，只用 `closed_by` 引用关闭它的 Evidence / Experiment；`closed_by` 为空是校验错误。正文只写“关了什么、为什么、什么条件下重开”。
-4. **候选对象**（M1.10）：`kind` ∈ assumption / hypothesis / question / uncertainty；`status` ∈ pending / accepted / rejected / superseded；`origin` ∈ human / ai / unclear（**归属冲突写 `unclear` 加 `origin_note`，不自动裁定**，人在确认时必须选定）；`source` 为 `DS###`，`turns` 为依据的轮次。按 kind 附带目标对象所需字段（assumption → `relied_on_by`；hypothesis → `falsifier` `validation`；question → `maturity`；uncertainty → `importance`）。确认后由后端建正式对象、写 provenance、回填 `promoted_to`；被拒的保留并写明理由，供后续去重。
+4. **候选对象**（M1.10）：`kind` ∈ assumption / hypothesis / question / uncertainty / insight；`status` ∈ pending / accepted / rejected / superseded；`origin` ∈ human / ai / unclear（**归属冲突写 `unclear` 加 `origin_note`，不自动裁定**，人在确认时必须选定）；`source` 为 `DS###`，`turns` 为依据的轮次。按 kind 附带目标对象所需字段（assumption → `relied_on_by`；hypothesis → `falsifier` `validation`；question → `maturity`；uncertainty → `importance`）。确认后由后端建正式对象、写 provenance、回填 `promoted_to`；被拒的保留并写明理由，供后续去重。
 5. **讨论记录**以 `<!-- turn N human|ai ISO时间 -->` 注释行分隔轮次（而非 markdown 标题），正文里出现任何标题都不会切错。
 
 ### 5.2 Briefing / Handoff 契约
@@ -621,6 +632,7 @@ $AR_ROOT/
 | 1 | 本次任务 | 目标、预期产出、当前模式及其禁止事项 | 不截断 |
 | 2 | 上一班交接 | 最新 handoff 的正文 | 不截断 |
 | 3 | 研究问题 | project + main question 正文与成熟度 | 不截断 |
+| 3b | 当前理解 | active 的 Insight，按牢固程度排序，标明“是理解，不是证据” | 超预算列摘要行 |
 | 4 | 前提 | 全部 assumption，unexamined 在前 | 超预算列摘要行 |
 | 5 | 假设 | 全部 hypothesis（状态、置信度、证伪条件、证据 id） | 超预算列摘要行 |
 | 6 | 证据 | 与上面假设相关的 evidence | 超预算只给最新 |
@@ -636,9 +648,9 @@ $AR_ROOT/
 
 | profile | 任务 | origin | 章节 |
 |---|---|---|---|
-| `discuss` | 讨论回合 | 保留 | 1–11 |
-| `distill` | 讨论蒸馏（策展） | 保留 | 1–11，讨论上下文给未蒸馏部分的全文 |
-| `judge` | 评估证据 / 状态迁移 / 对抗性接地 | **剥离** | 1–8 与 11；不含候选区与讨论（二者都暴露归属） |
+| `discuss` | 讨论回合 | 保留 | 1–11（含 3b） |
+| `distill` | 讨论蒸馏（策展） | 保留 | 1–11（含 3b），讨论上下文给未蒸馏部分的全文 |
+| `judge` | 评估证据 / 状态迁移 / 对抗性接地 | **剥离** | 1–8 与 11；不含候选区与讨论（二者都暴露归属），**不含 3b 当前理解**（避免锚定） |
 | `handoff` | 班次交接记录 | 保留 | 专用章节：班次概况、已完成、被截断（含 checkpoint）、队列、本班 State 变更、待人处理 |
 
 `judge` profile 的剥离规则：

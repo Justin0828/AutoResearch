@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import candidates, discussion, frontmatter, metrics, reviews, schema
+from . import candidates, discussion, frontmatter, insights, metrics, reviews, schema
 
 STATIC = Path(__file__).resolve().parent / "static"
 MIME = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
@@ -47,7 +47,8 @@ def make_handler(app):
                     for m, b in st.list(t)]
         errs, warns = schema.validate_repo(st.state)
         return {"project": dict(pmeta, body=pbody.strip()),
-                "questions": objs("question"), "assumptions": objs("assumption"),
+                "questions": objs("question"), "insights": objs("insight"),
+                "assumptions": objs("assumption"),
                 "hypotheses": objs("hypothesis"), "uncertainties": objs("uncertainty"),
                 "dead_ends": objs("dead-end"), "evidence": objs("evidence"),
                 "bias": metrics.bias_by_origin(st),
@@ -132,6 +133,30 @@ def make_handler(app):
         candidates.update(st, cid, dict(req.json().get("changes") or {}))
         app.bus.publish("candidates", {"updated": cid})
         return {"ok": True}
+
+    # ------------------------------------------------------------ 理解（Insight）
+
+    @route("POST", "/api/insights")
+    def new_insight(req, q):
+        b = req.json()
+        iid = insights.create(st, b.get("statement", ""), b.get("firmness", ""), b.get("basis"),
+                              b.get("basis_note", ""), b.get("informs"), b.get("change_mind", ""))
+        app.bus.publish("state", {"insight": iid})
+        return {"id": iid}
+
+    @route("POST", "/api/insights/(?P<iid>IN\\d+)/revise")
+    def revise_insight(req, q, iid):
+        b = req.json()
+        new = insights.revise(st, iid, b.get("statement", ""), b.get("firmness", ""),
+                              b.get("note", ""), change_mind=b.get("change_mind"))
+        app.bus.publish("state", {"insight": new})
+        return {"id": new}
+
+    @route("POST", "/api/insights/(?P<iid>IN\\d+)/abandon")
+    def abandon_insight(req, q, iid):
+        new = insights.abandon(st, iid, req.json().get("reason", ""))
+        app.bus.publish("state", {"insight": iid, "reviews": new})
+        return {"reviews": new}
 
     # ------------------------------------------------------------ 推翻与待重新审视（M5.6b）
 

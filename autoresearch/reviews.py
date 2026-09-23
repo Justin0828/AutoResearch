@@ -8,14 +8,12 @@
 from . import schema
 from .store import today
 
-EVENT = {"hypothesis": "hypothesis_refuted", "assumption": "assumption_invalidated"}
-
-
 def _index(store):
     hyps = {m["id"]: m for m, _ in store.list("hypothesis")}
     asms = {m["id"]: m for m, _ in store.list("assumption")}
     pend = [m for m, _ in store.list("candidate") if m.get("status") == "pending"]
-    return hyps, asms, pend
+    ins = {m["id"]: m for m, _ in store.list("insight")}
+    return hyps, asms, pend, ins
 
 
 def _as_list(v):
@@ -23,16 +21,24 @@ def _as_list(v):
 
 
 def overturned(store):
-    hyps, asms, _ = _index(store)
+    hyps, asms, _, ins = _index(store)
     out = [(h, "hypothesis_refuted") for h, m in hyps.items() if m.get("status") == "refuted"]
     out += [(a, "assumption_invalidated") for a, m in asms.items() if m.get("status") == "invalidated"]
+    out += [(i, "insight_withdrawn") for i, m in ins.items()
+            if m.get("status") in ("superseded", "abandoned")]
     return out
 
 
 def affected(store, trigger, event, idx=None):
     """返回 {target: (depth, path, reason)}，同一目标只保留最短路径。"""
-    hyps, asms, pend = idx or _index(store)
+    hyps, asms, pend, ins = idx or _index(store)
     found = {}
+
+    def insights_on(x, depth, path):
+        """根基里有 x 的理解：x 被推翻，这种理解的根基就动了。"""
+        for iid, m in ins.items():
+            if m.get("status") == "active" and x in _as_list(m.get("basis")):
+                add(iid, depth, path + [iid], f"它的根基 {x} 已被推翻")
 
     def add(target, depth, path, reason):
         if target == trigger:
@@ -51,8 +57,15 @@ def affected(store, trigger, event, idx=None):
         if a.get("promoted_to"):
             add(a["promoted_to"], depth, path + [a["promoted_to"]], f"它由前提 {aid} 提升而来")
 
-    if event == "assumption_invalidated":
+    if event == "insight_withdrawn":
+        # 理解被取代或放弃 → 由它派生的前提失去来由（“凭感觉排除了 X”要重新看）
+        for aid, a in asms.items():
+            if a.get("derived_from") == trigger and a.get("status") != "invalidated":
+                add(aid, 1, [trigger, aid], f"它派生自理解 {trigger}，而这条理解已被"
+                    + ("取代" if (ins.get(trigger) or {}).get("status") == "superseded" else "放弃"))
+    elif event == "assumption_invalidated":
         downstream(trigger, 1, [trigger], {trigger})
+        insights_on(trigger, 1, [trigger])
     else:
         h = hyps.get(trigger) or {}
         for aid, a in asms.items():
@@ -62,6 +75,8 @@ def affected(store, trigger, event, idx=None):
         if src:
             add(src, 1, [trigger, src], f"{trigger} 由它提升而来，{trigger} 被反驳即此前提被推翻")
             downstream(src, 2, [trigger, src], {src})
+            insights_on(src, 2, [trigger, src])
+        insights_on(trigger, 1, [trigger])
         if h.get("group"):
             for hid, other in hyps.items():
                 if hid != trigger and other.get("group") == h["group"]:
