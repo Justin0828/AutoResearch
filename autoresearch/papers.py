@@ -208,8 +208,8 @@ def record_evidence(store, lib, target, stance, source, note, quote="", locator=
                     strength="moderate", batch=(), actor="agent", task=None):
     k = schema.KINDS["evidence"]
     tkind = schema.split_id(target)[0]
-    if tkind not in ("H", "A") or not store.exists(target):
-        raise ValueError(f"target '{target}' 不存在或不是假设 H### / 前提 A###。")
+    if tkind not in ("H", "A", "I") or not store.exists(target):
+        raise ValueError(f"target '{target}' 不存在或不是假设 H### / 前提 A### / 想法 I###。")
     if stance not in k.enums["stance"]:
         raise ValueError(f"stance 必须是 {sorted(k.enums['stance'])} 之一，收到 '{stance}'。")
     if strength not in k.enums["strength"]:
@@ -346,10 +346,11 @@ def invalidate_by_evidence(store, aid, evidence_ids, rationale, actor="agent", t
 
 # ---------------------------------------------------------------- 接地与请求
 
-def annotate_grounding(store, target, verdict, refs, note, actor="agent", task=None):
+def annotate_grounding(store, target, verdict, refs, note, actor="agent", task=None,
+                       hidden_premises=None, silent_challenges=None):
     k = schema.KINDS["grounding"]
-    if schema.split_id(target)[0] not in ("H", "A", "C") or not store.exists(target):
-        raise ValueError(f"target '{target}' 不存在或不是 H### / A### / C###。")
+    if schema.split_id(target)[0] not in ("H", "A", "C", "I") or not store.exists(target):
+        raise ValueError(f"target '{target}' 不存在或不是 H### / A### / C### / I###。")
     if verdict not in k.enums["verdict"]:
         raise ValueError(f"verdict 必须是 {sorted(k.enums['verdict'])} 之一。")
     refs = _as_list(refs)
@@ -362,10 +363,17 @@ def annotate_grounding(store, target, verdict, refs, note, actor="agent", task=N
         raise ValueError("note 不能为空。")
     with store.tx("grounding: 对抗性接地", actor=actor, task=task) as tx:
         gid = tx.new_id("grounding")
+        counts = {k2: int(v) for k2, v in (("hidden_premises", hidden_premises),
+                                            ("silent_challenges", silent_challenges))
+                  if v not in (None, "")}
         tx.write_obj(gid, {"id": gid, "type": "grounding", "target": target, "verdict": verdict,
-                           "refs": refs or None, "task": task, "created": today()},
+                           "refs": refs or None, "task": task, **counts, "created": today()},
                      note.strip() + "\n")
         tx.note = f"{gid} → {target}（{verdict}）"
+    if target.startswith("I"):
+        # 簿记归工具：回填 Idea 的 grounding，并按 §5.14 机械置状态（只有 contradicted 筛掉）
+        from . import incubation
+        incubation.on_grounding(store, target, gid, verdict, actor=actor, task=task)
     return gid
 
 

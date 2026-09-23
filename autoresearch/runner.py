@@ -75,13 +75,19 @@ class Runner:
             "--permission-mode", "dontAsk",
             "--setting-sources", "",
             "--no-session-persistence",
-            "--add-dir", str(self.store.state),
         ]
-        if spec["profile"] == "judge":
-            cmd += ["--add-dir", str(self.cfg.library)]     # 论文全文（§5.5）
+        if spec.get("sealed"):
+            # 推演链：不挂任何目录，--restricted 把文件读取关进只有 briefing 的任务目录（§5.9）
+            cmd += ["--restricted"]
+        else:
+            cmd += ["--add-dir", str(self.store.state)]
+            if spec["profile"] == "judge":
+                cmd += ["--add-dir", str(self.cfg.library)]     # 论文全文（§5.5）
         cmd += ["--append-system-prompt", spec["protocol"]]
         if self.cfg.model:
             cmd += ["--model", self.cfg.model]
+        if spec.get("sealed"):
+            check_sealed(cmd)
         return cmd, sid
 
     # ------------------------------------------------------------ 执行
@@ -258,6 +264,26 @@ class Runner:
             return "frontmatter 被删掉了"
         changed = [f for f in schema.PAPER_TOOL_FIELDS if (om or {}).get(f) != nm.get(f)]
         return f"改了由工具维护的字段 {changed}" if changed else None
+
+
+class SealError(RuntimeError):
+    pass
+
+
+def check_sealed(cmd):
+    """推演链开跑前自检（§5.9）：配置回归比模型越界更可能发生，检索没关死就不启动。"""
+    tools = cmd[cmd.index("--tools") + 1].split(",") if "--tools" in cmd else None
+    if "--add-dir" in cmd:
+        raise SealError("推演任务不能挂任何目录（--add-dir）")
+    if "--restricted" not in cmd:
+        raise SealError("推演任务必须带 --restricted")
+    if tools is None or set(tools) - {"Read", "Grep", "Glob"}:
+        raise SealError(f"推演任务只能用 Read/Grep/Glob，实际 --tools={tools}")
+    with open(cmd[cmd.index("--mcp-config") + 1], encoding="utf-8") as f:
+        mcp = json.load(f)
+    ts = set(mcp["mcpServers"]["state"]["env"]["AR_TOOLSET"].split(","))
+    if ts - {"check_dead_ends", "record_idea", "checkpoint"}:
+        raise SealError(f"推演任务的 MCP 注册了联网 / 越权工具：{sorted(ts)}")
 
 
 def _blocks(ev):

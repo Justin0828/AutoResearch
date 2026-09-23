@@ -11,7 +11,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import candidates, discussion, frontmatter, insights, metrics, observe, papers, reviews, schema
+from . import (candidates, discussion, frontmatter, incubation, insights, metrics, observe, papers,
+               reviews, schema)
 from .library import Library
 
 STATIC = Path(__file__).resolve().parent / "static"
@@ -49,7 +50,9 @@ def make_handler(app):
         errs, warns = schema.validate_repo(st.state)
         return {"project": dict(pmeta, body=pbody.strip()),
                 "questions": objs("question"), "insights": objs("insight"),
-                "assumptions": objs("assumption"),
+                # 推演中新引入、所属想法未被接受的前提不算前提集（§5.10），在 Ideas 里看
+                "assumptions": [dict(m, body=b.strip(), provenance=prov.get(m.get("id")))
+                                for m, b in incubation.real_assumptions(st)],
                 "hypotheses": objs("hypothesis"), "uncertainties": objs("uncertainty"),
                 "dead_ends": objs("dead-end"), "evidence": objs("evidence"),
                 "papers": objs("paper"), "groundings": objs("grounding"),
@@ -198,6 +201,92 @@ def make_handler(app):
         did = d.recall(req.json().get("reason", ""))
         app.bus.publish("state", {"mode": "discussion"})
         return {"decision": did}
+
+    @route("POST", "/api/mode/incubate")
+    def incubate(req, q):
+        did, fid = d.enter_incubation(req.json().get("note", ""))
+        app.bus.publish("state", {"mode": "incubation"})
+        return {"decision": did, "foundation": fid}
+
+    # ------------------------------------------------------------ 自演进（§5.10–5.14）
+
+    @route("GET", "/api/ideas")
+    def ideas(req, q):
+        items = [incubation.as_dict(st, m, b) for m, b in st.list("idea")]
+        order = {m["id"]: i for i, m in enumerate(incubation.ranked(st, [m for m, _ in st.list("idea")]))}
+        items.sort(key=lambda x: order[x["id"]])
+        return {"ideas": items}
+
+    @route("POST", "/api/ideas/(?P<iid>I\\d+)/accept")
+    def accept_idea(req, q, iid):
+        b = req.json()
+        made = incubation.accept(st, iid, hypothesis=b.get("hypothesis"), insight=b.get("insight"),
+                                 note=b.get("note", ""))
+        app.bus.publish("state", {"idea": iid})
+        return {"ok": True, "made": made}
+
+    @route("POST", "/api/ideas/(?P<iid>I\\d+)/reject")
+    def reject_idea(req, q, iid):
+        incubation.reject(st, iid, req.json().get("reason", ""))
+        app.bus.publish("state", {"idea": iid})
+        return {"ok": True}
+
+    @route("GET", "/api/incubation")
+    def incubation_view(req, q):
+        """每个 session、每一轮：基本盘（以及因哪条外部证据而变）、推演链（角度、白卷与否）、想法。"""
+        fs = [m for m, _ in st.list("foundation")]
+        chains = [dict(m, body=b) for m, b in st.list("chain")]
+        ideas = {m["id"]: incubation.as_dict(st, m, b) for m, b in st.list("idea")}
+        live = {t["id"]: t for t in d.ledger.all() if t["kind"] in ("incubate", "ground_idea")}
+        summaries = {m.get("incubation_summary"): m["id"] for m, _ in st.list("decision")
+                     if m.get("incubation_summary")}
+        out = []
+        for did in dict.fromkeys(m.get("session") for m in fs):
+            dm, db = st.read_obj(did)
+            rounds = {}
+            for m in fs:
+                if m.get("session") == did:
+                    rounds.setdefault(int(m.get("round") or 1), {})["foundation"] = m
+            for t in live.values():
+                if t.get("incubation") == did and t["kind"] == "incubate":
+                    rr = rounds.setdefault(int(t.get("round") or 1), {})
+                    c = next((c for c in chains if c["id"] == t["id"]), None)
+                    rr.setdefault("chains", []).append({
+                        "id": t["id"], "status": t["status"], "angle": (c or {}).get("angle") or t.get("angle"),
+                        "record": (c or {}).get("status"), "ideas": (c or {}).get("ideas") or [],
+                        "result": t.get("result_brief")})
+            for i in ideas.values():
+                if i["session"] == did:
+                    rounds.setdefault(int(i.get("round") or 1), {}).setdefault("ideas", []).append(i)
+            out.append({"session": did, "created": (dm or {}).get("created"),
+                        "note": (db or "").split("## 为什么", 1)[-1].strip(),
+                        "summary": summaries.get(did),
+                        "rounds": [dict(v, round=k) for k, v in sorted(rounds.items())]})
+        out.reverse()
+        return {"sessions": out, "mode": d.mode_view()}
+
+    @route("GET", "/api/text/(?P<id>(?:F|T)\\d+)")
+    def text_obj(req, q, id):
+        meta, body = st.read_obj(id)
+        if meta is None:
+            raise ApiError(404, f"{id} 不存在")
+        return {"meta": meta, "body": body}
+
+    @route("POST", "/api/questions/(?P<qid>Q\\d+)/maturity")
+    def set_maturity(req, q, qid):
+        """人把问题推到 formalized（或退回）。成熟度只由人改——自演进的入场闸门看它（§5.13）。"""
+        mat = req.json().get("maturity")
+        if mat not in schema.KINDS["question"].enums["maturity"]:
+            raise ValueError("maturity 必须是 vague / scoped / formalized")
+        meta, body = st.read_obj(qid)
+        if meta is None:
+            raise ApiError(404, f"{qid} 不存在")
+        old = meta.get("maturity")
+        meta["maturity"] = mat
+        with st.tx(f"question {qid}: 成熟度 {old} → {mat}", actor="human") as tx:
+            tx.write_obj(qid, meta, body)
+        app.bus.publish("state", {"question": qid})
+        return {"ok": True, "from": old, "to": mat}
 
     @route("POST", "/api/mode/continue")
     def cont(req, q):

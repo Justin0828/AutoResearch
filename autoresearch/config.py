@@ -39,6 +39,9 @@ class Config:
         self.reads_per_target = int(os.environ.get("AR_READS_PER_TARGET", "6"))
         self.prep_idle_minutes = int(os.environ.get("AR_PREP_IDLE_MIN", "90"))
         self.prep_max_tasks = int(os.environ.get("AR_PREP_MAX_TASKS", "6"))
+        # 自演进（§5.13）：每轮几条推演链、最多几轮
+        self.incubate_chains = int(os.environ.get("AR_INCUBATE_CHAINS", "2"))
+        self.incubate_max_rounds = int(os.environ.get("AR_INCUBATE_MAX_ROUNDS", "8"))
 
     def ensure(self):
         for d in (self.root, self.run, self.tasks, self.library):

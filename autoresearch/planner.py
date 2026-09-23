@@ -6,7 +6,7 @@
 """
 import json
 
-from . import modes
+from . import incubation, modes
 
 DONE_H = {"supported", "refuted", "abandoned"}
 DONE_A = {"invalidated", "promoted", "retired"}
@@ -128,7 +128,8 @@ def next_step(store, ledger, cfg, targets, tasks, tag):
 
 def pick_prep_target(store):
     """夜间预习的机械选题（人没写“今晚查什么”时）。返回 (target, why) 或 (None, None)。"""
-    asm = [m for m, _ in store.list("assumption") if m.get("status") == "unexamined"]
+    # 推演中新引入、所属想法未被接受的前提不参与选题（§5.10）
+    asm = [m for m, _ in incubation.real_assumptions(store) if m.get("status") == "unexamined"]
     if asm:
         a = max(asm, key=lambda m: (len(_as_list(m.get("relied_on_by"))), m["id"]))
         return a["id"], (f"{a['id']} 是未检验的前提，支撑着 {', '.join(_as_list(a.get('relied_on_by')))}"

@@ -20,7 +20,8 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     __package__ = "autoresearch"
 
-from autoresearch import candidates, config, discussion, library, modes, papers, reviews, schema  # noqa: E402
+from autoresearch import (candidates, config, discussion, incubation, library, modes, papers,  # noqa: E402
+                          reviews, schema)
 from autoresearch.store import Store, now, today  # noqa: E402
 
 CFG = config.load()
@@ -52,12 +53,31 @@ def tokens(text):
     return out
 
 
+def _idea_lines():
+    """被否决的想法（与 dead-end 同等对待，§5.14）与本 session 已记下的想法（只为不重复）。"""
+    out = []
+    rej = incubation.rejected_ideas(STORE)
+    if rej:
+        out.append(f"\n\n## 被研究者否决的想法（{len(rej)} 条，与已关闭方向同等对待）")
+        for m, b in rej:
+            out.append(f"- [{m['id']}] {incubation._first(incubation._section(b, '陈述'), 300)}\n"
+                       f"  否决理由：{incubation._first(incubation._section(b, '为什么不要'), 400)}")
+    did = incubation.session(STORE)
+    mine = [(m, b) for m, b in incubation.session_ideas(STORE, did) if m.get("status") != "rejected"] if did else []
+    if mine:
+        out.append(f"\n\n## 本次自演进已经记下的想法（{len(mine)} 条；不是事实，列出只为不换说法重提）")
+        for m, b in mine:
+            out.append(f"- [{m['id']}] {incubation._first(incubation._section(b, '陈述'), 200)}")
+    return "\n".join(out)
+
+
 def t_check_dead_ends(description=""):
     """列出已关闭的方向。工具只负责“保证可见”，相关性判断交给 agent（§0.4）。"""
     items = STORE.list("dead-end")
+    extra = _idea_lines()
     log({"tool": "check_dead_ends", "ok": True, "query": description[:120], "n": len(items)})
     if not items:
-        return "本项目还没有记录任何 dead-end。"
+        return "本项目还没有记录任何 dead-end。" + extra
     q = tokens(description)
     ranked = []
     for meta, body in items:
@@ -71,7 +91,7 @@ def t_check_dead_ends(description=""):
         shown = text[:800] if full else (text.splitlines()[0] if text else "")
         out.append(f"### [{meta['id']}] status={meta.get('status')} "
                    f"closed_by={meta.get('closed_by')} 词汇相关度 {score:.2f}\n{shown}")
-    return "\n\n".join(out)
+    return "\n\n".join(out) + extra
 
 
 def t_search_papers(query="", max_results=10):
@@ -164,11 +184,44 @@ def t_request_paper(paper_id="", why="", blocking=True):
     return f"已登记全文请求 {rid}（{paper_id}）。本任务不挂起，继续按摘要级完成。"
 
 
-def t_annotate_grounding(target_id="", verdict="", refs=None, note=""):
-    gid = papers.annotate_grounding(STORE, target_id, verdict, refs or [], note, task=TASK)
+def t_annotate_grounding(target_id="", verdict="", refs=None, note="", hidden_premises=None,
+                        silent_challenges=None):
+    gid = papers.annotate_grounding(STORE, target_id, verdict, refs or [], note, task=TASK,
+                                    hidden_premises=hidden_premises,
+                                    silent_challenges=silent_challenges)
     log({"tool": "annotate_grounding", "ok": True, "id": gid, "target": target_id,
          "verdict": verdict})
     return f"已记录接地结论 {gid}（{target_id}：{verdict}）。被核查对象保持原样，由研究者判断。"
+
+
+def _task():
+    p = TASK_DIR / "task.json" if TASK_DIR else None
+    return json.loads(p.read_text(encoding="utf-8")) if p and p.exists() else {}
+
+
+def _called(tool):
+    if not TOOL_LOG or not TOOL_LOG.exists():
+        return False
+    for line in TOOL_LOG.read_text(encoding="utf-8").splitlines():
+        try:
+            e = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if e.get("tool") == tool and e.get("ok"):
+            return True
+    return False
+
+
+def t_record_idea(statement="", falsifier="", new_premises=None, reasoning="", challenges=None,
+                  challenge_notes="", builds_on=None, relates_to=None, relation_note=""):
+    iid, aids = incubation.record_idea(
+        STORE, task=TASK, chain=_task(), statement=statement, falsifier=falsifier,
+        new_premises=new_premises, reasoning=reasoning, challenges=challenges,
+        challenge_notes=challenge_notes, builds_on=builds_on, relates_to=relates_to,
+        relation_note=relation_note, called_dead_ends=_called("check_dead_ends"))
+    log({"tool": "record_idea", "ok": True, "id": iid, "premises": aids})
+    return (f"已登记 {iid}（新前提 {len(aids)} 条{'：' + ', '.join(aids) if aids else ''}）。"
+            "它会由另一个开着检索的任务做外部核查，核查只标注、不改写它。")
 
 
 def t_log_decision(what="", why="", kind="research", refs=None):
@@ -262,7 +315,7 @@ TOOLS = [
     ("record_evidence", t_record_evidence,
      "为某条假设或前提记录一条证据。出处必须是已登记的论文（或实验）；"
      "quote 必须是 locator 所指段落里的逐字原文，工具会核对，对不上就拒绝。",
-     {"target_id": (S, "目标：假设 H### 或前提 A###", True),
+     {"target_id": (S, "目标：假设 H###、前提 A###，或（接地时）想法 I###", True),
       "stance": (S, "support / contradict / neutral", True),
       "source": (S, "出处：P### 或 X###（不能是 dead-end）", True),
       "locator": (A, "段落锚点列表，取自全文每段开头的方括号，如 [\"s4.1-p2\"]、[\"tab2\"]、[\"abstract-p1\"]", True),
@@ -295,10 +348,24 @@ TOOLS = [
       "blocking": ("boolean", "true = 本任务挂起等全文；false = 不等，按摘要级做完", False)}),
     ("annotate_grounding", t_annotate_grounding,
      "对抗性接地的结论：这个想法有人做过吗、有没有直接反驳。只标注，不改被核查的对象。",
-     {"target_id": (S, "被核查对象：H### / A### / C###", True),
+     {"target_id": (S, "被核查对象：H### / A### / C### / I###", True),
       "verdict": (S, "novel（没找到先例）/ prior_work（已有人做过）/ contradicted（被直接反驳）/ mixed", True),
       "refs": (A, "支撑结论的 P### / E###（novel 以外必填）", False),
-      "note": (S, "核查了什么、找到了什么", True)}),
+      "note": (S, "核查了什么、找到了什么", True),
+      "hidden_premises": (I, "（对 Idea）它依赖但没有登记的前提有几条", False),
+      "silent_challenges": (I, "（对 Idea）它与基本盘矛盾但没有登记为挑战的有几处", False)}),
+    ("record_idea", t_record_idea,
+     "登记一条推演出的想法（Idea）。工具会拒绝：说不出何时是错的、还没调用过 check_dead_ends、"
+     "没有显式给出新前提清单、挑战的对象不在本轮基本盘里。不收任何自评分数。",
+     {"statement": (S, "直觉层面的断言（有内容，不要工程细节）", True),
+      "falsifier": (S, "什么情况下它是错的：什么观察 / 结果会说明它不成立", True),
+      "new_premises": (A, "推演中引入的、基本盘里没有的前提，逐条一句话；没有就传 []", True),
+      "reasoning": (S, "从基本盘哪几条出发、怎么走到这里（几句话）", True),
+      "challenges": (A, "它挑战了基本盘里的哪些对象（A/H/D/U/E/IN 的 id），没有就不传", False),
+      "challenge_notes": (S, "有挑战时必填：挑战的是什么、为什么", False),
+      "builds_on": (A, "它建立在哪些已有对象上（含理解 IN###）", False),
+      "relates_to": (A, "与哪些已有假设 / 前提 / 问题 / 不确定性 / 想法相关", False),
+      "relation_note": (S, "与它们是什么关系：细化、对立、新的解释……", False)}),
     ("log_decision", t_log_decision,
      "记录一条研究决策及其理由。",
      {"what": (S, "做了什么决定", True), "why": (S, "为什么", True),
@@ -364,7 +431,10 @@ def schema_of(params):
 
 
 def active_tools():
-    return [t for t in TOOLS if not TOOLSET or t[0] in TOOLSET]
+    """fail-closed（§5.9）：没说给什么就只给 checkpoint；"*" 显式表示全部（测试与调试用）。"""
+    if "*" in TOOLSET:
+        return list(TOOLS)
+    return [t for t in TOOLS if t[0] in (TOOLSET or {"checkpoint"})]
 
 
 def handle(msg):

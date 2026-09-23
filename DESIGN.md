@@ -954,7 +954,7 @@ M11 的全部价值压在“推演时物理上做不到检索”上。Phase 2.5 
 | kind | profile | 可用工具 | MCP | 产出 |
 |---|---|---|---|---|
 | `incubate` | incubate | Read Grep Glob（`--restricted`，cwd 只有 briefing） | check_dead_ends, record_idea, checkpoint | 0–2 条 Idea + 推演记录（交白卷合法） |
-| `grounding`（对象为 I###） | judge | Read Grep Glob WebSearch（`--add-dir` State + library） | search_papers, register_paper, open_paper, record_evidence, annotate_grounding, check_dead_ends, checkpoint | 一条 GR（只标注），可附证据 |
+| `ground_idea`（对象为 I###） | judge | Read Grep Glob WebSearch（`--add-dir` State + library） | search_papers, register_paper, open_paper, record_evidence, annotate_grounding, check_dead_ends, checkpoint | 一条 GR（只标注），可附证据 |
 
 **推演任务**（一条短链，timeout 30 分钟；每轮 2 条，`AR_INCUBATE_CHAINS`）：
 
@@ -970,7 +970,7 @@ M11 的全部价值压在“推演时物理上做不到检索”上。Phase 2.5 
   挑战了某条理解就登记在 `challenges`，建立在它上面就登记在 `builds_on`，这样人看得出一条 Idea 与现有理解的关系。
 - **看不到 origin**：推演要敢于质疑任何一条前提；标着“研究者提出”会压低这种倾向。origin 对推演也没有信息量。
 
-**Idea 的接地任务**复用 Phase 2 的 `grounding`（judge profile；Idea 恒为 ai 这一点无法屏蔽，但所有 Idea 同源，不构成组间偏差）：
+**Idea 的接地任务** `ground_idea` 复用 Phase 2 的 GR 对象与 `annotate_grounding`（judge profile，另可 `record_evidence`；Idea 恒为 ai 这一点无法屏蔽，但所有 Idea 同源，不构成组间偏差）：
 
 - briefing 另附被核查的 Idea 全文与它的基本盘 F###。任务：**找直接反驳**（有没有原文证据说明这个想法是错的——触发了它自己的证伪条件）；
   **找相近的工作**（作为线索附上，不是扣分项：思想被人做过不降低它的价值，实现一个思想的路径有很多）；查它是否与基本盘矛盾而没登记为挑战、是否依赖了没登记的前提。

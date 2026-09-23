@@ -146,7 +146,7 @@ class McpServerTest(unittest.TestCase):
         self.tdir = self.cfg.tasks / "T00001"
         self.tdir.mkdir(parents=True)
 
-    def rpc(self, calls, toolset=""):
+    def rpc(self, calls, toolset="*"):
         env = dict(os.environ, AR_TASK="T00001", AR_TASK_DIR=str(self.tdir),
                    AR_TOOLSET=toolset, PYTHONPATH=str(config.CODE_ROOT))
         msgs = [{"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {}},

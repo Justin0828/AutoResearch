@@ -32,21 +32,22 @@ KINDS = {k.type: k for k in [
           "fragile": {"true", "false"}},
          nonempty=("relied_on_by",),
          refs={"relied_on_by": ("Q", "A", "H", "I", "U", "IN"), "promoted_to": ("H",),
-               "invalidated_by": ("E", "DEC"), "derived_from": ("IN",), "evidence": ("E",)}),
+               "invalidated_by": ("E", "DEC"), "derived_from": ("IN",), "evidence": ("E",),
+               "idea": ("I",)}),
     Kind("hypothesis", "hypotheses", "H",
          ("status", "confidence", "falsifier", "validation", "evidence"),
          {"status": {"proposed", "investigating", "supported", "refuted",
                      "inconclusive", "abandoned"},
           "confidence": {"low", "medium", "high"}},
          nonempty=("falsifier", "validation"),
-         refs={"evidence": ("E",), "promoted_from": ("A",)}),
+         refs={"evidence": ("E",), "promoted_from": ("A",), "idea": ("I",)}),
     # 证据追到段落（§5.5）：target 可以是假设或前提；locator + quote 由工具对照全文校验
     Kind("evidence", "evidence", "E", ("target", "stance", "strength", "source", "basis"),
          {"stance": {"support", "contradict", "neutral"},
           "strength": {"weak", "moderate", "strong"},
           "basis": {"abstract", "fulltext"}},
          nonempty=("source",),
-         refs={"target": ("H", "A"), "source": ("P", "X")}, tool_only=True),
+         refs={"target": ("H", "A", "I"), "source": ("P", "X")}, tool_only=True),
     # 论文只能经 register_paper 登记（登记即核实）；正文是阅读笔记，身份与阅读状态字段归工具（§5.5）
     Kind("paper", "papers", "P", ("title", "read", "fulltext"),
          {"read": {"none", "abstract", "fulltext"},
@@ -59,7 +60,7 @@ KINDS = {k.type: k for k in [
     Kind("insight", "insights", "IN", ("status", "firmness"),
          {"status": {"active", "superseded", "abandoned"},
           "firmness": {"hunch", "working", "settled"}},
-         refs={"basis": ("Q", "A", "H", "E", "P", "X", "U", "IN", "DS", "D"),
+         refs={"basis": ("Q", "A", "H", "E", "P", "X", "U", "IN", "DS", "D", "I"),
                "informs": ("Q", "A", "H", "U", "IN"), "superseded_by": ("IN",)}),
     Kind("uncertainty", "uncertainties", "U", ("status", "importance"),
          {"status": {"open", "reduced", "resolved"},
@@ -78,7 +79,7 @@ KINDS = {k.type: k for k in [
     # 对抗性接地（M4.6，§5.6）：只标注，被核查对象一字不改
     Kind("grounding", "groundings", "GR", ("target", "verdict"),
          {"verdict": {"novel", "prior_work", "contradicted", "mixed"}},
-         refs={"target": ("H", "A", "C"), "refs": ("P", "E")}, tool_only=True),
+         refs={"target": ("H", "A", "C", "I"), "refs": ("P", "E")}, tool_only=True),
     # Paper Request Queue（M4.5，§5.8）
     Kind("request", "requests", "RQ", ("paper", "status", "task"),
          {"status": {"open", "fulfilled", "dismissed"}},
@@ -89,6 +90,21 @@ KINDS = {k.type: k for k in [
           "status": {"open", "resolved", "dismissed"}},
          refs={"trigger": ("A", "H", "IN"), "target": ("Q", "A", "H", "U", "C", "I", "IN")},
          tool_only=True),
+    # 自演进（M11，§5.10–5.11）：Idea 只能经 record_idea 建；基本盘与推演记录由后端机械生成
+    Kind("idea", "ideas", "I", ("status", "falsifier", "premises", "foundation", "chain"),
+         {"status": {"grounding", "screened_out", "shortlisted", "accepted", "rejected"}},
+         nonempty=("falsifier", "foundation", "chain"),
+         refs={"premises": ("A",), "challenges": ("A", "H", "D", "U", "E", "IN"),
+               "builds_on": ("Q", "A", "H", "D", "U", "E", "IN"),
+               "relates_to": ("Q", "A", "H", "U", "IN", "I"), "foundation": ("F",),
+               "grounding": ("GR",), "promoted_to": ("H", "IN"), "session": ("DEC",),
+               "evidence": ("E",)}, tool_only=True),
+    Kind("foundation", "foundations", "F", ("session", "round", "question"),
+         refs={"session": ("DEC",), "question": ("Q",), "parent": ("F",), "delta": ("E", "GR")},
+         tool_only=True),
+    Kind("chain", "chains", "T", ("session", "round", "foundation", "status"),
+         {"status": {"done", "empty", "interrupted"}},
+         refs={"session": ("DEC",), "foundation": ("F",), "ideas": ("I",)}, tool_only=True),
 ]}
 
 BY_PREFIX = {k.prefix: k for k in KINDS.values()}
@@ -108,7 +124,8 @@ COMMON = ("id", "type", "created")
 
 # agent 不得直接 Write/Edit 的路径（DESIGN.md §5.1「受保护路径」）
 PROTECTED = ("project.md", "provenance.json", "evidence/", "decisions/",
-             "candidates/", "discussions/", "handoffs/", "reviews/", "groundings/", "requests/")
+             "candidates/", "discussions/", "handoffs/", "reviews/", "groundings/", "requests/",
+             "ideas/", "foundations/", "chains/")
 
 # 字段级受保护（§5.5）：agent 可以 Edit 论文笔记正文，但这些字段只归 register_paper 等工具
 PAPER_TOOL_FIELDS = ("id", "type", "title", "authors", "year", "venue", "arxiv", "doi", "url",
@@ -192,6 +209,8 @@ def check_object(meta, kind, ids, rel):
     if kind.type == "hypothesis":
         if meta.get("status") not in (None, "proposed") and not _as_list(meta.get("evidence")):
             errs.append(f"{rel}: status={meta['status']} 但没有任何 evidence")
+    if kind.type == "idea" and str(meta.get("falsifier") or "").strip() == "":
+        errs.append(f"{rel}: Idea 必须说得出何时是错的（falsifier）")
     if kind.type == "evidence":
         if str(meta.get("source", "")).startswith("P") and not _as_list(meta.get("locator")):
             errs.append(f"{rel}: 出处是论文的证据必须带 locator（段落锚点）")
