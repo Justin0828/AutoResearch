@@ -20,14 +20,23 @@ def _as_list(v):
     return v if isinstance(v, list) else [x.strip() for x in str(v).split(",") if x.strip()]
 
 
+def tool_lines(ledger, tid):
+    p = ledger.path(tid) / "tools.jsonl"
+    return len(p.read_text(encoding="utf-8").splitlines()) if p.exists() else 0
+
+
 def tool_calls(ledger, tid, name=None, since=None):
-    """任务的成功工具调用。since（ISO 时间）只取本次尝试的——被挂起、切断后重跑的任务，
-    tools.jsonl 里还留着上一次尝试的记录。"""
+    """任务的成功工具调用。since 只取本次尝试的——被挂起、切断后重跑的任务，tools.jsonl 里还留着
+    上一次尝试的记录。since 为整数时是开跑时 tools.jsonl 的行数（精确）；为 ISO 时间时按秒比较
+    （旧任务的兼容写法：两次尝试落在同一秒会分不开）。"""
     p = ledger.path(tid) / "tools.jsonl"
     if not p.exists():
         return []
     out = []
-    for line in p.read_text(encoding="utf-8").splitlines():
+    lines = p.read_text(encoding="utf-8").splitlines()
+    if isinstance(since, int):
+        lines, since = lines[since:], None
+    for line in lines:
         try:
             e = json.loads(line)
         except json.JSONDecodeError:

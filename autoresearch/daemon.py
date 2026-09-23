@@ -301,7 +301,8 @@ class Daemon:
     def _launch(self, task):
         task.update(status="running", started=now(), attempts=task.get("attempts", 0) + 1,
                     shift=self.st["shift"]["id"], error=None,
-                    q5_start=task.get("q5_start", self.quota.data.get("five_hour")))
+                    q5_start=task.get("q5_start", self.quota.data.get("five_hour")),
+                    tools_from=planner.tool_lines(self.ledger, task["id"]))
         self.ledger.save(task)
         runner = Runner(self.cfg, self.store, self.ledger, self.quota, self.bus)
         self.runners[task["id"]] = runner
@@ -347,6 +348,11 @@ class Daemon:
                 self.lanes[task["lane"]] = None
                 self.replies.pop(task.get("discussion"), None)
                 self.bus.publish("task", task)
+                # 回复刚写进讨论、任务还没收尾的那一瞬间，人又说了一句：当时入队被“已有回复任务”挡掉了，这里补上
+                if task["kind"] == "discuss_turn" and task["status"] == "done":
+                    _, turns = discussion.read(self.store, task["discussion"])
+                    if turns and turns[-1]["role"] == "human":
+                        self._enqueue_discuss(task["discussion"])
                 if out and out.exhausted:
                     self.quota.mark_exhausted(out.exhausted, out.resets)
                     self._pause(out.exhausted, resume_at=out.resets or self.quota.gate()[1])
@@ -420,7 +426,7 @@ class Daemon:
         task["result"] = (out.result or "")[:4000]
         task["result_brief"] = " ".join((out.result or "").split())[:160]
         blocking = [c for c in planner.tool_calls(self.ledger, task["id"], "request_paper",
-                                                  since=task.get("started"))
+                                                  since=task.get("tools_from", task.get("started")))
                     if c.get("blocking")]
         if blocking:
             rid = blocking[-1]["id"]
@@ -443,7 +449,7 @@ class Daemon:
 
     def _major_result(self, task):
         """§5.7：出现这些就停下建议收回，不自己继续闭环。"""
-        tid, since = task["id"], task.get("started")
+        tid, since = task["id"], task.get("tools_from", task.get("started"))
         for c in planner.tool_calls(self.ledger, tid, "transition_hypothesis", since):
             if c.get("to") in ("supported", "refuted"):
                 return f"{c['id']} was {c['to']} ({tid})"
