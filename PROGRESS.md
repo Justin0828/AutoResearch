@@ -59,6 +59,15 @@ fixture 都是长成正式版，不是重写（spike 目录保持原样作为记
 daemon 被 SIGKILL 后重启的崩溃恢复（遗留改动以 recovered 提交、写 crash 交接、任务重新入队）；
 蒸馏中途被切断后从 checkpoint 接上且不重复提交候选；人在编辑器里直接改 State 被以 `ar-human` 身份提交。
 
+### 验收之后、试用中追加的（均已提交，测试 49 个全过）
+
+- **推翻的传播**（M5.6b）：假设被反驳 / 前提被推翻时，所有结构化相关对象进“待重新审视”，只提醒不改写。
+- **Insight（理解）**（M1）：描述性的直觉与看法也算研究结论，不要求可证伪，但必须说出根基。
+- **UI 重做**：Claude 暖橙配色、英文界面、Chat / Inbox / Research / System 四页拆分、侧边栏可收起。
+- **试用中发现并修掉的**：新讨论时把问题写在标题里、以为已经发出去了（弹窗加了“第一句话”）；
+  SSH 实际端口是 7400、需要 `-N`（README 已改）。
+- **注意**：前端文件刷新即生效，后端改动必须重启 `./ar serve`；只刷新会出现新前端调旧接口的 404。
+
 ### 行为观察（真实 claude）
 
 - **有立场**：第一轮就反对“直接排除感知”，理由引用 H001/H002/U001，并给出能区分两种解释的对照实验。
@@ -81,8 +90,8 @@ daemon 被 SIGKILL 后重启的崩溃恢复（遗留改动以 recovered 提交�
 
 ## 待用户拍板
 
-1. **试用 Phase 1**：`./ar serve` + `ssh -L 8765:localhost:8765`。真实 State 会建在 `~/autoresearch`（上面的验收是在 scratch 目录跑的，
-   没有动你的真实 State）。
+1. **确认 Phase 1 完成**：已在真实环境试用（`./ar serve` + `ssh -N -p 7400 -L 8765:localhost:8765 panyz@101.6.48.103`），
+   真实 State 在 `~/autoresearch`。确认后状态改为 ✅，进入 Phase 2。
 2. **H002 的 origin 争议**：provenance.json 里标了 `disputed`，fixture 记 human，Phase 0 蒸馏多次指出讨论记录里是 AI 先提的。需要你裁定。
 3. 上面“实现中做出的决定”第 1、2 条若有异议，在 Phase 2 动 judge 任务前改最便宜。
 
