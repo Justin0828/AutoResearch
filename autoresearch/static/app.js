@@ -121,7 +121,7 @@ function renderTurns() {
   if (distilling) html.push(`<div class="muted small">蒸馏任务 ${distilling.id} ${distilling.status === "running" ? "进行中" : "排队中"}…</div>`);
   const box = $("#turns");
   const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
-  box.innerHTML = html.join("") || `<div class="muted">还没有发言。说说你现在在想什么。</div>`;
+  box.innerHTML = html.join("") || `<div class="muted">还没有发言。在下方输入框写下你的第一句话并发送（Ctrl+Enter），AI 才会开始回复。</div>`;
   if (atBottom) box.scrollTop = box.scrollHeight;
 }
 
@@ -140,10 +140,16 @@ $("#composer").onsubmit = async (e) => {
 };
 $("#input").onkeydown = (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) $("#composer").requestSubmit(); };
 $("#new-ds").onclick = async () => {
-  const title = await ask("新讨论", `<label>标题</label><input name="title" placeholder="比如：精细操作的瓶颈在哪" autofocus>`);
-  if (!title) return;
-  const r = await api("POST", "/api/discussions", { title: title.title });
-  S.ds = null; await selectDs(r.id);
+  const f = await ask("新讨论",
+    `<label>标题（只用于列表，不会发给 AI）</label><input name="title" placeholder="比如：精细操作的瓶颈在哪" autofocus>
+     <label>你的第一句话（发给 AI，可稍后再说）</label><textarea name="text" rows="4" placeholder="比如：我觉得现在的 VLA 在精细操作上差得远，你认为瓶颈在哪？"></textarea>`);
+  if (!f) return;
+  try {
+    const r = await api("POST", "/api/discussions", { title: f.title || (f.text || "").slice(0, 30) });
+    if (f.text && f.text.trim()) await api("POST", `/api/discussions/${r.id}/messages`, { text: f.text.trim() });
+    S.ds = null; await selectDs(r.id);
+    $("#input").focus();
+  } catch (err) { toast(err.message); }
 };
 $("#distill-btn").onclick = async () => {
   try {
