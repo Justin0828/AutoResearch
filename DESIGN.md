@@ -1,6 +1,6 @@
-# AI Research Partner — 系统设计 v1.1（模块级）
+# AI Research Partner — 系统设计 v1.2（模块级）
 
-> v0 由 `CLARIFICATION.md` 转换而来，只做模块划分。v1 锁定了运行环境约束、首个研究方向 profile 与若干悬空的架构决定。v1.1 加入了讨论/验证双模式（0.2）与网络分流。仍不涉及 schema、API 签名和代码结构。
+> v0 由 `CLARIFICATION.md` 转换而来，只做模块划分。v1 锁定了运行环境约束、首个研究方向 profile 与若干悬空的架构决定。v1.1 加入了讨论/验证双模式（0.2）与网络分流。v1.2 在 §5 定下 Phase 1 的 State schema、Briefing/Handoff 契约、Task 契约与增量提交协议；其余模块仍不涉及 API 签名和代码结构。
 
 ---
 
@@ -526,11 +526,153 @@ Claude Code Max 5x 的 5 小时滚动窗口会强制结束 session。**系统不
 
 ## 5. 关键跨模块约定（实现前定死）
 
-1. **Task 契约**：M2 → M3 的任务描述，以及 M3 → M1 的状态变更形态。整个系统的关节。
-2. **Briefing / Handoff 契约**：M1 如何把长期状态压缩成一次 session 的上下文。决定“不失忆”能否成立。
-3. **增量提交协议**：agent 在什么时机提交状态，保证被 SIGKILL 时不丢工作。
+1. **Task 契约**：M2 → M3 的任务描述，以及 M3 → M1 的状态变更形态。整个系统的关节。见 5.3。
+2. **Briefing / Handoff 契约**：M1 如何把长期状态压缩成一次 session 的上下文。决定“不失忆”能否成立。见 5.2。
+3. **增量提交协议**：agent 在什么时机提交状态，保证被 SIGKILL 时不丢工作。见 5.4。
 4. **状态迁移规则**：由 MCP tool 强制，见 0.4。
 5. **Decision 记录时机**：凡改变研究方向的动作必须留理由。
+
+以下 5.1–5.4 为 Phase 1 定下的具体形态（v1.2）。机器可读的单一定义在 `autoresearch/schema.py`，本节是它的说明；二者冲突时以改本节为准、再改代码。
+
+### 5.1 State schema
+
+#### 根目录
+
+整个系统写入收敛在一个根目录 `$AR_ROOT`（默认 `~/autoresearch`，删掉即零残留）。它**不放在代码仓库内**：agent 的工作目录若位于代码仓库之下，会自动加载开发用的 `CLAUDE.md`，污染研究 agent 的上下文。
+
+```text
+$AR_ROOT/
+  state/        Research State，独立 git 仓库（唯一真相来源）
+  run/          运行期数据，不入 git：任务目录、额度、班次、事件、通知、锁
+```
+
+#### State 仓库布局
+
+| 路径 | 对象 | 谁能写 |
+|---|---|---|
+| `project.md` | ResearchProject，含当前 `mode` | 后端（mode 只有人能改） |
+| `provenance.json` | 所有对象的 `origin` 与归属来源 | 后端 |
+| `questions/Q###.md` | Question | agent / 人 |
+| `assumptions/A###.md` | Assumption | agent / 人（Phase 1 经候选区） |
+| `hypotheses/H###.md` | Hypothesis | agent / 人；**状态迁移只能经 `transition_hypothesis`** |
+| `evidence/E###.md` | Evidence | 仅 `record_evidence` |
+| `papers/P###.md` | Paper | agent / 人 |
+| `dead-ends/D###.md` | DeadEnd | agent / 人 |
+| `uncertainties/U###.md` | Uncertainty | agent / 人 |
+| `decisions/DEC###.md` | Decision | 仅 `log_decision` 与后端 |
+| `candidates/C###.md` | 候选对象 | 仅 `propose_candidate`；人经前端改 |
+| `discussions/DS###/transcript.md` | 讨论记录 | 仅后端追加 |
+| `discussions/DS###/summary.md` | 讨论摘要 | 仅 `update_discussion_summary` |
+| `handoffs/HO###.md` | 班次交接记录 | 仅后端（机械生成） |
+
+「仅某工具」的路径对 agent 是**受保护路径**：runner 在 stream 里看到 agent 用 Write/Edit 触碰它们时回滚并记违规。Phase 1 的讨论类任务根本不给 Write/Edit，此条是给后续阶段留的闸。
+
+#### frontmatter 格式
+
+- 只允许**扁平** `key: value`，值为标量或行内列表 `[A001, H002]`；字符串可加双引号。**不允许嵌套**——对 agent 与人手改都最不易出错，校验器也能写得确定。
+- 所有对象必填：`id`（与文件名一致）、`type`、`created`（ISO 日期）。可选 `updated`。
+- id 由工具/后端在锁内分配（前缀 + 至少 3 位序号）。agent 不得编造 id。
+
+#### 各对象字段与枚举
+
+| type | 必填字段（除通用三项） | 枚举 / 约束 |
+|---|---|---|
+| `project` | `title` `mode` `main_question` | `mode`: discussion / incubation / validation |
+| `question` | `maturity` | vague / scoped / formalized |
+| `assumption` | `status` `relied_on_by` | `status`: unexamined / examined / promoted / retired；`relied_on_by` 非空，元素须是已存在 id；可选 `fragile`（true/false）、`promoted_to` |
+| `hypothesis` | `status` `confidence` `falsifier` `validation` `evidence` | `status`: proposed / investigating / supported / refuted / inconclusive / abandoned；`confidence`: low / medium / high；`falsifier` `validation` 非空；`evidence` 元素须存在；status≠proposed 时 evidence 非空；可选 `promoted_from`、`group` |
+| `evidence` | `hypothesis` `stance` `strength` `source` | `stance`: support / contradict / neutral；`strength`: weak / moderate / strong；`source` 必须是已存在的 `P###` 或 `X###`（**不得是 dead-end**） |
+| `paper` | `title` | 可选 `url` `venue` `year` `read` |
+| `dead-end` | `status` `closed_by` | `status`: closed / reopened；`closed_by` 非空，元素是 `E###` / `X###` |
+| `uncertainty` | `status` `importance` | `status`: open / reduced / resolved；`importance`: low / medium / high |
+| `decision` | `kind` `refs` | `kind`: research / curation / mode / handoff |
+| `candidate` | `kind` `status` `origin` `source` `turns` | 见下 |
+| `discussion` | `title` `status` | open / closed |
+| `discussion_summary` | `discussion` `covers_through` | 摘要覆盖到第几轮 |
+| `handoff` | `shift` `reason` `started` `ended` | `reason`: normal / quota_5h / quota_7d / cutoff / crash / manual |
+
+几条容易做错、因此写死的规则：
+
+1. **`origin` 不进对象文件**，统一存在 `provenance.json`（`{ "H001": {"origin": "human", "source": "C003", "discussion": "DS001", "turns": [4, 6]} }`）。理由：origin 要在评判时对 agent **不可见**（M1），而 agent 有 Read 权限——只在 briefing 里删掉是假屏蔽，它会自己去读 `hypotheses/H001.md`。放进单独文件后，评判类任务可以用 `--disallowedTools "Read(provenance.json)"` 从路径上挡住（Phase 1 实测：`Read(path)` 拒绝规则同时让 Grep 搜不到该文件）。对象文件 frontmatter 里出现 `origin` 视为**校验错误**（泄漏）。
+2. **Assumption / Hypothesis 按当前角色区分**：被**依赖**（用来剪枝或支撑其他推理）而**未安排验证** → Assumption；**已安排验证** → Hypothesis。这条落在结构上而不只是提示词里：Assumption 必须填 `relied_on_by`（它支撑着谁），Hypothesis 必须填 `validation`（验证怎么安排的）。说不出“怎么验证”就还不是 Hypothesis。
+3. **DeadEnd 不内嵌实验结果**，只用 `closed_by` 引用关闭它的 Evidence / Experiment；`closed_by` 为空是校验错误。正文只写“关了什么、为什么、什么条件下重开”。
+4. **候选对象**（M1.10）：`kind` ∈ assumption / hypothesis / question / uncertainty；`status` ∈ pending / accepted / rejected / superseded；`origin` ∈ human / ai / unclear（**归属冲突写 `unclear` 加 `origin_note`，不自动裁定**，人在确认时必须选定）；`source` 为 `DS###`，`turns` 为依据的轮次。按 kind 附带目标对象所需字段（assumption → `relied_on_by`；hypothesis → `falsifier` `validation`；question → `maturity`；uncertainty → `importance`）。确认后由后端建正式对象、写 provenance、回填 `promoted_to`；被拒的保留并写明理由，供后续去重。
+5. **讨论记录**以 `<!-- turn N human|ai ISO时间 -->` 注释行分隔轮次（而非 markdown 标题），正文里出现任何标题都不会切错。
+
+### 5.2 Briefing / Handoff 契约
+
+**一个装配器，两种用途**：`assemble(profile, task)` 从 State + 运行期台账产出 markdown。给 agent 用时写成任务目录下的 `briefing.md`（prompt 里只说“先读 briefing.md”，符合 M3.1）；班次结束时以 `handoff` profile 调用同一个装配器，结果落成 `handoffs/HO###.md`。下一班所有 briefing 都含最新一份交接。
+
+交接记录**必须能在没有 agent 的情况下生成**：窗口被切断时恰恰没有额度可以请 agent 写总结。因此交接是机械装配的——来源是任务台账、agent 在任务中途用 `checkpoint` 写下的进度笔记、本班次的 git 提交、候选区与讨论的状态。agent 的贡献在“边做边记”，不在“收尾总结”。
+
+#### 章节（按顺序）
+
+| # | 章节 | 内容 | 截断 |
+|---|---|---|---|
+| 1 | 本次任务 | 目标、预期产出、当前模式及其禁止事项 | 不截断 |
+| 2 | 上一班交接 | 最新 handoff 的正文 | 不截断 |
+| 3 | 研究问题 | project + main question 正文与成熟度 | 不截断 |
+| 4 | 前提 | 全部 assumption，unexamined 在前 | 超预算列摘要行 |
+| 5 | 假设 | 全部 hypothesis（状态、置信度、证伪条件、证据 id） | 超预算列摘要行 |
+| 6 | 证据 | 与上面假设相关的 evidence | 超预算只给最新 |
+| 7 | 已关闭方向（禁止重复） | **全部** dead-end | **不截断**（§0.4 “保证可见”） |
+| 8 | 未决不确定性 | open 的 uncertainty | 超预算列摘要行 |
+| 9 | 候选区 | pending 与近期 rejected 候选（含拒绝理由），用于去重 | 超预算只给最新 |
+| 10 | 讨论上下文 | 该讨论的 summary + 未被摘要覆盖的最近若干轮原文 | 按预算保留最近的 |
+
+截断处一律写明“已截断，完整内容见 `<路径>`”，agent 可自行 Read。
+
+#### Profile
+
+| profile | 任务 | origin | 章节 |
+|---|---|---|---|
+| `discuss` | 讨论回合 | 保留 | 1–10 |
+| `distill` | 讨论蒸馏（策展） | 保留 | 1–10，讨论上下文给未蒸馏部分的全文 |
+| `judge` | 评估证据 / 状态迁移 / 对抗性接地 | **剥离** | 1–8；不含候选区与讨论（二者都暴露归属） |
+| `handoff` | 班次交接记录 | 保留 | 专用章节：班次概况、已完成、被截断（含 checkpoint）、队列、本班 State 变更、待人处理 |
+
+`judge` profile 的剥离规则：
+
+1. 不输出 provenance，也不输出含对话的章节。
+2. 正文规范化：替换“研究者认为 / 我认为 / 人提出 / AI 提出 / 你提出”一类署名线索为中性表述。
+3. 同时在执行层封路：`--disallowedTools` 加 `Read(provenance.json)`、`Read(discussions/**)`、`Read(candidates/**)`、`Read(handoffs/**)`（及对应 Grep/Glob）。
+4. 屏蔽不可能完美（git 历史、行文风格都会泄漏），所以 **M8 的按-origin 反驳率是必需项**：Phase 1 即在总览里给出，数据来自 provenance + hypothesis status，不依赖任何 agent。
+
+### 5.3 Task 契约（Phase 1 子集）
+
+任务台账在 `run/tasks/T#####/`，每任务一个目录（M3.5 执行隔离，M3.6 日志留存）：`task.json`（契约与状态）、`briefing.md`、`mcp.json`、`stream.jsonl`、`tools.jsonl`、`checkpoints.jsonl`、`stderr.txt`。任务目录同时是 agent 的 cwd，State 经 `--add-dir` 挂入。
+
+`task.json` 字段：`id` `kind` `lane` `goal` `refs` `profile` `status` `attempts` `created` `started` `ended` `shift` `session_id` `result` `error`。
+
+状态机：`queued → running → done | failed | interrupted`；`interrupted` 在下一班开班时自动重新入队（M2.0b 第 1 级）；另有 `blocked_on_human` 与 `cancelled`。`failed` 只表示**执行**失败，研究结论是否定的不算失败（M3.7）。
+
+Phase 1 的任务种类：
+
+| kind | lane | 可用工具（`--tools` 真移除 + `--disallowedTools` 兜底） | MCP 工具（server 端按 toolset 过滤） |
+|---|---|---|---|
+| `discuss_turn` | interactive | Read Grep Glob WebSearch WebFetch | check_dead_ends, propose_candidate, checkpoint |
+| `distill` | background | Read Grep Glob | check_dead_ends, propose_candidate, update_discussion_summary, checkpoint |
+
+- 禁用有三层：`--tools` 只加载列出的内置工具（Phase 1 实测：init 事件里的 tools 只剩列出的几个，比 deny-list 更牢，因为 CLI 新版本加的工具不会漏网）；`--disallowedTools` 显式再禁一遍 Bash / Task 等（§0.6，保留作为纵深）；MCP server 按 `AR_TOOLSET` 只注册该任务能用的工具（`--allowedTools` 不移除 MCP 工具，同样不能靠它）。
+- 统一加 `--setting-sources ""`（不加载宿主机的用户/项目设置与 hooks）、`--strict-mcp-config`、`--no-session-persistence`、`--permission-mode dontAsk`。**不用 `--bare`**。
+- 讨论回合每轮开新 session，只靠 briefing 接续——每一轮都在验收“新 session 从 briefing 能接着谈”。`--resume` 作为之后的省额度优化，不影响正确性。
+
+### 5.4 增量提交协议
+
+State 的每次写入在写入者手里立即提交，没有“任务结束统一写回”：
+
+| 写入者 | 提交时机 |
+|---|---|
+| MCP 工具 | 工具调用内，写完即提交 |
+| 后端（讨论追加、候选确认、交接生成） | 写完即提交 |
+| agent 直接编辑文件（Phase 2+） | runner 在 stream 中看到 Write/Edit 的 tool_result 即校验并提交该路径 |
+| 人在编辑器里改 | daemon 周期性扫描工作区，脏文件以 `human` 身份提交 |
+| 被 SIGKILL 遗留 | daemon 启动时扫描，以 `recovered` 提交 |
+
+- 所有 git 操作经 `run/state.lock`（flock）串行，跨进程（后端与 MCP server）有效。
+- 只提交本次写入的路径（`git commit -- <paths>`），不顺手卷走别人的改动。
+- 提交作者区分身份：`ar-agent` / `ar-human` / `ar-system`；message 带 `AR-Task:` trailer。`git log --author` 即可回答“谁改的”。
+- 讨论回合：人的发言在调用 agent **之前**就已提交；回复被截断则只丢未完成的那条回复，人的话还在，下一班会补答。
 
 ---
 
