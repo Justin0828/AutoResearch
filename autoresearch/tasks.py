@@ -36,7 +36,9 @@ KINDS = {
 }
 
 # 评判类任务的路径封读（§5.2 judge 规则 3），Phase 2 的 judge 任务使用
-JUDGE_DENY_PATHS = ["provenance.json", "discussions/**", "candidates/**", "handoffs/**"]
+# .git/** 由 Phase 2 起手 spike 发现：提交信息（COMMIT_EDITMSG、logs/HEAD）可直接 Read，
+# 会带出候选确认、归属裁定一类记录（spike/phase2/README.md）
+JUDGE_DENY_PATHS = ["provenance.json", "discussions/**", "candidates/**", "handoffs/**", ".git/**"]
 
 STATUSES = {"queued", "running", "done", "failed", "interrupted", "blocked_on_human",
             "cancelled"}
