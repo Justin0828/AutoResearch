@@ -5,7 +5,9 @@
 用正式的 Daemon 跑 1 轮 × 2 条推演链 + 每条 Idea 的接地，然后只看落盘结果与 stream 里真实的工具调用：
 推演链用了哪些工具、有没有尝试检索、record_idea 被拒了几次、接地有没有改写 Idea。
 
-用法：python3 spike/phase2.5/smoke.py <scratch 目录>
+用法：python3 spike/phase2.5/smoke.py <scratch 目录> [--full] [--question-from C###]
+  --full               按默认参数跑完整个 session（最多 8 轮、30% 窗口、3 条过关 / 连续两轮没东西先到先停）
+  --question-from C### 用候选区里的形式化草案作为 Q001 正文（仍只改副本）
 """
 import json
 import os
@@ -20,15 +22,23 @@ sys.path.insert(0, str(CODE))
 
 
 def main():
-    root = Path(sys.argv[1]).resolve() / "smoke"
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("scratch")
+    ap.add_argument("--full", action="store_true")
+    ap.add_argument("--question-from", default=None)
+    ap.add_argument("--name", default="smoke")
+    a = ap.parse_args()
+    root = Path(a.scratch).resolve() / a.name
     if root.exists():
         sys.exit(f"{root} 已存在")
     src = Path.home() / "autoresearch"
     root.mkdir(parents=True)
     subprocess.run(["git", "clone", "-q", str(src / "state"), str(root / "state")], check=True)
     shutil.copytree(src / "library", root / "library")
-    os.environ.update(AR_ROOT=str(root), AR_INCUBATE_MAX_ROUNDS="1", AR_INCUBATE_CHAINS="2",
-                      AR_UNATTENDED_CAP="0.9")
+    os.environ["AR_ROOT"] = str(root)
+    if not a.full:
+        os.environ.update(AR_INCUBATE_MAX_ROUNDS="1", AR_INCUBATE_CHAINS="2", AR_UNATTENDED_CAP="0.9")
     from autoresearch import config, incubation
     from autoresearch.daemon import Daemon
     from autoresearch.events import Bus
@@ -37,18 +47,24 @@ def main():
     st = Store(cfg.state, cfg.lock)
     m, b = st.read_obj("Q001")
     m["maturity"] = "formalized"
-    with st.tx("smoke: 副本里临时把 Q001 标为 formalized（仅管线冒烟，不是真实形式化）", actor="human") as tx:
+    if a.question_from:
+        cm, cb = st.read_obj(a.question_from)
+        draft = cb.split("## 陈述", 1)[1].split("## 理由", 1)[0].strip()
+        b = (b.split("## 当前的形式化程度")[0].rstrip() + "\n\n## 形式化（取自候选 " + a.question_from +
+             " 的草案，仅用于验收副本）\n\n" + draft + "\n")
+    with st.tx("验收副本: 临时把 Q001 标为 formalized" + (f"（正文取自 {a.question_from} 草案）" if a.question_from else "")
+               + "——研究者尚未确认，真实 State 未改", actor="human") as tx:
         tx.write_obj("Q001", m, b)
     d = Daemon(cfg, st, Bus(cfg))
+    did, fid = d.enter_incubation("验收" if a.full else "管线冒烟")   # 先切模式再启动，避免先开夜间预习
     d.start(background=True)
-    did, fid = d.enter_incubation("管线冒烟")
     print(f"进入自演进 {did}，基本盘 {fid}", flush=True)
     t0 = time.time()
     while (d.st.get("hold") or {}).get("kind") != "incubation_done":
-        if time.time() - t0 > 3600:
+        if time.time() - t0 > 4 * 3600:
             print("超时")
             break
-        time.sleep(10)
+        time.sleep(30)
         print(f"{int(time.time() - t0)}s", [(t["id"], t["kind"], t["status"]) for t in d.ledger.all()
                                           if t["status"] in ("running", "queued")], flush=True)
     d.stop()
@@ -109,6 +125,9 @@ def report(cfg, st, d):
                               capture_output=True, text=True).stdout)
     for m, b in st.list("chain"):
         out.append(f"### 推演记录 {m['id']}（{m['status']}）\n{b[:3000]}")
+    hold = d.st.get("hold") or {}
+    if hold.get("summary"):
+        out.append(f"\n## 交卷 {hold['summary']}（{hold.get('reason')}）\n" + st.read_obj(hold["summary"])[1])
     from autoresearch import schema
     errs, _ = schema.validate_repo(st.state)
     out.append(f"\n校验错误：{errs}")

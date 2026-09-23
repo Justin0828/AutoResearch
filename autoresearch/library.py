@@ -14,6 +14,7 @@ import html
 import json
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -71,6 +72,10 @@ def http_get(url, timeout=60):
                 return r.read()
         except urllib.error.HTTPError as e:
             last = e
+            if e.code == 406 and "arxiv.org" in url and shutil.which("curl"):
+                # 2026-09-24 实测：arXiv 对 Python urllib 的检索请求（search_query）一律 406，同一 URL 用 curl 是 200，
+                # 与请求头、HTTP 版本无关（疑为按 TLS 指纹过滤）；按 id 取不受影响。改用宿主机已有的 curl，不装任何东西。
+                return _curl(url, timeout)
             if e.code in (406, 429, 500, 502, 503) and attempt < 2:   # arXiv 偶发 406，重试即好
                 time.sleep(4 * (attempt + 1))
                 continue
@@ -81,6 +86,14 @@ def http_get(url, timeout=60):
                 time.sleep(2)
                 continue
     raise NetError(f"请求失败：{url}（{last}）")
+
+
+def _curl(url, timeout):
+    p = subprocess.run(["curl", "-sS", "-f", "-L", "--max-time", str(int(timeout)), "-A", UA, url],
+                       capture_output=True, timeout=timeout + 10)
+    if p.returncode != 0:
+        raise NetError(f"curl 失败：{url}（{p.stderr.decode(errors='replace').strip()[:200]}）")
+    return p.stdout
 
 
 # ---------------------------------------------------------------- 元数据
