@@ -28,10 +28,11 @@ KINDS = {k.type: k for k in [
     Kind("question", "questions", "Q", ("maturity",),
          {"maturity": {"vague", "scoped", "formalized"}}),
     Kind("assumption", "assumptions", "A", ("status", "relied_on_by"),
-         {"status": {"unexamined", "examined", "promoted", "retired"},
+         {"status": {"unexamined", "examined", "promoted", "retired", "invalidated"},
           "fragile": {"true", "false"}},
          nonempty=("relied_on_by",),
-         refs={"relied_on_by": ("Q", "A", "H", "I", "U"), "promoted_to": ("H",)}),
+         refs={"relied_on_by": ("Q", "A", "H", "I", "U"), "promoted_to": ("H",),
+               "invalidated_by": ("E", "DEC")}),
     Kind("hypothesis", "hypotheses", "H",
          ("status", "confidence", "falsifier", "validation", "evidence"),
          {"status": {"proposed", "investigating", "supported", "refuted",
@@ -61,6 +62,12 @@ KINDS = {k.type: k for k in [
     Kind("handoff", "handoffs", "HO", ("shift", "reason", "started", "ended"),
          {"reason": {"normal", "quota_5h", "quota_7d", "cutoff", "crash", "manual"}},
          tool_only=True),
+    # 推翻的传播（DESIGN.md M5.6b）：只由对账函数生成，人经前端处理
+    Kind("review", "reviews", "R", ("trigger", "event", "target", "status", "depth"),
+         {"event": {"hypothesis_refuted", "assumption_invalidated"},
+          "status": {"open", "resolved", "dismissed"}},
+         refs={"trigger": ("A", "H"), "target": ("Q", "A", "H", "U", "C", "I")},
+         tool_only=True),
 ]}
 
 BY_PREFIX = {k.prefix: k for k in KINDS.values()}
@@ -79,7 +86,7 @@ COMMON = ("id", "type", "created")
 
 # agent 不得直接 Write/Edit 的路径（DESIGN.md §5.1「受保护路径」）
 PROTECTED = ("project.md", "provenance.json", "evidence/", "decisions/",
-             "candidates/", "discussions/", "handoffs/")
+             "candidates/", "discussions/", "handoffs/", "reviews/")
 
 _ID = re.compile(r"^([A-Z]+)(\d{3,})$")
 
@@ -145,6 +152,9 @@ def check_object(meta, kind, ids, rel):
     if "origin" in meta and kind.type != "candidate":
         errs.append(f"{rel}: frontmatter 含 origin——origin 只能存在 provenance.json（§5.1 规则 1）")
 
+    if kind.type == "assumption" and meta.get("status") == "invalidated" \
+            and not _as_list(meta.get("invalidated_by")):
+        errs.append(f"{rel}: status=invalidated 但没有 invalidated_by（证据或人的推翻决定）")
     if kind.type == "hypothesis":
         if meta.get("status") not in (None, "proposed") and not _as_list(meta.get("evidence")):
             errs.append(f"{rel}: status={meta['status']} 但没有任何 evidence")

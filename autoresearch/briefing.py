@@ -6,13 +6,13 @@
 """
 import re
 
-from . import candidates, discussion, frontmatter, schema
+from . import candidates, discussion, frontmatter, reviews, schema
 
 PROFILES = {
     # redact: 是否剥离 origin；sections: 章节编号（见 §5.2 表）
-    "discuss": {"redact": False, "sections": range(1, 11)},
-    "distill": {"redact": False, "sections": range(1, 11)},
-    "judge": {"redact": True, "sections": range(1, 9)},
+    "discuss": {"redact": False, "sections": range(1, 12)},
+    "distill": {"redact": False, "sections": range(1, 12)},
+    "judge": {"redact": True, "sections": [*range(1, 9), 11]},
 }
 
 BUDGET = {  # 每章字符预算；dead-end、任务、交接、问题不截断
@@ -227,6 +227,17 @@ class Assembler:
             out += shown
         return "\n\n".join(out)
 
+    def s_reviews(self):
+        rs = reviews.list_all(self.store, "open")
+        if not rs:
+            return "## 11. 待重新审视\n\n（无。）"
+        out = ["## 11. 待重新审视\n\n下列对象与某个**已被推翻**的前提或假设相关，研究者尚未判断它们是否"
+               "还站得住。在推理中依赖它们时要明说这一点；不要自行改写它们。"]
+        for r in rs:
+            out.append(f"- **{r['target']}**（{r['id']}，由 {r['trigger']} 触发，距离 {r['depth']}）："
+                       + r["body"].replace("\n\n", " "))
+        return "\n".join(out)
+
     # ---------------------------------------------------------------- 装配
 
     def briefing(self, profile, task):
@@ -245,6 +256,7 @@ class Assembler:
             8: lambda: self.s_uncertainties(redact),
             9: self.s_candidates,
             10: lambda: self.s_discussion(ds, disc_budget),
+            11: self.s_reviews,
         }
         head = ("# Briefing\n\n这是你本次任务的全部上下文，由 Research State 装配而来。"
                 "你没有任何先前的记忆——这里写的就是研究至今的全部共识；"
@@ -293,6 +305,10 @@ class Assembler:
         for d in discussion.list_all(self.store):
             if d.get("status") == "open" and d.get("awaiting_reply"):
                 waiting.append(f"- {d['id']}「{d.get('title')}」最后一轮是研究者的发言，尚未回复")
+        open_r = reviews.list_all(self.store, "open")
+        if open_r:
+            waiting.append(f"- 待重新审视 {len(open_r)} 项：" + "、".join(
+                f"{r['target']}（因 {r['trigger']}）" for r in open_r[:20]))
         pend = candidates.list_all(self.store, "pending")
         if pend:
             waiting.append(f"- 候选区有 {len(pend)} 条待确认：" + "、".join(c["id"] for c in pend[:20]))

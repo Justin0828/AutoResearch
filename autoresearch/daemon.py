@@ -12,7 +12,7 @@ import threading
 import time
 import traceback
 
-from . import discussion, frontmatter, protocol, schema
+from . import discussion, frontmatter, protocol, reviews, schema
 from .briefing import Assembler
 from .quota import Quota
 from .runner import Runner
@@ -66,6 +66,7 @@ class Daemon:
             sha, paths = self.store.sweep("recovered: 上次进程遗留的未提交改动", "system")
             if paths:
                 self.bus.notify("warn", f"启动时发现 {len(paths)} 个未提交的改动，已以 recovered 提交", sha=sha)
+            self._reconcile()
             for t in self.ledger.all():
                 if t["status"] == "running":
                     t.update(status="interrupted", error="进程随 daemon 一起终止", ended=now())
@@ -395,6 +396,7 @@ class Daemon:
 
     def sweep_human_edits(self):
         sha, paths = self.store.sweep("human: 编辑器中的直接修改", "human")
+        self._reconcile()      # 人在编辑器里改了状态也要传播（M5.6b）
         if paths:
             errs, _ = schema.validate_repo(self.store.state)
             self.bus.publish("state", {"paths": paths, "sha": sha})
@@ -402,6 +404,13 @@ class Daemon:
                             f"已提交你在编辑器里的 {len(paths)} 处修改（{sha}）" +
                             (f"；校验发现 {len(errs)} 个问题" if errs else ""))
         return sha, paths
+
+    def _reconcile(self):
+        new = reviews.reconcile(self.store)
+        if new:
+            self.bus.publish("state", {"reviews": new})
+            self.bus.notify("warn", f"有对象被推翻，{len(new)} 个相关对象需要你重新审视：{', '.join(new)}")
+        return new
 
     # ------------------------------------------------------------ 视图
 

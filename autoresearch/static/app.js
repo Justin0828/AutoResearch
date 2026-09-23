@@ -252,10 +252,16 @@ async function loadOverview() {
   $("#mode-badge").textContent = { discussion: "讨论模式", incubation: "自演进模式", validation: "验证模式" }[o.project.mode] || o.project.mode;
   const who = (x) => x.provenance ? ` · ${x.provenance.origin}${x.provenance.disputed ? "（有争议）" : ""}` : "";
   const first = (b) => (b || "").split("\n").find((l) => l.trim() && !l.startsWith("#")) || "";
-  const item = (x, extra) => `<div class="card"><h4>${x.id} ${extra || ""}<span class="muted small">${who(x)}</span></h4><div class="md">${md(first(x.body))}</div></div>`;
+  const item = (x, extra, acts) => `<div class="card" data-id="${x.id}"><h4>${x.id} ${extra || ""}<span class="muted small">${who(x)}</span></h4><div class="md">${md(first(x.body))}</div>${acts || ""}</div>`;
   const q = o.questions.map((x) => item(x, `<span class="kind question">成熟度 ${x.maturity}</span>`)).join("");
   const as = o.assumptions.slice().sort((a, b) => (a.status !== "unexamined") - (b.status !== "unexamined"))
-    .map((x) => item(x, `<span class="kind assumption">${x.status}</span><span class="muted small">支撑 ${fmtv(x.relied_on_by)}</span>`)).join("");
+    .map((x) => item(x, `<span class="kind assumption">${x.status}</span><span class="muted small">支撑 ${fmtv(x.relied_on_by)}</span>`,
+      x.status === "invalidated" ? "" : `<div class="acts"><button class="ghost small danger" data-act="invalidate">推翻这条前提</button></div>`)).join("");
+  const rv = (o.reviews || []).map((r) => `<div class="card" data-review="${r.id}">
+      <h4><span class="flag">待重新审视</span> ${r.target} <span class="muted small">${r.id} · 因 ${r.trigger} 被推翻 · 距离 ${r.depth}</span></h4>
+      <div class="md">${md(r.body)}</div>
+      <div class="acts"><button class="small" data-act="resolved">已据此调整</button><button class="ghost small" data-act="dismissed">判断不受影响</button></div>
+    </div>`).join("");
   const hs = o.hypotheses.map((x) => item(x, `<span class="kind hypothesis">${x.status} · ${x.confidence}</span><span class="muted small">证据 ${fmtv(x.evidence) || "无"}</span>`)).join("");
   const us = o.uncertainties.filter((x) => x.status !== "resolved").map((x) => item(x, `<span class="kind uncertainty">${x.importance}</span>`)).join("");
   const de = o.dead_ends.map((x) => item(x, `<span class="kind">${x.status}</span>`)).join("");
@@ -265,12 +271,33 @@ async function loadOverview() {
   const v = o.validation;
   $("#tab-overview").innerHTML = `
     ${v.errors.length ? `<div class="card"><h4 class="flag">State 校验：${v.errors.length} 个错误</h4><div class="small">${v.errors.map(esc).join("<br>")}</div></div>` : ""}
+    ${rv ? `<div class="sect">待重新审视（${o.reviews.length}）</div><p class="muted small">这些对象与已被推翻的前提或假设相关。系统不会自动改写它们，由你判断。</p>${rv}` : ""}
     <div class="sect">研究问题</div>${q}
     <div class="sect">前提（unexamined 在前）</div>${as || `<p class="muted">暂无</p>`}
     <div class="sect">假设</div>${hs || `<p class="muted">暂无</p>`}
     <div class="sect">未决不确定性</div>${us || `<p class="muted">暂无</p>`}
     <div class="sect">已关闭方向</div>${de || `<p class="muted">暂无</p>`}
     <div class="sect">偏差指标（按 origin 的反驳率）</div>${bias}`;
+  const tab = $("#tab-overview");
+  tab.querySelectorAll('[data-act="invalidate"]').forEach((b) => b.onclick = async () => {
+    const id = b.closest(".card").dataset.id;
+    const r = await ask(`推翻 ${id}`, `<p class="small">依赖它的所有对象会列入“待重新审视”，由你逐条判断；它们本身不会被改动。</p>
+      <label>为什么这条前提不再成立</label><textarea name="reason" rows="4" required></textarea>`);
+    if (!r) return;
+    try {
+      const res = await api("POST", `/api/assumptions/${id}/invalidate`, { reason: r.reason });
+      toast(res.reviews.length ? `已推翻。${res.reviews.length} 个相关对象待你重新审视。` : "已推翻。没有依赖它的对象。");
+    } catch (err) { toast(err.message); }
+    loadOverview();
+  });
+  tab.querySelectorAll("[data-review] button").forEach((b) => b.onclick = async () => {
+    const rid = b.closest(".card").dataset.review, st = b.dataset.act;
+    const r = await ask(`${rid}：${st === "resolved" ? "已据此调整" : "判断不受影响"}`,
+      `<label>${st === "resolved" ? "你做了什么调整" : "为什么它不受影响"}（会留作记录）</label><textarea name="note" rows="3" required></textarea>`);
+    if (!r) return;
+    try { await api("POST", `/api/reviews/${rid}/resolve`, { status: st, note: r.note }); } catch (err) { toast(err.message); }
+    loadOverview();
+  });
 }
 
 async function loadHandoffs() {

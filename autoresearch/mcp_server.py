@@ -20,7 +20,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     __package__ = "autoresearch"
 
-from autoresearch import candidates, config, discussion, schema  # noqa: E402
+from autoresearch import candidates, config, discussion, reviews, schema  # noqa: E402
 from autoresearch.store import Store, now, today  # noqa: E402
 
 CFG = config.load()
@@ -134,9 +134,24 @@ def t_transition_hypothesis(hypothesis_id="", new_status="", evidence_ids=None, 
                 f"{old} → {new_status}，依据 {', '.join(evidence_ids)}。\n\n{rationale.strip()}\n")
         tx.write_obj(hypothesis_id, meta, body)
         tx.note = f"{hypothesis_id} {old} → {new_status}"
+    new_reviews = reviews.reconcile(STORE, actor="agent", task=TASK)   # M5.6b 推翻的传播
     log({"tool": "transition_hypothesis", "ok": True, "id": hypothesis_id,
-         "from": old, "to": new_status, "evidence": evidence_ids})
-    return f"{hypothesis_id}: {old} → {new_status}，已记录依据 {', '.join(evidence_ids)}。"
+         "from": old, "to": new_status, "evidence": evidence_ids, "reviews": new_reviews})
+    msg = f"{hypothesis_id}: {old} → {new_status}，已记录依据 {', '.join(evidence_ids)}。"
+    if new_reviews:
+        msg += f"相关对象已列入待重新审视：{', '.join(new_reviews)}（由人判断，不要自行改写它们）。"
+    return msg
+
+
+def t_invalidate_assumption(assumption_id="", evidence_ids=None, rationale=""):
+    evidence_ids = evidence_ids or []
+    if any(not e.startswith("E") for e in evidence_ids):
+        raise ValueError("agent 推翻前提只能依据 evidence（E###）。")
+    new_reviews = reviews.invalidate_assumption(STORE, assumption_id, evidence_ids, rationale,
+                                                actor="agent", task=TASK)
+    log({"tool": "invalidate_assumption", "ok": True, "id": assumption_id, "reviews": new_reviews})
+    return (f"{assumption_id} 已标记为被推翻。依赖它的对象已列入待重新审视："
+            f"{', '.join(new_reviews) or '（无）'}。由人判断，不要自行改写它们。")
 
 
 def t_log_decision(what="", why="", kind="research", refs=None):
@@ -211,6 +226,11 @@ TOOLS = [
       "new_status": (S, "proposed / investigating / supported / refuted / inconclusive / abandoned", True),
       "evidence_ids": (A, "支撑本次迁移的 evidence id 列表", True),
       "rationale": (S, "这些证据为何支持该迁移，不能为空", True)}),
+    ("invalidate_assumption", t_invalidate_assumption,
+     "推翻一条前提（assumption）。必须附证据；所有依赖它的对象会自动列入待重新审视，由人判断。",
+     {"assumption_id": (S, "目标前提 id，如 A001", True),
+      "evidence_ids": (A, "证明它不成立的 evidence id 列表", True),
+      "rationale": (S, "为什么这些证据推翻了它", True)}),
     ("log_decision", t_log_decision,
      "记录一条研究决策及其理由。",
      {"what": (S, "做了什么决定", True), "why": (S, "为什么", True),

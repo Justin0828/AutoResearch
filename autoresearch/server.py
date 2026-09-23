@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import candidates, discussion, frontmatter, metrics, schema
+from . import candidates, discussion, frontmatter, metrics, reviews, schema
 
 STATIC = Path(__file__).resolve().parent / "static"
 MIME = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
@@ -51,6 +51,7 @@ def make_handler(app):
                 "hypotheses": objs("hypothesis"), "uncertainties": objs("uncertainty"),
                 "dead_ends": objs("dead-end"), "evidence": objs("evidence"),
                 "bias": metrics.bias_by_origin(st),
+                "reviews": reviews.list_all(st, "open"),
                 "validation": {"errors": errs, "warnings": warns},
                 "head": st.head()}
 
@@ -130,6 +131,25 @@ def make_handler(app):
     def update(req, q, cid):
         candidates.update(st, cid, dict(req.json().get("changes") or {}))
         app.bus.publish("candidates", {"updated": cid})
+        return {"ok": True}
+
+    # ------------------------------------------------------------ 推翻与待重新审视（M5.6b）
+
+    @route("POST", "/api/assumptions/(?P<aid>A\\d+)/invalidate")
+    def invalidate(req, q, aid):
+        did, new = reviews.human_invalidate(st, aid, req.json().get("reason", ""))
+        app.bus.publish("state", {"invalidated": aid, "reviews": new})
+        return {"decision": did, "reviews": new}
+
+    @route("GET", "/api/reviews")
+    def list_reviews(req, q):
+        return reviews.list_all(st, (q.get("status") or [None])[0])
+
+    @route("POST", "/api/reviews/(?P<rid>R\\d+)/resolve")
+    def resolve_review(req, q, rid):
+        b = req.json()
+        reviews.resolve(st, rid, b.get("status"), b.get("note", ""))
+        app.bus.publish("state", {"review": rid})
         return {"ok": True}
 
     # ------------------------------------------------------------ 班次 / 任务 / 通知

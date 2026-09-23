@@ -350,6 +350,13 @@ Claude Code Max 5x 的 5 小时滚动窗口会强制结束 session。**系统不
 4. **竞争假设组**：把解释同一现象的多个假设组织在一起，突出分歧点。
 5. **区分性验证设计**：优先设计能**区分**竞争假设的验证，而非只能确认某一个的验证。
 6. **状态机**：proposed → under investigation → supported / refuted / inconclusive / abandoned；迁移必须附证据，由 MCP tool 强制。
+6b. **推翻的传播（已定，2026-09-23）**：一条 Hypothesis 被 refuted、或一条 Assumption 被推翻（`invalidated`）时，**所有与它相关的对象都进“待重新审视”清单，交人判断，系统不自动改写任何对象**。
+   - 相关的定义（按 State 里的结构化链接，不靠文本相似度）：
+     - 被推翻的前提 A → `A.relied_on_by` 里的每个对象（它们失去了前提），并沿 assumption 的 `relied_on_by` 链**向下游传递**，标出间接受影响者与传递路径；以及 A 被提升成的假设（`promoted_to`）。
+     - 被反驳的假设 H → 为它提供前提的 assumption（`relied_on_by` 含 H 者，它们是否还有存在意义）；H 的来源前提（`promoted_from`）——**假设被反驳即其来源前提被推翻**，按上一条继续传播；同组竞争假设（`group`）；关联它的待确认候选（`relates_to`）。
+   - 实现为一个**幂等的对账函数**：扫描 State 里所有已推翻的对象，为每个 (触发者, 受影响者) 确保有一条 `Review`。无论状态是谁改的（工具、前端、人在编辑器里手改），对账都能补上，不存在绕过的写入路径。已处理过的 Review 不会重复生成。
+   - 人处理 Review 时写明结论：`resolved`（已据此调整）或 `dismissed`（判断不受影响）。二者都保留，成为“为什么这条还站着”的可追溯记录。
+   - 理由：`relied_on_by` 记下了依赖关系却不在推翻时使用，等于让“建立在已被推翻的前提上”这个失败模式重新溜回来——而抓住它正是 Assumption 与 Hypothesis 分开建模的原因（M1）。
 7. **信念更新**：新证据更新置信度与状态；处理证据冲突（论文说 A，实验说 B）。
 7b. **矛盾扫描**：主动遍历已积累证据，找出彼此冲突或与现有假设冲突之处。被动等冲突撞上来会漏掉大部分；这项工作不需要人在场，是无人值守窗口的固定项（M2.0b 第 5 级）。
 8. **重复检测**：新假设与已证伪/已放弃的撞车时提示并引用历史结论。
@@ -564,6 +571,7 @@ $AR_ROOT/
 | `discussions/DS###/transcript.md` | 讨论记录 | 仅后端追加 |
 | `discussions/DS###/summary.md` | 讨论摘要 | 仅 `update_discussion_summary` |
 | `handoffs/HO###.md` | 班次交接记录 | 仅后端（机械生成） |
+| `reviews/R###.md` | 待重新审视（推翻的传播，M5.6b） | 仅对账函数；人经前端处理 |
 
 「仅某工具」的路径对 agent 是**受保护路径**：runner 在 stream 里看到 agent 用 Write/Edit 触碰它们时回滚并记违规。Phase 1 的讨论类任务根本不给 Write/Edit，此条是给后续阶段留的闸。
 
@@ -579,7 +587,7 @@ $AR_ROOT/
 |---|---|---|
 | `project` | `title` `mode` `main_question` | `mode`: discussion / incubation / validation |
 | `question` | `maturity` | vague / scoped / formalized |
-| `assumption` | `status` `relied_on_by` | `status`: unexamined / examined / promoted / retired；`relied_on_by` 非空，元素须是已存在 id；可选 `fragile`（true/false）、`promoted_to` |
+| `assumption` | `status` `relied_on_by` | `status`: unexamined / examined / promoted / retired / invalidated；`relied_on_by` 非空，元素须是已存在 id；可选 `fragile`（true/false）、`promoted_to`；invalidated 时须有 `invalidated_by`（E### 或 DEC###：证据，或人的推翻决定） |
 | `hypothesis` | `status` `confidence` `falsifier` `validation` `evidence` | `status`: proposed / investigating / supported / refuted / inconclusive / abandoned；`confidence`: low / medium / high；`falsifier` `validation` 非空；`evidence` 元素须存在；status≠proposed 时 evidence 非空；可选 `promoted_from`、`group` |
 | `evidence` | `hypothesis` `stance` `strength` `source` | `stance`: support / contradict / neutral；`strength`: weak / moderate / strong；`source` 必须是已存在的 `P###` 或 `X###`（**不得是 dead-end**） |
 | `paper` | `title` | 可选 `url` `venue` `year` `read` |
@@ -590,6 +598,7 @@ $AR_ROOT/
 | `discussion` | `title` `status` | open / closed |
 | `discussion_summary` | `discussion` `covers_through` | 摘要覆盖到第几轮 |
 | `handoff` | `shift` `reason` `started` `ended` | `reason`: normal / quota_5h / quota_7d / cutoff / crash / manual |
+| `review` | `trigger` `event` `target` `status` `depth` | `event`: hypothesis_refuted / assumption_invalidated；`status`: open / resolved / dismissed；`depth` 为传递距离（1 = 直接相关） |
 
 几条容易做错、因此写死的规则：
 
@@ -619,6 +628,7 @@ $AR_ROOT/
 | 8 | 未决不确定性 | open 的 uncertainty | 超预算列摘要行 |
 | 9 | 候选区 | pending 与近期 rejected 候选（含拒绝理由），用于去重 | 超预算只给最新 |
 | 10 | 讨论上下文 | 该讨论的 summary + 未被摘要覆盖的最近若干轮原文 | 按预算保留最近的 |
+| 11 | 待重新审视 | open 的 Review：谁被推翻、传到了谁、路径 | 不截断 |
 
 截断处一律写明“已截断，完整内容见 `<路径>`”，agent 可自行 Read。
 
@@ -626,9 +636,9 @@ $AR_ROOT/
 
 | profile | 任务 | origin | 章节 |
 |---|---|---|---|
-| `discuss` | 讨论回合 | 保留 | 1–10 |
-| `distill` | 讨论蒸馏（策展） | 保留 | 1–10，讨论上下文给未蒸馏部分的全文 |
-| `judge` | 评估证据 / 状态迁移 / 对抗性接地 | **剥离** | 1–8；不含候选区与讨论（二者都暴露归属） |
+| `discuss` | 讨论回合 | 保留 | 1–11 |
+| `distill` | 讨论蒸馏（策展） | 保留 | 1–11，讨论上下文给未蒸馏部分的全文 |
+| `judge` | 评估证据 / 状态迁移 / 对抗性接地 | **剥离** | 1–8 与 11；不含候选区与讨论（二者都暴露归属） |
 | `handoff` | 班次交接记录 | 保留 | 专用章节：班次概况、已完成、被截断（含 checkpoint）、队列、本班 State 变更、待人处理 |
 
 `judge` profile 的剥离规则：
