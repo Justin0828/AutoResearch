@@ -1,6 +1,6 @@
 # 进度追踪
 
-> 最后更新：2026-09-23 · 当前阶段：**Phase 1 实现完成，三条验收均已用真实 claude 跑通；待用户试用确认**
+> 最后更新：2026-09-23 · 当前阶段：**Phase 1 完成（用户已确认）；Phase 2 下一步**
 
 ## 阶段状态
 
@@ -9,8 +9,8 @@
 | 需求澄清 | `CLARIFICATION.md` 15 条 | ✅ 完成 |
 | 设计 v1.1 | `DESIGN.md`，11 个模块 + 7 条基础原则 | ✅ 完成 |
 | Phase 0 | Spike：验证架构可行性 | ✅ 完成，见 `spike/phase0/README.md` |
-| **Phase 1** | **记忆骨架 + 讨论模式（1–2 周）** | 🟨 **实现完成、验收已跑通，待用户试用** |
-| Phase 2 | 文献闭环与交棒（2–3 周） | ⬜ |
+| Phase 1 | 记忆骨架 + 讨论模式（1–2 周） | ✅ 完成（2026-09-23 用户确认） |
+| **Phase 2** | **文献闭环与交棒（2–3 周）** | ⬜ **下一步** |
 | Phase 2.5 | 想法自演进 M11（1 周） | ⬜ |
 | Phase 3 | 实验 + 网络分流（3–4 周） | ⬜ |
 | Phase 4 | 完整自治 + 迁移到公司服务器 | ⬜ |
@@ -90,10 +90,7 @@ daemon 被 SIGKILL 后重启的崩溃恢复（遗留改动以 recovered 提交�
 
 ## 待用户拍板
 
-1. **确认 Phase 1 完成**：已在真实环境试用（`./ar serve` + `ssh -N -p 7400 -L 8765:localhost:8765 panyz@101.6.48.103`），
-   真实 State 在 `~/autoresearch`。确认后状态改为 ✅，进入 Phase 2。
-2. **H002 的 origin 争议**：provenance.json 里标了 `disputed`，fixture 记 human，Phase 0 蒸馏多次指出讨论记录里是 AI 先提的。需要你裁定。
-3. 上面“实现中做出的决定”第 1、2 条若有异议，在 Phase 2 动 judge 任务前改最便宜。
+1. **H002 的 origin 争议**：provenance.json 里标了 `disputed`，fixture 记 human，Phase 0 蒸馏多次指出讨论记录里是 AI 先提的。不阻塞 Phase 2，但 Phase 2 起按 origin 统计反驳率，越早定越好。
 
 ## Phase 2 起手前的已知缺口
 
