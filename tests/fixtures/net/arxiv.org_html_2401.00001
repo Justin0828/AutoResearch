@@ -1,0 +1,16 @@
+<html><body><article class="ltx_document">
+<h1 class="ltx_title ltx_title_document">Contact-Rich Manipulation Needs High-Frequency Feedback</h1>
+<div class="ltx_abstract"><h6 class="ltx_title ltx_title_abstract">Abstract</h6>
+<p class="ltx_p">We study fine-grained contact-rich manipulation.</p></div>
+<section id="S1" class="ltx_section"><h2 class="ltx_title ltx_title_section"><span class="ltx_tag">1 </span>Introduction</h2>
+<div id="S1.p1" class="ltx_para"><p class="ltx_p">Fine manipulation is hard because contact events are brief and poorly observable from vision <math alttext="x_t"><mi>x</mi></math> alone.</p></div>
+<div id="S1.p2" class="ltx_para"><p class="ltx_p">We ask whether data scale or feedback frequency is the bottleneck.</p></div>
+</section>
+<section id="S4" class="ltx_section"><h2 class="ltx_title ltx_title_section">4 Experiments</h2>
+<section id="S4.SS2" class="ltx_subsection"><h3 class="ltx_title ltx_title_subsection">4.2 Scaling data</h3>
+<div id="S4.SS2.p1" class="ltx_para"><p class="ltx_p">With a fixed 10 Hz action chunk, success on peg insertion plateaus at 41% after 500 demonstrations and does not improve up to 5000 demonstrations.</p></div>
+<figure class="ltx_table" id="S4.T1"><figcaption>Table 1: Success vs. demonstrations.</figcaption><table><tr><td>500</td><td>41%</td></tr></table></figure>
+<div id="S4.SS2.p2" class="ltx_para"><p class="ltx_p">Raising the control frequency to 100 Hz with force input lifts success to 78% with the same 500 demonstrations.</p></div>
+</section></section>
+<section id="bib" class="ltx_bibliography"><h2>References</h2><p>[1] Something.</p></section>
+</article></body></html>

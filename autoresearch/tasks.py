@@ -21,7 +21,7 @@ KINDS = {
     "discuss_turn": {
         "lane": "interactive", "profile": "discuss", "timeout": 900,
         "tools": ["Read", "Grep", "Glob", "WebSearch", "WebFetch"],
-        "mcp": ["check_dead_ends", "propose_candidate", "checkpoint"],
+        "mcp": ["check_dead_ends", "propose_candidate", "note_prep_request", "checkpoint"],
         "protocol": protocol.DISCUSS_PROTOCOL,
         "expected": "对研究者的一轮回复（原样写入讨论记录）",
     },
@@ -35,10 +35,45 @@ KINDS = {
     },
 }
 
-# 评判类任务的路径封读（§5.2 judge 规则 3），Phase 2 的 judge 任务使用
+_J = {"lane": "background", "profile": "judge"}
+_JUDGE = {
+    "lit_search": {**_J, "timeout": 1200, "tools": ["Read", "Grep", "Glob", "WebSearch"],
+                   "mcp": ["search_papers", "register_paper", "check_dead_ends", "checkpoint"],
+                   "expected": "为目标登记 0–6 篇最能检验它的真实论文"},
+    "read_paper": {**_J, "timeout": 2400, "tools": ["Read", "Grep", "Glob", "Edit"],
+                   "writable": ["papers/"],
+                   "mcp": ["open_paper", "record_evidence", "request_paper", "register_paper",
+                           "check_dead_ends", "checkpoint"],
+                   "expected": "阅读笔记（papers/P###.md）+ 追到段落的证据"},
+    "assess": {**_J, "timeout": 1200, "tools": ["Read", "Grep", "Glob"],
+               "mcp": ["transition_hypothesis", "examine_assumption", "invalidate_assumption",
+                       "propose_candidate", "check_dead_ends", "checkpoint"],
+               "expected": "据全部证据决定目标的状态（证据不够就不动）"},
+    "contradiction_scan": {**_J, "timeout": 1200, "tools": ["Read", "Grep", "Glob"],
+                           "mcp": ["propose_candidate", "checkpoint"],
+                           "expected": "证据之间的冲突 → 不确定性候选（没有就说没有）"},
+    "grounding": {**_J, "timeout": 1800, "tools": ["Read", "Grep", "Glob", "WebSearch"],
+                  "mcp": ["search_papers", "register_paper", "open_paper", "annotate_grounding",
+                          "check_dead_ends", "checkpoint"],
+                  "expected": "接地结论（只标注，不改写被核查对象）"},
+}
+for _k, _v in _JUDGE.items():
+    _v["protocol"] = protocol.JUDGE_PROTOCOL + protocol.JUDGE_ROLES[_k]
+KINDS.update(_JUDGE)
+
+# 评判类任务的路径封读（§5.2 judge 规则 3、§5.6）。
 # .git/** 由 Phase 2 起手 spike 发现：提交信息（COMMIT_EDITMSG、logs/HEAD）可直接 Read，
-# 会带出候选确认、归属裁定一类记录（spike/phase2/README.md）
-JUDGE_DENY_PATHS = ["provenance.json", "discussions/**", "candidates/**", "handoffs/**", ".git/**"]
+# 会带出候选确认、归属裁定一类记录（spike/phase2/README.md）。
+# insights/**：评判看不到理解（避免锚定）；decisions/**：人推翻前提、选批次的决定都是权威线索。
+JUDGE_DENY_PATHS = ["provenance.json", "discussions/**", "candidates/**", "handoffs/**", ".git/**",
+                    "insights/**", "decisions/**"]
+
+# 可写任务（Edit）在 State 里只能写 spec["writable"]；其余路径一律 deny（runner 另有回滚兜底）
+STATE_ENTRIES = ["project.md", "provenance.json", "README.md", ".gitignore", "questions/**",
+                 "assumptions/**", "hypotheses/**", "evidence/**", "papers/**", "dead-ends/**",
+                 "uncertainties/**", "insights/**", "decisions/**", "candidates/**",
+                 "discussions/**", "handoffs/**", "reviews/**", "groundings/**", "requests/**",
+                 "experiments/**", ".git/**"]
 
 STATUSES = {"queued", "running", "done", "failed", "interrupted", "blocked_on_human",
             "cancelled"}
@@ -51,7 +86,24 @@ def deny_rules(kind, state_dir):
         for p in JUDGE_DENY_PATHS:
             for tool in ("Read", "Grep", "Glob"):
                 rules.append(f"{tool}(/{state_dir}/{p})")   # //abs 表示文件系统绝对路径
+    if "Edit" in spec["tools"]:
+        ok = tuple(spec.get("writable", ()))
+        for p in STATE_ENTRIES:
+            if not p.startswith(ok):
+                rules.append(f"Edit(/{state_dir}/{p})")
     return rules
+
+
+def allow_rules(kind, state_dir):
+    """--allowedTools：免批准白名单。Edit 只对 writable 路径免批准——dontAsk 模式下其余一律拒绝。"""
+    spec = KINDS[kind]
+    out = []
+    for t in spec["tools"]:
+        if t == "Edit":
+            out += [f"Edit(/{state_dir}/{w}**)" for w in spec.get("writable", ())]
+        else:
+            out.append(t)
+    return out + [f"mcp__state__{t}" for t in spec["mcp"]]
 
 
 class Ledger:

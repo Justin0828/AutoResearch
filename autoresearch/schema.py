@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import frontmatter
+from . import attribution, frontmatter
 
 
 @dataclass(frozen=True)
@@ -32,7 +32,7 @@ KINDS = {k.type: k for k in [
           "fragile": {"true", "false"}},
          nonempty=("relied_on_by",),
          refs={"relied_on_by": ("Q", "A", "H", "I", "U", "IN"), "promoted_to": ("H",),
-               "invalidated_by": ("E", "DEC"), "derived_from": ("IN",)}),
+               "invalidated_by": ("E", "DEC"), "derived_from": ("IN",), "evidence": ("E",)}),
     Kind("hypothesis", "hypotheses", "H",
          ("status", "confidence", "falsifier", "validation", "evidence"),
          {"status": {"proposed", "investigating", "supported", "refuted",
@@ -40,12 +40,18 @@ KINDS = {k.type: k for k in [
           "confidence": {"low", "medium", "high"}},
          nonempty=("falsifier", "validation"),
          refs={"evidence": ("E",), "promoted_from": ("A",)}),
-    Kind("evidence", "evidence", "E", ("hypothesis", "stance", "strength", "source"),
+    # 证据追到段落（§5.5）：target 可以是假设或前提；locator + quote 由工具对照全文校验
+    Kind("evidence", "evidence", "E", ("target", "stance", "strength", "source", "basis"),
          {"stance": {"support", "contradict", "neutral"},
-          "strength": {"weak", "moderate", "strong"}},
+          "strength": {"weak", "moderate", "strong"},
+          "basis": {"abstract", "fulltext"}},
          nonempty=("source",),
-         refs={"hypothesis": ("H",), "source": ("P", "X")}, tool_only=True),
-    Kind("paper", "papers", "P", ("title",), nonempty=("title",)),
+         refs={"target": ("H", "A"), "source": ("P", "X")}, tool_only=True),
+    # 论文只能经 register_paper 登记（登记即核实）；正文是阅读笔记，身份与阅读状态字段归工具（§5.5）
+    Kind("paper", "papers", "P", ("title", "read", "fulltext"),
+         {"read": {"none", "abstract", "fulltext"},
+          "fulltext": {"none", "open", "uploaded", "requested", "unavailable"}},
+         nonempty=("title",), refs={"for": ("H", "A")}),
     Kind("dead-end", "dead-ends", "D", ("status", "closed_by"),
          {"status": {"closed", "reopened"}},
          nonempty=("closed_by",), refs={"closed_by": ("E", "X")}),
@@ -60,14 +66,23 @@ KINDS = {k.type: k for k in [
           "importance": {"low", "medium", "high"}}),
     Kind("decision", "decisions", "DEC", ("kind", "refs"),
          {"kind": {"research", "curation", "mode", "handoff"}}, tool_only=True),
-    Kind("candidate", "candidates", "C", ("kind", "status", "origin", "source", "turns"),
+    # source：讨论 DS###（带 turns），或验证模式的任务号 T#####（带 basis，origin 固定 ai，§5.6）
+    Kind("candidate", "candidates", "C", ("kind", "status", "origin", "source"),
          {"kind": {"assumption", "hypothesis", "question", "uncertainty", "insight"},
           "status": {"pending", "accepted", "rejected", "superseded"},
           "origin": {"human", "ai", "unclear"}},
-         refs={"source": ("DS",)}, tool_only=True),
+         refs={"basis": ("Q", "A", "H", "E", "P", "X", "U", "IN", "DS", "D")}, tool_only=True),
     Kind("handoff", "handoffs", "HO", ("shift", "reason", "started", "ended"),
          {"reason": {"normal", "quota_5h", "quota_7d", "cutoff", "crash", "manual"}},
          tool_only=True),
+    # 对抗性接地（M4.6，§5.6）：只标注，被核查对象一字不改
+    Kind("grounding", "groundings", "GR", ("target", "verdict"),
+         {"verdict": {"novel", "prior_work", "contradicted", "mixed"}},
+         refs={"target": ("H", "A", "C"), "refs": ("P", "E")}, tool_only=True),
+    # Paper Request Queue（M4.5，§5.8）
+    Kind("request", "requests", "RQ", ("paper", "status", "task"),
+         {"status": {"open", "fulfilled", "dismissed"}},
+         nonempty=("paper",), refs={"paper": ("P",)}, tool_only=True),
     # 推翻的传播（DESIGN.md M5.6b）：只由对账函数生成，人经前端处理
     Kind("review", "reviews", "R", ("trigger", "event", "target", "status", "depth"),
          {"event": {"hypothesis_refuted", "assumption_invalidated", "insight_withdrawn"},
@@ -93,7 +108,14 @@ COMMON = ("id", "type", "created")
 
 # agent 不得直接 Write/Edit 的路径（DESIGN.md §5.1「受保护路径」）
 PROTECTED = ("project.md", "provenance.json", "evidence/", "decisions/",
-             "candidates/", "discussions/", "handoffs/", "reviews/")
+             "candidates/", "discussions/", "handoffs/", "reviews/", "groundings/", "requests/")
+
+# 字段级受保护（§5.5）：agent 可以 Edit 论文笔记正文，但这些字段只归 register_paper 等工具
+PAPER_TOOL_FIELDS = ("id", "type", "title", "authors", "year", "venue", "arxiv", "doi", "url",
+                     "read", "fulltext", "fulltext_sha", "for", "found_via", "created")
+# 评判类任务会直接读的对象：正文里的署名线索给警告（§5.6 第 3 层）
+LINT_ATTRIBUTION = ("question", "assumption", "hypothesis", "uncertainty", "paper", "evidence")
+TASK_ID = re.compile(r"^T\d{5}$")
 
 _ID = re.compile(r"^([A-Z]+)(\d{3,})$")
 
@@ -170,7 +192,29 @@ def check_object(meta, kind, ids, rel):
     if kind.type == "hypothesis":
         if meta.get("status") not in (None, "proposed") and not _as_list(meta.get("evidence")):
             errs.append(f"{rel}: status={meta['status']} 但没有任何 evidence")
+    if kind.type == "evidence":
+        if str(meta.get("source", "")).startswith("P") and not _as_list(meta.get("locator")):
+            errs.append(f"{rel}: 出处是论文的证据必须带 locator（段落锚点）")
+        if not str(meta.get("quote") or "").strip() and str(meta.get("source", "")).startswith("P"):
+            errs.append(f"{rel}: 出处是论文的证据必须带 quote（原文摘录）")
+        if meta.get("basis") == "abstract" and meta.get("strength") == "strong":
+            errs.append(f"{rel}: 只凭摘要的证据 strength 不能是 strong（§5.5）")
+    if kind.type == "paper" and not any(meta.get(f) for f in ("arxiv", "doi", "url")):
+        errs.append(f"{rel}: 论文必须有 arxiv / doi / url 至少其一——State 里只收真实论文（§5.5）")
     if kind.type == "candidate":
+        src = str(meta.get("source") or "")
+        if src.startswith("DS"):
+            if src not in ids:
+                errs.append(f"{rel}: source 引用了不存在的 {src}")
+            if not _as_list(meta.get("turns")):
+                errs.append(f"{rel}: 出自讨论的候选必须带 turns")
+        elif TASK_ID.match(src):
+            if not _as_list(meta.get("basis")):
+                errs.append(f"{rel}: 出自验证任务的候选必须带 basis（E### / P###）")
+            if meta.get("origin") != "ai":
+                errs.append(f"{rel}: 出自验证任务的候选 origin 只能是 ai")
+        else:
+            errs.append(f"{rel}: source='{src}' 既不是讨论 DS### 也不是任务号 T#####")
         for f in CANDIDATE_FIELDS.get(meta.get("kind"), ()):
             if not meta.get(f):
                 errs.append(f"{rel}: kind={meta.get('kind')} 的候选必须带 {f}")
@@ -215,6 +259,12 @@ def validate_repo(state):
             errs.extend(check_object(meta, kind, ids, rel))
             if kind.type not in ("decision", "handoff") and not (body or "").strip():
                 errs.append(f"{rel}: 正文为空")
+            if kind.type in LINT_ATTRIBUTION:
+                text = "\n".join([body or ""] + [str(meta.get(f) or "") for f in
+                                                  ("falsifier", "validation", "quote")])
+                found = attribution.cues(text)
+                if found:
+                    warns.append(f"{rel}: 正文含署名线索 {found}——评判类任务直接读这个文件时会看到（§5.6）")
 
     for d in sorted((state / "discussions").glob("DS*")):
         t = d / "transcript.md"

@@ -4,22 +4,25 @@
 暂停（额度耗尽、窗口切断、人工暂停、daemon 停止或崩溃）；每次结束都机械生成
 一份交接记录写进 State，下一班的所有 briefing 都带着它。
 
-Phase 1 只有讨论类任务，且只由人触发——M2.0 的模式门在这里的体现就是：
-daemon 从不自己找事做，只执行人发起的讨论回合、蒸馏，以及闭合上一班被截断的任务。
+M2.0 的模式门在这里：讨论模式下 daemon 只执行人发起的讨论回合、蒸馏、闭合被截断的任务，
+以及窗口空闲时的夜间预习（只读文献，不迁移状态）；验证模式下由 planner 机械规划批次的
+检索 → 精读 → 评估。出现重大结果或批次饱和就停下建议收回（hold），不自己继续闭环（§5.7）。
 """
+import datetime
 import json
 import threading
 import time
 import traceback
 
-from . import discussion, frontmatter, protocol, reviews, schema
+from . import discussion, frontmatter, modes, papers, planner, protocol, reviews, schema
 from .briefing import Assembler
 from .quota import Quota
 from .runner import Runner
 from .store import now, today
-from .tasks import Ledger
+from .tasks import KINDS, Ledger
 
 MAX_ATTEMPTS = 3
+JUDGE_KINDS = {k for k, v in KINDS.items() if v["profile"] == "judge"}
 NOTE_REASON = {"quota_5h": "5-hour limit", "quota_7d": "weekly limit", "cutoff": "cut off",
                "manual": "stopped", "crash": "the previous run crashed", "normal": "normal"}
 
@@ -212,6 +215,8 @@ class Daemon:
 
     def human_message(self, ds, text):
         with self.lock:
+            if (self.st.get("prep") or {}).get("active"):
+                self._end_prep("研究者回来了，不再开新的预习任务")
             n = discussion.append_turn(self.store, ds, "human", text)
             self._enqueue_discuss(ds)
         return n
@@ -270,6 +275,8 @@ class Daemon:
                 return
             if not self.st.get("shift") or self.st["shift"].get("ended"):
                 return
+            if not self.lanes["background"]:
+                self._plan()
             for lane, busy in self.lanes.items():
                 if busy:
                     continue
@@ -280,10 +287,13 @@ class Daemon:
                 if reason:
                     self._pause(reason, resume_at=at)
                     return
+                if task["kind"] in JUDGE_KINDS and not self._unattended_ok():
+                    continue
                 self._launch(task)
 
     def _next(self, lane):
-        q = [t for t in self.ledger.all() if t["status"] == "queued" and t["lane"] == lane]
+        q = [t for t in self.ledger.all() if t["status"] == "queued" and t["lane"] == lane
+             and not (self.st.get("hold") and t.get("batch"))]
         q.sort(key=lambda t: (t.get("priority", 5), t["created"], t["id"]))
         return q[0] if q else None
 
@@ -342,6 +352,8 @@ class Daemon:
                                     task=task["id"])
 
     def _prompt(self, task):
+        if task["kind"] in JUDGE_KINDS:
+            return protocol.judge_prompt(task)
         ds = task.get("discussion")
         _, turns = discussion.read(self.store, ds)
         if task["kind"] == "discuss_turn":
@@ -368,6 +380,8 @@ class Daemon:
         raise ValueError(task["kind"])
 
     def _finish(self, task, out):
+        if task["kind"] in JUDGE_KINDS:
+            return self._finish_judge(task, out)
         ds = task.get("discussion")
         if task["kind"] == "discuss_turn":
             reply = (out.result or "").strip()
@@ -387,6 +401,283 @@ class Daemon:
                                     f"摘要未推进到第 {hi} 轮（当前 {c}）")
             task["result"] = (out.result or "")[:4000]
             self.bus.publish("candidates", {"discussion": ds})
+
+    # ------------------------------------------------------------ Phase 2：评判类任务收尾
+
+    def _finish_judge(self, task, out):
+        task["result"] = (out.result or "")[:4000]
+        task["result_brief"] = " ".join((out.result or "").split())[:160]
+        blocking = [c for c in planner.tool_calls(self.ledger, task["id"], "request_paper",
+                                                  since=task.get("started"))
+                    if c.get("blocking")]
+        if blocking:
+            task.update(status="blocked_on_human", blocked_on=blocking[-1]["id"])
+            self.bus.notify("warn", f"{task['id']} needs a paper you can fetch ({blocking[-1]['id']}); "
+                            "it is suspended and other work continues.", task=task["id"])
+        self.bus.publish("state", {"task": task["id"]})
+        if task.get("batch"):
+            why = self._major_result(task)
+            if why:
+                self._hold(why)
+
+    def _major_result(self, task):
+        """§5.7：出现这些就停下建议收回，不自己继续闭环。"""
+        tid, since = task["id"], task.get("started")
+        for c in planner.tool_calls(self.ledger, tid, "transition_hypothesis", since):
+            if c.get("to") in ("supported", "refuted"):
+                return f"{c['id']} was {c['to']} ({tid})"
+        for c in planner.tool_calls(self.ledger, tid, "invalidate_assumption", since):
+            return f"assumption {c['id']} was invalidated ({tid})"
+        for c in planner.tool_calls(self.ledger, tid, "examine_assumption", since):
+            if c.get("verdict") == "fragile":
+                return f"assumption {c['id']} turned out fragile ({tid})"
+        if task["kind"] == "contradiction_scan" and planner.tool_calls(self.ledger, tid, "propose_candidate", since):
+            return f"the contradiction scan found conflicting evidence ({tid})"
+        return None
+
+    def _hold(self, reason):
+        if self.st.get("hold"):
+            return
+        self.st["hold"] = {"reason": reason, "since": now()}
+        self._save_state()
+        self.bus.notify("warn", f"Validation paused: {reason}. Suggest going back to discussion mode — "
+                        "or choose to continue validation.", hold=True)
+        self.bus.publish("mode", self.mode_view())
+
+    def _unattended_ok(self):
+        """§5.7 窗口份额：无人值守只用 5h 窗口的前 AR_UNATTENDED_CAP，其余留给你的交互使用。"""
+        used = self.quota.data.get("five_hour")
+        if used is None or used < self.cfg.unattended_cap:
+            self.st.pop("cap_note", None)
+            return True
+        if not self.st.get("cap_note"):
+            self.st["cap_note"] = now()
+            self._save_state()
+            self.bus.notify("info", f"5-hour window is {round(used * 100)}% used; unattended work stops at "
+                            f"{round(self.cfg.unattended_cap * 100)}% to leave the rest for you.")
+        return False
+
+    # ------------------------------------------------------------ Phase 2：规划
+
+    def _plan(self):
+        if any(t["lane"] == "background" and t["status"] == "queued" for t in self.ledger.all()):
+            return
+        m = modes.mode(self.store)
+        if m == "validation":
+            if self.st.get("hold"):
+                return
+            did = modes.batch_decision(self.store)
+            tasks = self.ledger.all()
+            step = planner.next_step(self.store, self.ledger, self.cfg, modes.batch(self.store),
+                                     tasks, ("batch", did))
+            if step:
+                self._create(step, batch=did)
+            elif not any(t.get("batch") == did and t["status"] in planner.LIVE for t in tasks):
+                done = planner.batch_saturated(self.store, self.ledger, self.cfg, tasks)
+                self._hold("every item in the batch has reached a conclusion" if done else
+                           "nothing worthwhile left to do on this batch within its budget — "
+                           "stopping to leave quota")
+        elif m == "discussion":
+            self._plan_prep()
+
+    def _create(self, step, **extra):
+        step = dict(step)
+        kind, goal = step.pop("kind"), step.pop("goal")
+        t = self.ledger.create(kind, goal, **step, **extra)
+        self.bus.publish("task", t)
+        return t
+
+    # ------------------------------------------------------------ 夜间预习（M2.0）
+
+    def _last_human_ts(self):
+        last = None
+        for d in discussion.list_all(self.store):
+            _, turns = discussion.read(self.store, d["id"])
+            for t in turns:
+                if t["role"] == "human" and (last is None or t["ts"] > last):
+                    last = t["ts"]
+        return last
+
+    def _plan_prep(self):
+        prep = self.st.get("prep") or {}
+        if prep.get("active"):
+            return self._continue_prep(prep)
+        last = self._last_human_ts()
+        if not last or prep.get("after") == last or self.runners:
+            return
+        try:
+            idle = (datetime.datetime.now() - datetime.datetime.fromisoformat(last)).total_seconds()
+        except ValueError:
+            return
+        if idle < self.cfg.prep_idle_minutes * 60 or not self._unattended_ok():
+            return
+        self._absorb_prep_request()
+        req = self.st.get("prep_request")
+        if req:
+            target, topic = None, req["text"]
+            why = f"你要求的（{req.get('source') or 'Chat 页'}，{req['ts'][:16]}）：「{topic}」"
+            self.st.pop("prep_request", None)
+        else:
+            target, why = planner.pick_prep_target(self.store)
+            topic = f"核查 {target}" if target else None
+        if not topic:
+            self.st["prep"] = {"after": last, "skipped": "没有与你相关、值得预习的题目"}
+            self._save_state()
+            return
+        did = modes.record_prep(self.store, topic, why, [target] if target else [])
+        self.st["prep"] = {"active": True, "decision": did, "target": target, "topic": topic,
+                           "why": why, "after": last, "started": now()}
+        self._save_state()
+        self.bus.notify("info", f"Overnight reading started: {topic}. Why: {why}", decision=did)
+        self._continue_prep(self.st["prep"])
+
+    def _continue_prep(self, prep):
+        did = prep["decision"]
+        tasks = self.ledger.all()
+        mine = [t for t in tasks if t.get("prep") == did]
+        live = [t for t in mine if t["status"] in planner.LIVE]
+        if len(mine) >= self.cfg.prep_max_tasks:
+            if not live:
+                self._end_prep(f"用满了 {self.cfg.prep_max_tasks} 个任务的预算")
+            return
+        if prep.get("target"):
+            step = planner.next_step(self.store, self.ledger, self.cfg, [prep["target"]], tasks,
+                                     ("prep", did))
+        else:
+            step = self._freeform_prep_step(prep, mine)
+        if step:
+            step["why"] = f"夜间预习（{did}）：" + step.get("why", "")
+            self._create(step, prep=did)
+        elif not live:
+            self._end_prep("没有更多值得读的")
+
+    def _freeform_prep_step(self, prep, mine):
+        searches = [t for t in mine if t["kind"] == "lit_search"]
+        if not searches:
+            return {"kind": "lit_search", "priority": 6,
+                    "goal": f"夜间预习：为研究者的问题「{prep['topic']}」检索最相关的论文", "why": prep["why"]}
+        if any(t["status"] in planner.LIVE for t in searches):
+            return None
+        read = {t.get("paper") for t in mine if t["kind"] == "read_paper"}
+        for s in searches:
+            for c in planner.tool_calls(self.ledger, s["id"], "register_paper"):
+                if c["id"] not in read:
+                    m, _ = self.store.read_obj(c["id"])
+                    return {"kind": "read_paper", "paper": c["id"], "priority": 6,
+                            "goal": f"夜间预习：精读 {c['id']}「{(m or {}).get('title')}」，"
+                                    f"回答研究者的问题「{prep['topic']}」，并抽取对现有假设 / 前提的证据",
+                            "why": f"由 {s['id']} 的检索找到"}
+        return None
+
+    def _absorb_prep_request(self):
+        """讨论 agent 经 note_prep_request 记下的“今晚查什么”（研究者在讨论里的回答）。"""
+        p = self.cfg.run / "prep_request.json"
+        if p.exists():
+            try:
+                r = json.loads(p.read_text(encoding="utf-8"))
+                if r.get("ts", "") > (self.st.get("prep_request") or {}).get("ts", ""):
+                    self.st["prep_request"] = r
+                    self._save_state()
+            except (OSError, json.JSONDecodeError):
+                pass
+            p.unlink(missing_ok=True)
+
+    def _end_prep(self, why):
+        prep = self.st.get("prep") or {}
+        if not prep.get("active"):
+            return
+        prep.update(active=False, ended=now(), end_reason=why)
+        self._save_state()
+        self.bus.notify("info", f"Overnight reading finished ({why}). See {prep.get('decision')}.",
+                        decision=prep.get("decision"))
+
+    # ------------------------------------------------------------ Phase 2：人的操作
+
+    def handoff(self, items, note=""):
+        with self.lock:
+            did, batch = modes.handoff(self.store, items, note)
+            self._cancel(lambda t: t.get("prep"), "交棒进验证模式，文献工作由验证模式接管")
+            if (self.st.get("prep") or {}).get("active"):
+                self._end_prep("交棒进验证模式")
+            self.st.pop("hold", None)
+            self._save_state()
+            self.bus.publish("mode", self.mode_view())
+            self.bus.notify("info", f"Handed off to validation mode ({did}): {', '.join(batch)}.",
+                            decision=did)
+            return did, batch
+
+    def recall(self, reason=""):
+        with self.lock:
+            did = modes.recall(self.store, reason)
+            n = self._cancel(lambda t: t.get("batch"), "研究者收回讨论模式")
+            self.st.pop("hold", None)
+            self._save_state()
+            self.bus.publish("mode", self.mode_view())
+            self.bus.notify("info", f"Back to discussion mode ({did})." +
+                            (f" Cancelled {n} queued validation task(s); running ones finish and commit." if n else ""),
+                            decision=did)
+            return did
+
+    def continue_validation(self, reason):
+        with self.lock:
+            hold = self.st.get("hold")
+            if not hold:
+                raise ValueError("当前没有“建议收回”的提示")
+            did = modes.continue_validation(self.store, reason, hold["reason"])
+            self.st.pop("hold", None)
+            self._save_state()
+            self.bus.publish("mode", self.mode_view())
+            return did
+
+    def request_grounding(self, target):
+        with self.lock:
+            if not self.store.exists(target) or target[0] not in "HAC":
+                raise ValueError(f"{target} 不存在或不能做接地核查")
+            if any(t["kind"] == "grounding" and t.get("target") == target and t["status"] in planner.LIVE
+                   for t in self.ledger.all()):
+                raise ValueError(f"{target} 的接地核查已在队列里")
+            return self._create({"kind": "grounding", "target": target, "priority": 3,
+                                 "goal": f"对 {target} 做对抗性接地：有没有先例、有没有直接反驳",
+                                 "why": "研究者在前端要求"})
+
+    def set_prep_request(self, text, source=""):
+        with self.lock:
+            text = (text or "").strip()
+            if not text:
+                self.st.pop("prep_request", None)
+            else:
+                self.st["prep_request"] = {"text": text, "ts": now(), "source": source}
+            self._save_state()
+            self.bus.publish("mode", self.mode_view())
+
+    def unblock(self, rid, note=None):
+        """全文到了（或确定拿不到）：挂起在这条请求上的任务带着 checkpoint 重新入队。"""
+        with self.lock:
+            n = 0
+            for t in self.ledger.all():
+                if t["status"] == "blocked_on_human" and t.get("blocked_on") == rid:
+                    t.update(status="queued", priority=2, resume_note=note, blocked_on=None)
+                    self.ledger.save(t)
+                    self.bus.publish("task", t)
+                    n += 1
+            return n
+
+    def _cancel(self, pred, why):
+        n = 0
+        for t in self.ledger.all():
+            if t["status"] in ("queued", "blocked_on_human") and pred(t):
+                t.update(status="cancelled", error=why, ended=now())
+                self.ledger.save(t)
+                self.bus.publish("task", t)
+                n += 1
+        return n
+
+    def mode_view(self):
+        pm, _ = self.store.project()
+        return {"mode": pm.get("mode", "discussion"), "batch_decision": pm.get("batch"),
+                "batch": modes.batch(self.store), "hold": self.st.get("hold"),
+                "prep": self.st.get("prep"), "prep_request": self.st.get("prep_request"),
+                "cap": self.cfg.unattended_cap, "cap_note": self.st.get("cap_note")}
 
     # ------------------------------------------------------------ 人在编辑器里的直接修改
 

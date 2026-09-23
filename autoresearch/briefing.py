@@ -6,18 +6,18 @@
 """
 import re
 
-from . import candidates, discussion, frontmatter, reviews, schema
+from . import attribution, candidates, discussion, frontmatter, modes, reviews, schema
 
 PROFILES = {
     # redact: 是否剥离 origin；sections: 章节（见 §5.2 表），"3b" = 当前理解
-    "discuss": {"redact": False, "sections": [1, 2, 3, "3b", *range(4, 12)]},
-    "distill": {"redact": False, "sections": [1, 2, 3, "3b", *range(4, 12)]},
+    "discuss": {"redact": False, "sections": [1, 2, 3, "3b", *range(4, 9), 12, 9, 10, 11]},
+    "distill": {"redact": False, "sections": [1, 2, 3, "3b", *range(4, 9), 12, 9, 10, 11]},
     # 评判类看不到理解：评估证据只看证据，理解是解读框架，会带来锚定
-    "judge": {"redact": True, "sections": [*range(1, 9), 11]},
+    "judge": {"redact": True, "sections": [*range(1, 9), 12, 11]},
 }
 
 BUDGET = {  # 每章字符预算；dead-end、任务、交接、问题不截断
-    "3b": 8000, 4: 8000, 5: 12000, 6: 8000, 8: 4000, 9: 6000, 10: 24000,
+    "3b": 8000, 4: 8000, 5: 12000, 6: 12000, 8: 4000, 9: 6000, 10: 24000, 12: 8000,
 }
 DISTILL_DISCUSSION_BUDGET = 80000
 
@@ -26,23 +26,12 @@ MODE_RULES = {
                   "只允许为当下讨论做低成本的文献查证。讨论中出现的研究内容只能进候选区，"
                   "由研究者确认后才成为正式 State 对象。",
     "incubation": "当前是**自演进模式**：检索关闭，从冻结的基本盘推演。",
-    "validation": "当前是**验证模式**。",
+    "validation": "当前是**验证模式**：研究者已把一批前提 / 假设交棒给系统，系统自主检索、阅读、"
+                  "记录证据并在证据足够时迁移状态。出现重大结果时系统会停下来建议回到讨论，而不是自己继续闭环。",
 }
 
 # 评判类任务的署名线索规范化（§5.2 judge 规则 2）。屏蔽不可能完美，偏差指标兜底。
-_ATTRIBUTION = [
-    (r"(研究者|人类?|用户|我们|我|你|AI|agent|模型|系统)\s*(最早|首先|先)?\s*(认为|觉得|提出|怀疑|倾向于|猜测|主张)",
-     "有观点\\3"),
-    (r"(由|经)\s*(研究者|人类?|用户|AI|agent|模型)\s*(提出|确认)", "被\\3"),
-    (r"\borigin\s*[:：]\s*(human|ai|unclear)\b", ""),
-    (r"（经候选 C\d+ 确认，出自讨论 DS\d+ 第 [\d, ]+ 轮。）", ""),
-]
-
-
-def neutralize(text):
-    for pat, rep in _ATTRIBUTION:
-        text = re.sub(pat, rep, text, flags=re.I)
-    return text
+neutralize = attribution.neutralize
 
 
 def _clip(parts, budget, more_hint):
@@ -93,22 +82,38 @@ class Assembler:
     def s_task(self, task):
         mode = self.store.project()[0].get("mode", "discussion")
         lines = [f"- 任务：`{task['id']}`（{task['kind']}）", f"- 目标：{task['goal']}"]
+        if task.get("why"):
+            lines.append(f"- 为什么做这个：{task['why']}")
         if task.get("expected"):
             lines.append(f"- 预期产出：{task['expected']}")
         lines.append(f"- {MODE_RULES.get(mode, '')}")
+        b = modes.batch(self.store)
+        if b:
+            lines.append(f"- 当前验证批次：{', '.join(b)}")
+        if task.get("target"):
+            lines.append(f"- 本次目标：**{task['target']}**（全文见下面对应章节）")
+        if task.get("paper"):
+            lines.append(f"- 本次论文：**{task['paper']}**（先 open_paper）")
+        if task.get("resume_note"):
+            lines.append(f"- **注意**：{task['resume_note']}")
         if task.get("prior_checkpoints"):
             lines.append("\n**本任务之前被中断过**，上次尝试留下的进度笔记（从这里接着做，"
                          "不要重复已完成的部分；已提交的候选见“候选区”一章）：")
             lines += [f"  - {c['ts']} {c['note']}" for c in task["prior_checkpoints"]]
         return "## 1. 本次任务\n\n" + "\n".join(lines)
 
-    def s_handoff(self):
+    def s_handoff(self, redact=False):
         d = self.store.state / "handoffs"
         files = sorted(d.glob("HO*.md"), key=lambda p: schema.split_id(p.stem)[1] or 0) \
             if d.is_dir() else []
         if not files:
             return "## 2. 上一班交接\n\n（这是第一个班次，没有交接记录。）"
         meta, body = frontmatter.parse(files[-1].read_text(encoding="utf-8"))
+        if redact:
+            # 评判类只看被截断的任务：提交列表与“待处理”都带归属线索（§5.6）
+            m = re.search(r"## 被截断的任务.*?(?=\n## |\Z)", body, re.S)
+            return ("## 2. 上一班交接（仅被截断的任务）\n\n" +
+                    (neutralize(m.group(0).split("\n", 1)[1].strip()) if m else "（上一班没有被截断的任务。）"))
         return (f"## 2. 上一班交接（{meta.get('id')} · {meta.get('reason')} · "
                 f"结束于 {meta.get('ended')}）\n\n{body.strip()}")
 
@@ -165,7 +170,10 @@ class Assembler:
         for m, b in items:
             head = (f"### {m['id']} · {_fm_line(m, ['status', 'confidence', 'evidence', 'promoted_from', 'group'])}"
                     f"{self._origin(m['id'], redact)}")
-            full = (f"{head}\n\n- 证伪条件：{m.get('falsifier', '')}\n- 验证安排：{m.get('validation', '')}"
+            fal, val = m.get("falsifier", ""), m.get("validation", "")
+            if redact:
+                fal, val = neutralize(fal), neutralize(val)
+            full = (f"{head}\n\n- 证伪条件：{fal}\n- 验证安排：{val}"
                     f"\n\n{self._body(b, redact)}")
             first = self._body(b, redact).splitlines()
             parts.append((full, f"{head} — {first[0] if first else ''}"))
@@ -178,8 +186,12 @@ class Assembler:
         items.reverse()   # 最新优先
         parts = []
         for m, b in items:
-            head = f"- **{m['id']}** → {m.get('hypothesis')} · {m.get('stance')} · {m.get('strength')} · 出处 {m.get('source')}"
-            parts.append((f"{head}：{self._body(b, redact)}", head))
+            loc = f" {_v(m.get('locator'))}" if m.get("locator") else ""
+            head = (f"- **{m['id']}** → {m.get('target', m.get('hypothesis'))} · {m.get('stance')} · "
+                    f"{m.get('strength')} · 出处 {m.get('source')}{loc}"
+                    + (" · 仅摘要" if m.get("basis") == "abstract" else ""))
+            quote = f"\n  > {m['quote']}" if m.get("quote") else ""
+            parts.append((f"{head}：{self._body(b, redact)}{quote}", head))
         return "## 6. 证据\n\n" + _clip(parts, BUDGET[6], "evidence/")
 
     def s_dead_ends(self, redact):
@@ -248,6 +260,21 @@ class Assembler:
             out += shown
         return "\n\n".join(out)
 
+    def s_papers(self, task):
+        items = self.store.list("paper")
+        if not items:
+            return "## 12. 文献\n\n（还没有登记任何论文。）"
+        focus = task.get("target")
+        items.sort(key=lambda x: (focus not in (x[0].get("for") or []), x[0]["id"]))
+        parts = []
+        for m, b in items:
+            ref = m.get("arxiv") and f"arXiv:{m['arxiv']}" or m.get("doi") and f"doi:{m['doi']}" or m.get("url")
+            head = (f"- **{m['id']}** {m.get('title')}（{m.get('year') or '?'}，{ref}）· 读到 {m.get('read')} · "
+                    f"全文 {m.get('fulltext')}" + (f" · 为 {_v(m['for'])}" if m.get("for") else ""))
+            parts.append((head, head))
+        return ("## 12. 文献\n\n已登记的论文（登记即已核实存在）。不要重复登记；读它们用 open_paper。\n\n"
+                + _clip(parts, BUDGET[12], "papers/"))
+
     def s_reviews(self):
         rs = reviews.list_all(self.store, "open")
         if not rs:
@@ -268,7 +295,7 @@ class Assembler:
         disc_budget = DISTILL_DISCUSSION_BUDGET if profile == "distill" else BUDGET[10]
         builders = {
             1: lambda: self.s_task(task),
-            2: self.s_handoff,
+            2: lambda: self.s_handoff(redact),
             3: lambda: self.s_question(redact),
             "3b": lambda: self.s_insights(redact),
             4: lambda: self.s_assumptions(redact),
@@ -279,6 +306,7 @@ class Assembler:
             9: self.s_candidates,
             10: lambda: self.s_discussion(ds, disc_budget),
             11: self.s_reviews,
+            12: lambda: self.s_papers(task),
         }
         head = ("# Briefing\n\n这是你本次任务的全部上下文，由 Research State 装配而来。"
                 "你没有任何先前的记忆——这里写的就是研究至今的全部共识；"

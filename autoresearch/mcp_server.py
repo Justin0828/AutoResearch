@@ -20,7 +20,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     __package__ = "autoresearch"
 
-from autoresearch import candidates, config, discussion, reviews, schema  # noqa: E402
+from autoresearch import candidates, config, discussion, library, modes, papers, reviews, schema  # noqa: E402
 from autoresearch.store import Store, now, today  # noqa: E402
 
 CFG = config.load()
@@ -29,6 +29,8 @@ TASK = os.environ.get("AR_TASK") or None
 TASK_DIR = Path(os.environ["AR_TASK_DIR"]) if os.environ.get("AR_TASK_DIR") else None
 TOOL_LOG = TASK_DIR / "tools.jsonl" if TASK_DIR else None
 TOOLSET = {t.strip() for t in os.environ.get("AR_TOOLSET", "").split(",") if t.strip()}
+PROFILE = os.environ.get("AR_PROFILE", "")
+LIB = library.Library(CFG.library)
 
 
 def log(entry):
@@ -72,86 +74,101 @@ def t_check_dead_ends(description=""):
     return "\n\n".join(out)
 
 
-def t_record_evidence(hypothesis_id="", stance="", source="", note="", strength="moderate"):
-    k = schema.KINDS["evidence"]
-    if not STORE.exists(hypothesis_id) or not hypothesis_id.startswith("H"):
-        raise ValueError(f"hypothesis '{hypothesis_id}' 不存在。先用文件列表确认 id。")
-    if stance not in k.enums["stance"]:
-        raise ValueError(f"stance 必须是 {sorted(k.enums['stance'])} 之一，收到 '{stance}'。")
-    if strength not in k.enums["strength"]:
-        raise ValueError(f"strength 必须是 {sorted(k.enums['strength'])} 之一，收到 '{strength}'。")
-    if schema.split_id(source)[0] not in ("P", "X") or not (
-            STORE.exists(source) or (CFG.state / "experiments" / f"{source}.md").exists()):
-        raise ValueError(f"source '{source}' 无效：证据出处只能是已存在的 paper（P###）或 "
-                         "experiment（X###）。dead-end 不是出处——它引用证据，而不是反过来。")
-    if not note.strip():
-        raise ValueError("note 不能为空：必须说明这条证据具体说了什么。")
+def t_search_papers(query="", max_results=10):
+    """arXiv 检索。结果标出已登记的论文，避免重复登记。"""
+    if not query.strip():
+        raise ValueError("query 不能为空。")
+    try:
+        hits = library.arxiv_search(query, max_results=max_results)
+    except library.NetError as e:
+        raise ValueError(f"检索失败：{e}。稍后重试，或换个查询。") from e
+    log({"tool": "search_papers", "ok": True, "query": query[:200], "n": len(hits)})
+    if not hits:
+        return f"arXiv 检索「{query}」没有结果。换个说法，或用更宽的词。"
+    out = [f"arXiv 检索「{query}」前 {len(hits)} 条（按相关度）。登记要读的用 register_paper(ref=arXiv id)。"]
+    for h in hits:
+        pid = papers.find_paper(STORE, arxiv=h["arxiv"])
+        tag = f"【已登记 {pid}】" if pid else ""
+        au = ", ".join(h["authors"][:3]) + (" 等" if len(h["authors"]) > 3 else "")
+        out.append(f"- {tag}arXiv:{h['arxiv']}（{h['year']}）{h['title']} —— {au}\n  "
+                   f"{h['abstract'][:420]}{'…' if len(h['abstract']) > 420 else ''}")
+    return "\n".join(out)
 
-    with STORE.tx("evidence: 记录证据", actor="agent", task=TASK) as tx:
-        eid = tx.new_id("evidence")
-        tx.write_obj(eid, {"id": eid, "type": "evidence", "hypothesis": hypothesis_id,
-                           "stance": stance, "strength": strength, "source": source,
-                           "created": today()}, note.strip() + "\n")
-        # 回写假设的 evidence 列表：簿记归工具（§0.4）
-        hmeta, hbody = STORE.read_obj(hypothesis_id)
-        ev = list(hmeta.get("evidence") or [])
-        if eid not in ev:
-            ev.append(eid)
-        hmeta["evidence"] = ev
-        tx.write_obj(hypothesis_id, hmeta, hbody)
-        tx.note = f"{eid} → {hypothesis_id}"
-    log({"tool": "record_evidence", "ok": True, "id": eid,
-         "hypothesis": hypothesis_id, "stance": stance, "source": source})
-    return (f"已记录证据 {eid}（{hypothesis_id} / {stance} / {strength}，出处 {source}），"
-            f"并已自动写入 {hypothesis_id} 的 evidence 列表，你不需要手动编辑。")
+
+def t_register_paper(ref="", why="", for_targets=None):
+    pid, new, msg = papers.register(STORE, LIB, ref, why=why, for_targets=for_targets,
+                                    found_via=f"任务 {TASK}" if TASK else "", task=TASK)
+    log({"tool": "register_paper", "ok": True, "id": pid, "ref": ref, "new": new})
+    m, _ = STORE.read_obj(pid)
+    return (f"{'已登记' if new else '已存在'} {pid}：{m.get('title')}（{m.get('year') or '?'}）。"
+            f"{msg}。读它之前先调 open_paper({pid})。")
+
+
+def t_open_paper(paper_id=""):
+    text = papers.open_paper(STORE, LIB, paper_id, task=TASK)
+    log({"tool": "open_paper", "ok": True, "id": paper_id})
+    return text
+
+
+def t_record_evidence(target_id="", stance="", source="", note="", quote="", locator=None,
+                      strength="moderate", hypothesis_id=""):
+    target_id = target_id or hypothesis_id
+    eid, basis, moved = papers.record_evidence(
+        STORE, LIB, target_id, stance, source, note, quote=quote, locator=locator,
+        strength=strength, batch=modes.batch(STORE), task=TASK)
+    log({"tool": "record_evidence", "ok": True, "id": eid, "target": target_id,
+         "stance": stance, "source": source, "basis": basis})
+    return (f"已记录证据 {eid}（{target_id} / {stance} / {strength}，出处 {source}，"
+            f"依据{'全文' if basis == 'fulltext' else '摘要'}），引文已对照原文核实，"
+            f"并已写入 {target_id} 的 evidence 列表{moved}。")
 
 
 def t_transition_hypothesis(hypothesis_id="", new_status="", evidence_ids=None, rationale=""):
     """§0.4 的核心：无证据的状态迁移必须被硬拒绝。"""
-    evidence_ids = evidence_ids or []
-    if isinstance(evidence_ids, str):
-        evidence_ids = [x.strip() for x in evidence_ids.split(",") if x.strip()]
-    statuses = schema.KINDS["hypothesis"].enums["status"]
-    if not hypothesis_id.startswith("H") or not STORE.exists(hypothesis_id):
-        raise ValueError(f"hypothesis '{hypothesis_id}' 不存在。")
-    if new_status not in statuses:
-        raise ValueError(f"new_status 必须是 {sorted(statuses)} 之一，收到 '{new_status}'。")
-    if not evidence_ids:
-        raise ValueError("拒绝：状态迁移必须附带至少一条 evidence id。"
-                         "先用 record_evidence 记录证据，再用返回的 id 重试。")
-    missing = [e for e in evidence_ids if not (e.startswith("E") and STORE.exists(e))]
-    if missing:
-        raise ValueError(f"拒绝：evidence {missing} 不存在。只能引用 record_evidence 返回的 id。")
-    if not rationale.strip():
-        raise ValueError("rationale 不能为空：必须说明这些证据为何支持该状态迁移。")
-
-    with STORE.tx("hypothesis: 状态迁移", actor="agent", task=TASK) as tx:
-        meta, body = STORE.read_obj(hypothesis_id)
-        old = meta.get("status")
-        meta["status"] = new_status
-        meta["evidence"] = list(dict.fromkeys(list(meta.get("evidence") or []) + evidence_ids))
-        body = (f"{body.rstrip()}\n\n## 状态变更 {today()}\n\n"
-                f"{old} → {new_status}，依据 {', '.join(evidence_ids)}。\n\n{rationale.strip()}\n")
-        tx.write_obj(hypothesis_id, meta, body)
-        tx.note = f"{hypothesis_id} {old} → {new_status}"
-    new_reviews = reviews.reconcile(STORE, actor="agent", task=TASK)   # M5.6b 推翻的传播
+    old, new_reviews = papers.transition_hypothesis(STORE, hypothesis_id, new_status,
+                                                    evidence_ids or [], rationale, task=TASK)
     log({"tool": "transition_hypothesis", "ok": True, "id": hypothesis_id,
          "from": old, "to": new_status, "evidence": evidence_ids, "reviews": new_reviews})
-    msg = f"{hypothesis_id}: {old} → {new_status}，已记录依据 {', '.join(evidence_ids)}。"
+    msg = f"{hypothesis_id}: {old} → {new_status}，已记录依据 {', '.join(papers._as_list(evidence_ids))}。"
     if new_reviews:
         msg += f"相关对象已列入待重新审视：{', '.join(new_reviews)}（由人判断，不要自行改写它们）。"
     return msg
+
+
+def t_examine_assumption(assumption_id="", verdict="", evidence_ids=None, note=""):
+    old = papers.examine_assumption(STORE, assumption_id, verdict, evidence_ids or [], note,
+                                    task=TASK)
+    log({"tool": "examine_assumption", "ok": True, "id": assumption_id, "verdict": verdict})
+    return f"{assumption_id}: {old} → examined（{verdict}）。"
 
 
 def t_invalidate_assumption(assumption_id="", evidence_ids=None, rationale=""):
     evidence_ids = evidence_ids or []
     if any(not e.startswith("E") for e in evidence_ids):
         raise ValueError("agent 推翻前提只能依据 evidence（E###）。")
-    new_reviews = reviews.invalidate_assumption(STORE, assumption_id, evidence_ids, rationale,
-                                                actor="agent", task=TASK)
+    new_reviews = papers.invalidate_by_evidence(STORE, assumption_id, evidence_ids, rationale,
+                                                task=TASK)
     log({"tool": "invalidate_assumption", "ok": True, "id": assumption_id, "reviews": new_reviews})
     return (f"{assumption_id} 已标记为被推翻。依赖它的对象已列入待重新审视："
             f"{', '.join(new_reviews) or '（无）'}。由人判断，不要自行改写它们。")
+
+
+def t_request_paper(paper_id="", why="", blocking=True):
+    rid, new = papers.request_paper(STORE, paper_id, why, blocking=bool(blocking), task=TASK)
+    log({"tool": "request_paper", "ok": True, "id": rid, "paper": paper_id,
+         "blocking": bool(blocking), "new": new})
+    if blocking:
+        return (f"已登记全文请求 {rid}（{paper_id}），研究者会经清华认证取回后上传。"
+                "**本任务将挂起等待全文**：现在用 checkpoint 记下做到哪、拿到全文后要做什么，然后结束本任务。"
+                "上传后任务会带着你的 checkpoint 重新开始。")
+    return f"已登记全文请求 {rid}（{paper_id}）。本任务不挂起，继续按摘要级完成。"
+
+
+def t_annotate_grounding(target_id="", verdict="", refs=None, note=""):
+    gid = papers.annotate_grounding(STORE, target_id, verdict, refs or [], note, task=TASK)
+    log({"tool": "annotate_grounding", "ok": True, "id": gid, "target": target_id,
+         "verdict": verdict})
+    return f"已记录接地结论 {gid}（{target_id}：{verdict}）。被核查对象保持原样，由研究者判断。"
 
 
 def t_log_decision(what="", why="", kind="research", refs=None):
@@ -178,14 +195,16 @@ def t_propose_candidate(kind="", statement="", rationale="", origin="", source="
                         turns=None, origin_note="", relied_on_by=None, falsifier="",
                         validation="", confidence="", maturity="", importance="",
                         relates_to=None, basis=None, firmness="", change_mind="",
-                        informs=None, derived_from=""):
+                        informs=None, derived_from="", promoted_from=""):
+    if PROFILE == "judge":        # 评判类任务：候选出自本任务，origin 固定 ai（§5.6）
+        source, origin, turns, origin_note = TASK, "ai", [], ""
     cid = candidates.propose(
         STORE, kind=kind, statement=statement, rationale=rationale, origin=origin,
         source=source, turns=turns, origin_note=origin_note, relates_to=relates_to,
         task=TASK, actor="agent", relied_on_by=relied_on_by, falsifier=falsifier,
         validation=validation, confidence=confidence, maturity=maturity,
         importance=importance, basis=basis, firmness=firmness, change_mind=change_mind,
-        informs=informs, derived_from=derived_from)
+        informs=informs, derived_from=derived_from, promoted_from=promoted_from)
     log({"tool": "propose_candidate", "ok": True, "id": cid, "kind": kind, "origin": origin})
     return (f"已提交候选 {cid}（{kind}）。它在人确认前**不是**正式 State 对象；"
             "不要再为同一内容重复提交。")
@@ -196,6 +215,17 @@ def t_update_discussion_summary(discussion_id="", summary="", covers_through=0):
     log({"tool": "update_discussion_summary", "ok": True, "id": discussion_id,
          "covers_through": int(covers_through)})
     return f"已更新 {discussion_id} 的摘要，覆盖至第 {int(covers_through)} 轮。"
+
+
+def t_note_prep_request(topic="", turn=0):
+    """研究者在讨论里回答了“今晚查什么”：记下原话，夜间预习据此选题（M2.0）。"""
+    if not topic.strip():
+        raise ValueError("topic 不能为空：写研究者的原话或忠实转述。")
+    rec = {"text": topic.strip(), "ts": now(), "source": f"讨论第 {int(turn)} 轮" if turn else "讨论中",
+           "task": TASK}
+    (CFG.run / "prep_request.json").write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+    log({"tool": "note_prep_request", "ok": True, "topic": topic[:200]})
+    return "已记下。研究者离开后窗口空闲时，夜间预习会先查这个，次日在前端说明。"
 
 
 def t_checkpoint(note=""):
@@ -215,24 +245,60 @@ TOOLS = [
     ("check_dead_ends", t_check_dead_ends,
      "列出本项目全部已关闭的研究方向，避免重复已经失败过的尝试。展开任何新方向前应先调用。",
      {"description": (S, "要检查的思路描述（只用于排序，不会过滤掉任何条目）", True)}),
+    ("search_papers", t_search_papers,
+     "在 arXiv 检索论文（标题、摘要、年份）。结果会标出已登记的论文。"
+     "支持 arXiv 查询语法（ti: abs: au: cat:），否则按关键词 AND 检索。",
+     {"query": (S, "检索词，英文效果最好", True),
+      "max_results": (I, "返回条数，默认 10，最多 30", False)}),
+    ("register_paper", t_register_paper,
+     "登记一篇真实论文：工具会去 arXiv / Crossref 核实元数据，查不到就拒绝；arXiv 论文同时取回全文。"
+     "只能登记能核实的论文——不要凭记忆写编号。",
+     {"ref": (S, "arXiv id（如 2406.09246）、DOI 或 URL", True),
+      "why": (S, "为什么要读它：它和哪条假设 / 前提有关", True),
+      "for_targets": (A, "为哪些 H### / A### 而读", False)}),
+    ("open_paper", t_open_paper,
+     "打开一篇已登记的论文：返回全文文件路径与目录。读完用 Read 读这个文件。",
+     {"paper_id": (S, "P###", True)}),
     ("record_evidence", t_record_evidence,
-     "为某条 hypothesis 记录一条证据。出处必须是已存在的 paper 或 experiment。",
-     {"hypothesis_id": (S, "目标假设 id，如 H001", True),
+     "为某条假设或前提记录一条证据。出处必须是已登记的论文（或实验）；"
+     "quote 必须是 locator 所指段落里的逐字原文，工具会核对，对不上就拒绝。",
+     {"target_id": (S, "目标：假设 H### 或前提 A###", True),
       "stance": (S, "support / contradict / neutral", True),
       "source": (S, "出处：P### 或 X###（不能是 dead-end）", True),
-      "note": (S, "这条证据具体说了什么，不能为空", True),
-      "strength": (S, "weak / moderate / strong，默认 moderate", False)}),
+      "locator": (A, "段落锚点列表，取自全文每段开头的方括号，如 [\"s4.1-p2\"]、[\"tab2\"]、[\"abstract-p1\"]", True),
+      "quote": (S, "所引段落里的逐字原文摘录（英文原文，一两句，≤400 字符）", True),
+      "note": (S, "这条证据具体说明了什么、为什么是这个立场（中文）", True),
+      "strength": (S, "weak / moderate / strong，默认 moderate；只读了摘要不能是 strong", False)}),
     ("transition_hypothesis", t_transition_hypothesis,
-     "变更某条 hypothesis 的状态。必须附带至少一条已存在的 evidence id，否则会被拒绝。",
+     "变更某条假设的状态。必须附带关于它的 evidence id；迁到 supported / refuted 至少要一条读过全文的"
+     "对应立场证据。abandoned 只有研究者能做。",
      {"hypothesis_id": (S, "目标假设 id", True),
-      "new_status": (S, "proposed / investigating / supported / refuted / inconclusive / abandoned", True),
+      "new_status": (S, "investigating / supported / refuted / inconclusive", True),
       "evidence_ids": (A, "支撑本次迁移的 evidence id 列表", True),
       "rationale": (S, "这些证据为何支持该迁移，不能为空", True)}),
+    ("examine_assumption", t_examine_assumption,
+     "给出前提审视的结论：holds（经核查站得住）或 fragile（站得住但脆弱）。必须附关于该前提的证据。"
+     "若证据表明它不成立，改用 invalidate_assumption。",
+     {"assumption_id": (S, "A###", True), "verdict": (S, "holds / fragile", True),
+      "evidence_ids": (A, "target 为该前提的 evidence id", True),
+      "note": (S, "审视了什么、为什么得出这个结论", True)}),
     ("invalidate_assumption", t_invalidate_assumption,
-     "推翻一条前提（assumption）。必须附证据；所有依赖它的对象会自动列入待重新审视，由人判断。",
+     "推翻一条前提。必须附至少一条 target 为它、stance 为 contradict 的证据；"
+     "所有依赖它的对象会自动列入待重新审视，由人判断。",
      {"assumption_id": (S, "目标前提 id，如 A001", True),
       "evidence_ids": (A, "证明它不成立的 evidence id 列表", True),
       "rationale": (S, "为什么这些证据推翻了它", True)}),
+    ("request_paper", t_request_paper,
+     "某篇已登记论文的全文拿不到、但判断必须读全文时，请研究者经清华认证取回。",
+     {"paper_id": (S, "P###（先用 register_paper 按 DOI 登记）", True),
+      "why": (S, "为什么必须读全文：它可能改变哪条判断", True),
+      "blocking": ("boolean", "true = 本任务挂起等全文；false = 不等，按摘要级做完", False)}),
+    ("annotate_grounding", t_annotate_grounding,
+     "对抗性接地的结论：这个想法有人做过吗、有没有直接反驳。只标注，不改被核查的对象。",
+     {"target_id": (S, "被核查对象：H### / A### / C###", True),
+      "verdict": (S, "novel（没找到先例）/ prior_work（已有人做过）/ contradicted（被直接反驳）/ mixed", True),
+      "refs": (A, "支撑结论的 P### / E###（novel 以外必填）", False),
+      "note": (S, "核查了什么、找到了什么", True)}),
     ("log_decision", t_log_decision,
      "记录一条研究决策及其理由。",
      {"what": (S, "做了什么决定", True), "why": (S, "为什么", True),
@@ -247,10 +313,10 @@ TOOLS = [
      {"kind": (S, "assumption / hypothesis / question / uncertainty / insight", True),
       "statement": (S, "一句话陈述（可附简短展开）", True),
       "rationale": (S, "为什么这是研究内容、为什么归为这一类、与已有对象的关系", True),
-      "origin": (S, "human / ai / unclear：按讨论记录里谁先提出。拿不准或与已有记录冲突就写 unclear", True),
+      "origin": (S, "human / ai / unclear：按讨论记录里谁先提出。拿不准或与已有记录冲突就写 unclear（验证任务不用填）", False),
       "origin_note": (S, "origin=unclear 时必填：冲突在哪", False),
-      "source": (S, "讨论 id，如 DS001", True),
-      "turns": (AI, "依据的讨论轮次号列表", True),
+      "source": (S, "讨论 id，如 DS001（验证任务不用填）", False),
+      "turns": (AI, "依据的讨论轮次号列表（验证任务不用填）", False),
       "relied_on_by": (A, "assumption 必填：它支撑着哪些已存在对象的 id（如 Q001、H002）", False),
       "falsifier": (S, "hypothesis 必填：什么结果会反驳它", False),
       "validation": (S, "hypothesis 必填：讨论中安排的验证方式", False),
@@ -258,17 +324,22 @@ TOOLS = [
       "maturity": (S, "question 必填：vague / scoped / formalized", False),
       "importance": (S, "uncertainty 必填：low / medium / high", False),
       "relates_to": (A, "相关的已有对象 id（细化、对立、重叠）", False),
-      "basis": (A, "insight 必填：这条理解的根基——State 里真实存在的对象 id（DS###、E###、H###、P###……）", False),
+      "basis": (A, "insight 必填：这条理解的根基——State 里真实存在的对象 id（DS###、E###、H###、P###……）；验证任务提出的候选必填，指向 E### / P###", False),
       "firmness": (S, "insight 必填：hunch（直觉）/ working（工作理解）/ settled（稳固理解）", False),
       "change_mind": (S, "insight 可选：什么会让这个看法改变", False),
       "informs": (A, "insight 可选：它影响了哪些对象的判断", False),
-      "derived_from": (S, "assumption 可选：若这条前提来自“凭某条理解排除方向”，写那条理解的 id（IN###）", False)}),
+      "derived_from": (S, "assumption 可选：若这条前提来自“凭某条理解排除方向”，写那条理解的 id（IN###）", False),
+      "promoted_from": (S, "hypothesis 可选：由哪条前提（A###）提升而来——前提审视发现它可证伪、值得安排验证时", False)}),
     ("update_discussion_summary", t_update_discussion_summary,
      "更新某个讨论的滚动摘要。摘要必须覆盖从第 1 轮到 covers_through 的全部要点"
      "（在旧摘要基础上合并，而不是只写新增部分），因为之后的 session 只会看到摘要与其后的原文。",
      {"discussion_id": (S, "讨论 id，如 DS001", True),
       "summary": (S, "完整的滚动摘要（markdown）", True),
       "covers_through": (I, "摘要覆盖到的最后一轮轮次号", True)}),
+    ("note_prep_request", t_note_prep_request,
+     "研究者明确回答了“今晚（他不在时）去查什么”时，记下他的要求。只记研究者自己说的，不要替他拟题。",
+     {"topic": (S, "研究者要你去查的内容（原话或忠实转述）", True),
+      "turn": (I, "研究者说这话的轮次", False)}),
     ("checkpoint", t_checkpoint,
      "记录本任务的进度笔记（做到哪、下一步是什么）。任务可能随时被切断，"
      "每完成一个有意义的步骤就记一条，下一班从这里接上。",
@@ -283,6 +354,8 @@ def schema_of(params):
             t = {"type": "array", "items": {"type": "string"}}
         elif typ == AI:
             t = {"type": "array", "items": {"type": "integer"}}
+        elif typ == "boolean":
+            t = {"type": "boolean"}
         else:
             t = {"type": typ}
         props[name] = dict(t, description=desc)

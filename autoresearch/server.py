@@ -11,7 +11,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import candidates, discussion, frontmatter, insights, metrics, reviews, schema
+from . import candidates, discussion, frontmatter, insights, metrics, observe, papers, reviews, schema
+from .library import Library
 
 STATIC = Path(__file__).resolve().parent / "static"
 MIME = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
@@ -51,7 +52,8 @@ def make_handler(app):
                 "assumptions": objs("assumption"),
                 "hypotheses": objs("hypothesis"), "uncertainties": objs("uncertainty"),
                 "dead_ends": objs("dead-end"), "evidence": objs("evidence"),
-                "papers": objs("paper"),
+                "papers": objs("paper"), "groundings": objs("grounding"),
+                "mode": d.mode_view(),
                 "bias": metrics.bias_by_origin(st),
                 "reviews": reviews.list_all(st, "open"),
                 "validation": {"errors": errs, "warnings": warns},
@@ -178,6 +180,94 @@ def make_handler(app):
         app.bus.publish("state", {"review": rid})
         return {"ok": True}
 
+    # ------------------------------------------------------------ 模式与交棒（§5.7）
+
+    @route("GET", "/api/mode")
+    def get_mode(req, q):
+        return d.mode_view()
+
+    @route("POST", "/api/mode/handoff")
+    def handoff(req, q):
+        b = req.json()
+        did, batch = d.handoff(b.get("items") or [], b.get("note", ""))
+        app.bus.publish("state", {"mode": "validation"})
+        return {"decision": did, "batch": batch}
+
+    @route("POST", "/api/mode/recall")
+    def recall(req, q):
+        did = d.recall(req.json().get("reason", ""))
+        app.bus.publish("state", {"mode": "discussion"})
+        return {"decision": did}
+
+    @route("POST", "/api/mode/continue")
+    def cont(req, q):
+        return {"decision": d.continue_validation(req.json().get("reason", ""))}
+
+    @route("POST", "/api/prep-request")
+    def prep_request(req, q):
+        d.set_prep_request(req.json().get("text", ""), "Chat 页")
+        return d.mode_view()
+
+    @route("GET", "/api/prep")
+    def prep(req, q):
+        v = d.mode_view().get("prep") or {}
+        did = v.get("decision")
+        if not did:
+            return {"prep": v}
+        meta, body = st.read_obj(did)
+        tasks = [t for t in d.ledger.all() if t.get("prep") == did]
+        return {"prep": v, "decision": dict(meta or {}, body=body),
+                "tasks": [{k: t.get(k) for k in ("id", "kind", "status", "goal", "result_brief", "paper")}
+                          for t in tasks]}
+
+    # ------------------------------------------------------------ 文献与观察（M4 / M8）
+
+    @route("GET", "/api/reading")
+    def reading(req, q):
+        return observe.reading(st, d.ledger)
+
+    @route("GET", "/api/chain/(?P<tid>[HA]\\d+)")
+    def chain(req, q, tid):
+        return observe.chain(st, d.ledger, app.cfg, tid)
+
+    @route("GET", "/api/papers/(?P<pid>P\\d+)")
+    def get_paper(req, q, pid):
+        return observe.paper(st, d.ledger, app.cfg, pid)
+
+    @route("GET", "/api/papers/(?P<pid>P\\d+)/fulltext")
+    def fulltext(req, q, pid):
+        p = Library(app.cfg.library).fulltext_path(pid)
+        if not p.exists():
+            raise ApiError(404, f"{pid} 没有全文")
+        return {"text": p.read_text(encoding="utf-8")}
+
+    @route("GET", "/api/requests")
+    def list_requests(req, q):
+        return observe.requests(st, d.ledger)
+
+    @route("POST", "/api/requests/(?P<rid>RQ\\d+)/upload")
+    def upload(req, q, rid):
+        raw = req.raw(limit=100 * 1024 * 1024)
+        task, info = papers.fulfill_request(st, Library(app.cfg.library), rid, raw)
+        n = d.unblock(rid)
+        app.bus.publish("state", {"request": rid})
+        app.bus.notify("info", f"{rid}: PDF received ({info['anchors']} paragraphs indexed)"
+                       + (f"; resumed {n} suspended task(s)." if n else "."))
+        return {"ok": True, "anchors": info["anchors"], "resumed": n}
+
+    @route("POST", "/api/requests/(?P<rid>RQ\\d+)/dismiss")
+    def dismiss(req, q, rid):
+        reason = req.json().get("reason", "")
+        papers.dismiss_request(st, rid, reason)
+        n = d.unblock(rid, note=f"全文拿不到（研究者：{reason.strip()}）。只能按摘要级处理，"
+                             "或说明没有全文无法判断后结束。")
+        app.bus.publish("state", {"request": rid})
+        return {"ok": True, "resumed": n}
+
+    @route("POST", "/api/grounding")
+    def grounding(req, q):
+        return {"task": d.request_grounding((req.json().get("target") or "").strip())}
+
     # ------------------------------------------------------------ 班次 / 任务 / 通知
 
     @route("GET", "/api/shift")
@@ -237,6 +327,14 @@ class Handler(BaseHTTPRequestHandler):
             return json.loads(self.rfile.read(n).decode("utf-8"))
         except json.JSONDecodeError:
             raise ApiError(400, "请求体不是合法 JSON")
+
+    def raw(self, limit):
+        n = int(self.headers.get("Content-Length") or 0)
+        if not n:
+            raise ApiError(400, "请求体为空")
+        if n > limit:
+            raise ApiError(413, f"文件太大（>{limit // 1024 // 1024}MB）")
+        return self.rfile.read(n)
 
     def _send(self, status, body, ctype="application/json; charset=utf-8"):
         data = body if isinstance(body, bytes) else \

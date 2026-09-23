@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
+  <entry>
+    <id>http://arxiv.org/abs/2401.00001v2</id>
+    <title>Contact-Rich Manipulation Needs High-Frequency Feedback</title>
+    <summary>We study fine-grained contact-rich manipulation. We find that scaling demonstrations with a fixed low-frequency action chunk saturates, while closing the loop on force feedback at high frequency keeps improving.</summary>
+    <published>2024-01-02T00:00:00Z</published>
+    <author><name>Ada Example</name></author>
+    <author><name>Bo Sample</name></author>
+    <category term="cs.RO"/>
+  </entry>
+</feed>

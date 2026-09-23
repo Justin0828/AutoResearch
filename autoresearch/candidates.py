@@ -5,7 +5,7 @@ provenance、回填 promoted_to——这些簿记归代码，不归 agent（§0.
 """
 import re
 
-from . import discussion, frontmatter, schema
+from . import attribution, discussion, frontmatter, schema
 from .store import today
 
 TARGET_TYPE = {"assumption": "assumption", "hypothesis": "hypothesis",
@@ -81,15 +81,25 @@ def validate_proposal(store, kind, statement, rationale, origin, origin_note, so
         raise ValueError("origin 必须是 human / ai / unclear。")
     if origin == "unclear" and not origin_note.strip():
         raise ValueError("origin=unclear 时必须在 origin_note 说明归属冲突在哪。")
-    if not store.exists(source):
-        raise ValueError(f"source 讨论 {source} 不存在。")
-    _, ts = discussion.read(store, source)
-    valid = {t["n"] for t in ts}
-    if not turns:
-        raise ValueError("turns 不能为空：写出依据的讨论轮次号。")
-    bad = [t for t in turns if t not in valid]
-    if bad:
-        raise ValueError(f"turns 中 {bad} 不是 {source} 的轮次（现有 1..{max(valid or [0])}）。")
+    if schema.TASK_ID.match(source or ""):
+        # 验证模式的任务提出的候选（§5.6）：没有讨论轮次，根基必须指向证据或论文
+        if origin != "ai":
+            raise ValueError("验证任务提出的候选 origin 只能是 ai。")
+        if kind == "insight":
+            raise ValueError("评判类任务不提 insight：理解是研究者与讨论的产物。")
+        basis = fields.get("basis") or []
+        if not basis or any(schema.split_id(b)[0] not in ("E", "P") for b in basis):
+            raise ValueError("basis 必须给出支撑这个候选的证据或论文（E### / P###）。")
+    else:
+        if not store.exists(source):
+            raise ValueError(f"source 讨论 {source} 不存在。")
+        _, ts = discussion.read(store, source)
+        valid = {t["n"] for t in ts}
+        if not turns:
+            raise ValueError("turns 不能为空：写出依据的讨论轮次号。")
+        bad = [t for t in turns if t not in valid]
+        if bad:
+            raise ValueError(f"turns 中 {bad} 不是 {source} 的轮次（现有 1..{max(valid or [0])}）。")
     for f in schema.CANDIDATE_FIELDS[kind]:
         if not fields.get(f):
             raise ValueError(_missing_hint(kind, f))
@@ -152,6 +162,10 @@ def propose(store, *, kind, statement, rationale, origin, source, turns,
         for f in TARGET_FIELDS[kind]:
             if f in fields:
                 meta[f] = fields[f]
+        if kind != "insight" and fields.get("basis"):
+            meta["basis"] = fields["basis"]
+        if schema.TASK_ID.match(source or ""):
+            meta.pop("turns", None)
         meta["created"] = today()
         tx.write_obj(cid, meta, _body(statement, rationale))
         tx.note = f"{cid}（{kind}）"
@@ -187,6 +201,8 @@ def accept(store, cid, origin=None, changes=None, actor="human"):
     kind = meta["kind"]
     s = _sections(body)
     fields = {k: meta[k] for k in TARGET_FIELDS[kind] if meta.get(k) not in (None, "", [])}
+    if meta.get("basis") and "basis" not in fields:
+        fields["basis"] = _as_list(meta["basis"])
     validate_proposal(store, kind, s.get("陈述", ""), s.get("理由", "") or "-", origin, "",
                       meta["source"], [int(t) for t in _as_list(meta.get("turns"))], fields)
 
@@ -199,14 +215,16 @@ def accept(store, cid, origin=None, changes=None, actor="human"):
                        fragile=fields.get("fragile"))
         elif ttype == "hypothesis":
             obj.update(status="proposed", confidence=fields.get("confidence", "low"),
-                       falsifier=fields["falsifier"], validation=fields["validation"],
+                       falsifier=attribution.neutralize(fields["falsifier"]),
+                       validation=attribution.neutralize(fields["validation"]),
                        evidence=[], promoted_from=fields.get("promoted_from"))
         elif ttype == "question":
             obj.update(maturity=fields["maturity"])
         elif ttype == "uncertainty":
             obj.update(status="open", importance=fields["importance"])
         elif ttype == "insight":
-            basis = list(dict.fromkeys(_as_list(fields.get("basis")) + [meta["source"]]))
+            basis = list(dict.fromkeys(_as_list(fields.get("basis")) +
+                                       ([meta["source"]] if meta["source"].startswith("DS") else [])))
             obj.update(status="active", firmness=fields["firmness"], basis=basis,
                        basis_note=fields.get("basis_note"),
                        informs=_as_list(fields.get("informs")) or None,
@@ -214,11 +232,21 @@ def accept(store, cid, origin=None, changes=None, actor="human"):
         if ttype == "assumption" and fields.get("derived_from"):
             obj["derived_from"] = fields["derived_from"]
         obj["created"] = today()
-        text = s.get("陈述", "").strip() + "\n\n## 来由\n\n" + s.get("理由", "").strip() + \
-            f"\n\n（经候选 {cid} 确认，出自讨论 {meta['source']} 第 {', '.join(map(str, _as_list(meta.get('turns'))))} 轮。）\n"
+        # 正式对象只写中性化的陈述；理由（常带“研究者认为 / AI 提议”）留在候选里，
+        # 评判类任务读不到候选（§5.6 第 3 层）
+        text = attribution.neutralize(s.get("陈述", "")).strip() + f"\n\n（来由见候选 {cid}。）\n"
         tx.write_obj(new, obj, text)
-        rec = {"origin": origin, "source": cid, "discussion": meta["source"],
-               "turns": [int(t) for t in _as_list(meta.get("turns"))]}
+        if ttype == "hypothesis" and fields.get("promoted_from"):
+            # 前提被安排验证 → 提升为假设（M5.1b），双向链接由这里维护
+            am, ab = store.read_obj(fields["promoted_from"])
+            if am and am.get("type") == "assumption":
+                am.update(status="promoted", promoted_to=new)
+                tx.write_obj(am["id"], am, ab.rstrip() + f"\n\n## 提升（{today()}）\n\n已安排验证，提升为 {new}。\n")
+        if meta["source"].startswith("DS"):
+            rec = {"origin": origin, "source": cid, "discussion": meta["source"],
+                   "turns": [int(t) for t in _as_list(meta.get("turns"))]}
+        else:
+            rec = {"origin": origin, "source": cid, "task": meta["source"]}
         if meta.get("origin") == "unclear":
             rec["note"] = f"蒸馏时归属不明（{meta.get('origin_note', '')}），由人裁定为 {origin}"
         tx.set_provenance(new, rec)

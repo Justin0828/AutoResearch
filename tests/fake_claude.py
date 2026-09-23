@@ -6,6 +6,8 @@ sleep          吐一半回复后挂住，等着被 SIGKILL
 exhaust        rate_limit_event status=rejected，随后 is_error 的 result
 distill        真的启动 MCP server，提交一个候选并更新摘要
 distill_sleep  提交一个候选、记一条 checkpoint 后挂住
+judge          按 briefing 里的任务种类驱动 Phase 2 的 MCP 工具（检索 / 精读 / 评估 / 扫描 / 接地）。
+               FAKE_BAD_EDIT=1 时精读任务会越界改论文的 title（应被 runner 回滚）
 """
 import json
 import os
@@ -98,6 +100,10 @@ def main():
         result(reply)
         return
 
+    if mode == "judge" or (mode == "reply" and "证据评判" in (arg("--append-system-prompt") or "")):
+        judge(brief, prompt)
+        return
+
     if mode in ("distill", "distill_sleep"):
         m = re.search(r"讨论 (DS\d+) 的第 (\d+)–(\d+) 轮", prompt)
         ds, lo, hi = m.group(1), int(m.group(2)), int(m.group(3))
@@ -113,6 +119,68 @@ def main():
                  summary=f"研究者认为感知不是瓶颈（C001）。覆盖到第 {hi} 轮。", covers_through=hi)
         result("收了 1 条 assumption。")
         return
+
+
+def edit(path, old, new, tid="edit1"):
+    """模拟内置 Edit：发 tool_use → 改文件 → 发 tool_result（runner 据此提交或回滚）。"""
+    emit({"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": tid, "name": "Edit", "input": {"file_path": path}}]}})
+    t = open(path, encoding="utf-8").read()
+    open(path, "w", encoding="utf-8").write(t.replace(old, new, 1))
+    emit({"type": "user", "message": {"content": [
+        {"type": "tool_result", "tool_use_id": tid, "content": "ok"}]}})
+
+
+def judge(brief, prompt):
+    kind = re.search(r"- 任务：`T\d+`（(\w+)）", brief).group(1)
+    target = (re.search(r"本次目标：\*\*([HA]\d+)\*\*", brief) or [None, None])[1]
+    paper = (re.search(r"本次论文：\*\*(P\d+)\*\*", brief) or [None, None])[1]
+    state = arg("--add-dir")
+    mcp = Mcp()
+    if kind == "lit_search":
+        mcp.call("search_papers", query="contact rich manipulation feedback")
+        ref = os.environ.get("FAKE_REF_" + (target or "X"), "2401.00001")
+        mcp.call("register_paper", ref=ref, why="检验目标", for_targets=[target] if target else [])
+        mcp.call("checkpoint", note="登记完毕")
+        result("登记了 1 篇")
+    elif kind == "read_paper":
+        opened = mcp.call("open_paper", paper_id=paper)
+        pf = os.path.join(state, "papers", f"{paper}.md")
+        edit(pf, "（尚未精读。）", "问题：数据规模还是反馈频率。结论：固定低频 chunk 饱和。")
+        if os.environ.get("FAKE_BAD_EDIT"):
+            t = open(pf, encoding="utf-8").read()
+            edit(pf, re.search(r"^title: (.+)$", t, re.M).group(1), "Tampered Title", "edit2")
+        if "只有摘要" in opened:
+            mcp.call("request_paper", paper_id=paper, why="需要实验细节", blocking=True)
+            mcp.call("checkpoint", note="等全文")
+            result("已请求全文，挂起")
+            return
+        lib = os.path.join(os.path.dirname(state), "library", paper, "anchors.json")
+        anchors = json.load(open(lib, encoding="utf-8"))
+        a = next(k for k in anchors if not k.startswith(("abstract", "fig", "tab")) and
+                 ("plateau" in anchors[k] or "88 percent" in anchors[k] or k.endswith("-p1")))
+        mcp.call("record_evidence", target_id=target, stance=os.environ.get("FAKE_STANCE", "contradict"),
+                 source=paper, locator=[a], quote=anchors[a][:120], note="实验显示饱和",
+                 strength="strong")
+        mcp.call("checkpoint", note="证据已记")
+        result("记了 1 条证据")
+    elif kind == "assess":
+        ev_dir = os.path.join(state, "evidence")
+        ids = sorted(f[:-3] for f in os.listdir(ev_dir)
+                     if re.search(rf"^target: {target}$", open(os.path.join(ev_dir, f)).read(), re.M))
+        if target.startswith("H"):
+            mcp.call("transition_hypothesis", hypothesis_id=target,
+                     new_status=os.environ.get("FAKE_VERDICT", "refuted"), evidence_ids=ids,
+                     rationale="全文实验直接反驳")
+        else:
+            mcp.call("examine_assumption", assumption_id=target, verdict="holds", evidence_ids=ids,
+                     note="文献支持")
+        result("评估完毕")
+    elif kind == "grounding":
+        mcp.call("annotate_grounding", target_id=target, verdict="novel", note="没找到先例")
+        result("接地完毕")
+    else:
+        result("没有发现冲突")
 
 
 if __name__ == "__main__":

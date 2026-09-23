@@ -12,10 +12,10 @@ import sys
 import threading
 import uuid
 
-from . import schema
+from . import frontmatter, schema
 from .briefing import Assembler
 from .config import CODE_ROOT
-from .tasks import KINDS, deny_rules
+from .tasks import KINDS, allow_rules, deny_rules
 
 WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 
@@ -58,11 +58,12 @@ class Runner:
             "args": ["-m", "autoresearch.mcp_server"],
             "env": {"AR_ROOT": str(self.cfg.root), "AR_TASK": task["id"],
                     "AR_TASK_DIR": str(tdir), "AR_TOOLSET": ",".join(spec["mcp"]),
+                    "AR_PROFILE": spec["profile"],
                     "PYTHONPATH": str(CODE_ROOT)},
         }}}, ensure_ascii=False, indent=1), encoding="utf-8")
 
         sid = str(uuid.uuid4())
-        allowed = spec["tools"] + [f"mcp__state__{t}" for t in spec["mcp"]]
+        allowed = allow_rules(task["kind"], self.store.state)
         cmd = [
             self.cfg.claude_bin, "-p", prompt,
             "--output-format", "stream-json", "--include-partial-messages", "--verbose",
@@ -75,8 +76,10 @@ class Runner:
             "--setting-sources", "",
             "--no-session-persistence",
             "--add-dir", str(self.store.state),
-            "--append-system-prompt", spec["protocol"],
         ]
+        if spec["profile"] == "judge":
+            cmd += ["--add-dir", str(self.cfg.library)]     # 论文全文（§5.5）
+        cmd += ["--append-system-prompt", spec["protocol"]]
         if self.cfg.model:
             cmd += ["--model", self.cfg.model]
         return cmd, sid
@@ -182,30 +185,71 @@ class Runner:
                 out.status = "done"
 
     def _commit_agent_write(self, task, path):
-        """§5.4：agent 直接编辑文件时，看到 tool_result 即提交；触碰受保护路径则回滚。
+        """§5.4：agent 直接编辑文件时，看到 tool_result 即提交；越界则回滚并记违规。
 
-        Phase 1 的任务不给 Write/Edit，这条路径是为 Phase 2+ 预留的闸。
+        越界有三种：受保护路径（§5.1）、本任务 writable 之外的 State 路径、改了论文的
+        身份 / 阅读状态字段（字段级受保护，§5.5）。deny 规则在执行层已经挡了一遍，这里是第二道。
         """
         if not path:
             return
         try:
-            rel = os.path.relpath(path, self.store.state)
+            rel = os.path.relpath(os.path.realpath(path), os.path.realpath(self.store.state))
         except ValueError:
             return
         if rel.startswith(".."):
             return
+        writable = tuple(KINDS[task["kind"]].get("writable", ()))
+        why = None
         if schema.is_protected(rel):
+            why = "受保护路径"
+        elif not rel.startswith(writable):
+            why = "本任务不允许写这个路径"
+        elif rel.startswith("papers/"):
+            bad = self._paper_fields_changed(rel)
+            if bad:
+                # 字段级回滚：frontmatter 恢复成 HEAD 版本，笔记正文保留（agent 很快，runner 处理
+                # 这条 tool_result 时，工作区里可能已经叠了它之后的合法笔记，整文件回滚会误伤）
+                with self.store.locked():
+                    hm, _ = frontmatter.parse(self.store.git("show", f"HEAD:{rel}"))
+                    try:
+                        _, body = frontmatter.parse((self.store.state / rel).read_text(encoding="utf-8"))
+                    except frontmatter.FrontmatterError:
+                        body = ""
+                    (self.store.state / rel).write_text(frontmatter.dump(hm, body), encoding="utf-8")
+                    self.store._commit([rel], f"agent({task['kind']}): 编辑 {rel}（越界字段已恢复）",
+                                       "agent", task["id"])
+                self._violation(task, rel, bad + "，已恢复这些字段，笔记保留")
+                return
+        if why:
             with self.store.locked():
                 tracked = self.store.git("ls-files", "--", rel).strip()
                 if tracked:
                     self.store.git("checkout", "--", rel)
                 else:
                     (self.store.state / rel).unlink(missing_ok=True)
-            self.bus.notify("warn", f"{task['id']} tried to edit the protected path {rel} directly; the change was rolled back.",
-                            task=task["id"])
+            self._violation(task, rel, why + "，整文件已回滚")
             return
         with self.store.locked():
             self.store._commit([rel], f"agent({task['kind']}): 编辑 {rel}", "agent", task["id"])
+
+    def _violation(self, task, rel, why):
+        self.bus.notify("warn", f"{task['id']} edited {rel} out of bounds ({why}).", task=task["id"])
+        with open(self.ledger.path(task["id"]) / "violations.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps({"path": rel, "why": why}, ensure_ascii=False) + "\n")
+
+    def _paper_fields_changed(self, rel):
+        old = self.store.git("show", f"HEAD:{rel}", check=False)
+        if not old:
+            return "论文只能经 register_paper 登记"
+        try:
+            om, _ = frontmatter.parse(old)
+            nm, _ = frontmatter.parse((self.store.state / rel).read_text(encoding="utf-8"))
+        except (frontmatter.FrontmatterError, OSError):
+            return "frontmatter 无法解析"
+        if nm is None:
+            return "frontmatter 被删掉了"
+        changed = [f for f in schema.PAPER_TOOL_FIELDS if (om or {}).get(f) != nm.get(f)]
+        return f"改了由工具维护的字段 {changed}" if changed else None
 
 
 def _blocks(ev):

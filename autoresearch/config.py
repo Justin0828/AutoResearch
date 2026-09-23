@@ -24,6 +24,7 @@ class Config:
         self.run = self.root / "run"
         self.tasks = self.run / "tasks"
         self.lock = self.run / "state.lock"
+        self.library = self.root / "library"      # 论文原件与全文，不进 State 的 git（§5.5）
         self.claude_bin = os.environ.get("AR_CLAUDE_BIN", "claude")
         self.model = os.environ.get("AR_MODEL") or None
         self.host = "127.0.0.1"                     # M9：只绑本机
@@ -32,9 +33,15 @@ class Config:
         self.auto_resume = os.environ.get("AR_AUTO_RESUME", "1") != "0"
         self.distill_every = int(os.environ.get("AR_DISTILL_EVERY", "3"))
         self.sweep_seconds = int(os.environ.get("AR_SWEEP_SECONDS", "30"))
+        # 无人值守（验证模式、夜间预习）的额度护栏（§5.7，2026-09-23 用户确认默认值）
+        self.unattended_cap = _env_float("AR_UNATTENDED_CAP", 0.60)   # 5h 窗口利用率上限
+        self.searches_per_target = int(os.environ.get("AR_SEARCHES_PER_TARGET", "2"))
+        self.reads_per_target = int(os.environ.get("AR_READS_PER_TARGET", "6"))
+        self.prep_idle_minutes = int(os.environ.get("AR_PREP_IDLE_MIN", "90"))
+        self.prep_max_tasks = int(os.environ.get("AR_PREP_MAX_TASKS", "6"))
 
     def ensure(self):
-        for d in (self.root, self.run, self.tasks):
+        for d in (self.root, self.run, self.tasks, self.library):
             d.mkdir(parents=True, exist_ok=True)
         return self
 
