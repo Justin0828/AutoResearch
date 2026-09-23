@@ -12,6 +12,8 @@
 
 `DESIGN.md` §0 是七条基础原则，决定架构形状；不理解它们就不要动代码。
 
+代码在 `autoresearch/`（零依赖，系统 python3 标准库），用法与目录见 `README.md`。State schema 的机器可读定义是 `autoresearch/schema.py`，说明在 `DESIGN.md` §5。测试：`python3 -m unittest discover -s tests -t .`（用假 claude，不耗额度）。
+
 ## 不可违反的硬约束
 
 这些是用户明确要求或经过讨论定下的，新 session 最容易在这里犯错：
