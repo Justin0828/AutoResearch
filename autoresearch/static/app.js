@@ -10,7 +10,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
 const S = {
   page: "chat", ds: null, dsData: null, shift: null, streaming: "",
   overview: null, cands: [], reviews: [], activity: [], notes: [], unread: 0,
-  inboxView: "cands", sysView: "status",
+  inboxView: "cands", sysView: "status", editing: null, inboxStale: false, dsList: [],
 };
 
 async function api(method, path, body) {
@@ -146,6 +146,7 @@ const select = (label, name, opts, cur) =>
 // ================================================================ CHAT
 async function loadDiscussions() {
   const list = await api("GET", "/api/discussions");
+  S.dsList = list;
   const ul = $("#ds-list");
   ul.innerHTML = list.slice().reverse().map((d) => `
     <li data-id="${d.id}" class="${d.id === S.ds ? "sel" : ""} ${d.status === "closed" ? "closed" : ""}">
@@ -289,9 +290,145 @@ function renderBadges() {
   $("#seg-notes").textContent = S.unread || "";
 }
 
-$$("#inbox-seg button").forEach((b) => b.onclick = () => { S.inboxView = b.dataset.v; renderInbox(); });
+$$("#inbox-seg button").forEach((b) => b.onclick = () => { S.inboxView = b.dataset.v; S.editing = null; renderInbox(); });
+
+// ---------------------------------------------------------------- candidate editing (inline, per kind)
+// Each kind only shows the fields it needs. `req` marks what accepting it will require.
+const CHOICES = {
+  confidence: { low: "Low", medium: "Medium", high: "High" },
+  maturity: { vague: "Vague", scoped: "Scoped", formalized: "Formalized" },
+  importance: { low: "Low", medium: "Medium", high: "High" },
+  firmness: { hunch: "Hunch", working: "Working", settled: "Settled" },
+  origin: { human: "Me", ai: "The AI", unclear: "Unclear" },
+};
+const KIND_SPEC = {
+  assumption: {
+    hint: "Relied on — used to prune directions or support other reasoning — but no test is arranged.",
+    fields: [
+      { k: "relied_on_by", label: "Supports", type: "ids", req: true, help: "What depends on it" },
+      { k: "derived_from", label: "Derived from insight", type: "id", help: "If a hunch is what we're pruning with" },
+    ],
+  },
+  hypothesis: {
+    hint: "A test has been arranged. Must say what result would refute it.",
+    fields: [
+      { k: "falsifier", label: "Refuted if", type: "text", req: true },
+      { k: "validation", label: "How it will be tested", type: "text", req: true },
+      { k: "confidence", label: "Confidence", type: "choice" },
+    ],
+  },
+  question: {
+    hint: "Something still to be clarified.",
+    fields: [{ k: "maturity", label: "Maturity", type: "choice", req: true }],
+  },
+  uncertainty: {
+    hint: "An unknown that discounts our conclusions and can't be removed for now.",
+    fields: [{ k: "importance", label: "Importance", type: "choice", req: true }],
+  },
+  insight: {
+    hint: "Something we've come to think. Can be a feel — but say where it comes from.",
+    fields: [
+      { k: "firmness", label: "Firmness", type: "choice", req: true },
+      { k: "basis", label: "Grounded in", type: "ids", help: "Ids in the state" },
+      { k: "basis_note", label: "Grounding note", type: "text", help: "Or a source outside the state" },
+      { k: "informs", label: "Informs", type: "ids" },
+      { k: "change_mind", label: "Would change if", type: "text" },
+    ],
+  },
+};
+const REJECT_REASONS = ["Duplicate of ", "Already covered by ", "Not research content", "Wrong framing", "Just a test"];
+
+function knownIds() {
+  const o = S.overview || {};
+  const out = [];
+  for (const key of ["questions", "assumptions", "hypotheses", "insights", "uncertainties", "evidence", "dead_ends", "papers"]) {
+    for (const x of o[key] || []) out.push([x.id, firstLine(x.body || x.title || "").slice(0, 60)]);
+  }
+  for (const d of S.dsList || []) out.push([d.id, d.title]);
+  return out;
+}
+
+function tokenInput(k, values, single) {
+  const known = new Set(knownIds().map(([id]) => id));
+  const chip = (v) => `<span class="chip ${known.has(v) ? "" : "bad"}" title="${known.has(v) ? "" : "Not found in the research state"}">${esc(v)}<button type="button" data-rm="${esc(v)}" aria-label="Remove">×</button></span>`;
+  return `<div class="tokens" data-k="${k}" data-single="${single ? 1 : 0}">${values.map(chip).join("")}
+    <input list="ids-list" placeholder="${values.length && single ? "" : "Add id…"}" ${values.length && single ? "hidden" : ""}></div>`;
+}
+
+function choiceInput(k, cur, opts) {
+  return `<div class="choice" data-k="${k}">${Object.entries(opts).map(([v, n]) =>
+    `<button type="button" data-v="${v}" class="${v === cur ? "on" : ""}">${n}</button>`).join("")}</div>`;
+}
+
+function editForm(c, draft) {
+  const spec = KIND_SPEC[draft.kind];
+  const row = (label, req, body, help) => `<div class="frow"><div class="flabel">${label}${req ? `<i class="req">required</i>` : ""}${help ? `<span>${help}</span>` : ""}</div><div class="fbody">${body}</div></div>`;
+  const fieldHtml = (f) => {
+    const v = draft[f.k];
+    let body;
+    if (f.type === "ids") body = tokenInput(f.k, Array.isArray(v) ? v : (v ? String(v).split(/\s*,\s*/).filter(Boolean) : []), false);
+    else if (f.type === "id") body = tokenInput(f.k, v ? [v] : [], true);
+    else if (f.type === "choice") body = choiceInput(f.k, v, CHOICES[f.k]);
+    else body = `<textarea data-k="${f.k}" rows="2">${esc(v || "")}</textarea>`;
+    return row(f.label, f.req, body, f.help);
+  };
+  const insightReq = draft.kind === "insight" ? `<div class="fnote">Needs “Grounded in” or a grounding note — at least one.</div>` : "";
+  return `<div class="card editing" data-id="${c.id}">
+    <div class="card-top"><span class="id">${c.id}</span><span>editing · from ${c.source} · turn ${fmtv(c.turns)}</span></div>
+    <div class="kinds">${Object.entries(KIND).map(([k, n]) => `<button type="button" data-kind="${k}" class="tag ${k} ${k === draft.kind ? "on" : ""}">${n}</button>`).join("")}</div>
+    <div class="khint">${spec.hint}</div>
+    <textarea class="stmt" data-k="statement" rows="2" placeholder="Statement">${esc(draft.statement || "")}</textarea>
+    <div class="form">
+      ${spec.fields.map(fieldHtml).join("")}${insightReq}
+      ${row("Raised first by", false, choiceInput("origin", draft.origin, CHOICES.origin))}
+      ${draft.origin === "unclear" ? row("Origin note", true, `<textarea data-k="origin_note" rows="2">${esc(draft.origin_note || "")}</textarea>`) : ""}
+      ${row("Why", false, `<textarea data-k="rationale" rows="3">${esc(draft.rationale || "")}</textarea>`)}
+    </div>
+    <div class="ferr" hidden></div>
+    <div class="acts">
+      <button class="btn small" data-act="save-accept" ${draft.origin === "unclear" ? `disabled title="Pick who raised it first to accept"` : ""}>Save & accept</button>
+      <button class="btn ghost small" data-act="save">Save</button>
+      <button class="btn ghost small" data-act="cancel">Cancel</button>
+      <span class="kbd">Ctrl+Enter save · Esc cancel</span>
+    </div>
+  </div>`;
+}
+
+function rejectForm(c, draft) {
+  return `<div class="card editing" data-id="${c.id}">
+    <div class="card-top"><span class="tag ${c.kind}">${KIND[c.kind]}</span><span class="id">${c.id}</span><span>rejecting</span></div>
+    <div class="statement md">${md(c.statement)}</div>
+    <div class="flabel" style="margin-top:14px">Reason<i class="req">required</i><span>kept, so future distills won't propose this again</span></div>
+    <div class="quick">${REJECT_REASONS.map((r) => `<button type="button" data-q="${esc(r)}">${esc(r.trim())}${r.endsWith(" ") ? "…" : ""}</button>`).join("")}</div>
+    <textarea data-k="reason" rows="3" placeholder="Why doesn't this belong in the research state?">${esc(draft.reason || "")}</textarea>
+    <div class="ferr" hidden></div>
+    <div class="acts">
+      <button class="btn small danger-solid" data-act="confirm-reject">Reject</button>
+      <button class="btn ghost small" data-act="cancel">Cancel</button>
+      <span class="kbd">Ctrl+Enter reject · Esc cancel</span>
+    </div>
+  </div>`;
+}
+
+function acceptForm(c) {
+  return `<div class="card editing" data-id="${c.id}">
+    <div class="card-top"><span class="tag ${c.kind}">${KIND[c.kind]}</span><span class="id">${c.id}</span><span class="tag warn">Origin needs your call</span></div>
+    <div class="statement md">${md(c.statement)}</div>
+    <div class="fnote" style="margin-top:12px">${esc(c.origin_note || "The distiller couldn't tell who raised this first.")}</div>
+    <div class="flabel" style="margin-top:12px">Who raised it first?</div>
+    <div class="acts" style="margin-top:8px">
+      <button class="btn small" data-act="accept-as" data-origin="human">Me — accept</button>
+      <button class="btn small" data-act="accept-as" data-origin="ai">The AI — accept</button>
+      <button class="btn ghost small" data-act="cancel">Cancel</button>
+    </div>
+  </div>`;
+}
 
 function candCard(c) {
+  const ed = S.editing && S.editing.id === c.id ? S.editing : null;
+  if (ed && ed.mode === "edit") return editForm(c, ed.draft);
+  if (ed && ed.mode === "reject") return rejectForm(c, ed.draft);
+  if (ed && ed.mode === "accept") return acceptForm(c);
   const pending = c.status === "pending";
   const fields = (FIELDS[c.kind] || []).filter(([k]) => c[k] && fmtv(c[k]))
     .map(([k, n]) => `<dt>${n}</dt><dd>${esc(k === "firmness" ? FIRM[c[k]] || c[k] : fmtv(c[k]))}</dd>`).join("");
@@ -327,7 +464,10 @@ function reviewCard(r) {
   </div>`;
 }
 
-function renderInbox() {
+function renderInbox(force) {
+  // Live updates must not wipe a form you're typing in; they're applied when you finish.
+  if (S.editing && !force) { S.inboxStale = true; return; }
+  S.inboxStale = false;
   $$("#inbox-seg button").forEach((b) => b.classList.toggle("on", b.dataset.v === S.inboxView));
   const body = $("#inbox-body");
   if (S.inboxView === "cands") {
@@ -345,51 +485,132 @@ function renderInbox() {
       (revs.length ? `<h2 style="margin:28px 0 12px">Resolved re-examinations</h2>` + revs.map(reviewCard).join("") : "")) ||
       `<div class="empty">No history yet.</div>`;
   }
-  $$(".card[data-id] button", body).forEach((b) => b.onclick = () => candAct(b.dataset.act, S.cands.find((c) => c.id === b.closest(".card").dataset.id)));
+  $("#ids-list").innerHTML = knownIds().map(([id, t]) => `<option value="${esc(id)}">${esc(t)}</option>`).join("");
+  $$(".card[data-id]:not(.editing) button[data-act]", body).forEach((b) => b.onclick = () =>
+    candAct(b.dataset.act, S.cands.find((c) => c.id === b.closest(".card").dataset.id)));
+  const ed = $(".card.editing", body);
+  if (ed) bindEditor(ed);
   $$(".card[data-review] button", body).forEach((b) => b.onclick = () => reviewAct(b.dataset.act, S.reviews.find((r) => r.id === b.closest(".card").dataset.review)));
 }
 
-async function candAct(act, c) {
-  try {
-    if (act === "accept") {
-      let origin = null;
-      if (c.origin === "unclear") {
-        const r = await ask(`Who raised ${c.id} first?`, `<p>${esc(c.origin_note)}</p>` +
-          select("Origin", "origin", { human: "Me", ai: "The AI" }, "human"), "Accept");
-        if (!r) return;
-        origin = r.origin;
+function openEditor(c, mode) {
+  const draft = mode === "edit"
+    ? Object.fromEntries(["kind", "statement", "rationale", "origin", "origin_note", "relied_on_by", "derived_from",
+      "falsifier", "validation", "confidence", "maturity", "importance", "firmness", "basis", "basis_note", "informs", "change_mind"]
+      .map((k) => [k, c[k] ?? (["relied_on_by", "basis", "informs"].includes(k) ? [] : "")]))
+    : { reason: "" };
+  S.editing = { id: c.id, mode, draft };
+  renderInbox(true);
+}
+function closeEditor() {
+  S.editing = null;
+  renderInbox(true);
+}
+
+// Read the live form back into the draft (so switching kind keeps what you typed).
+function readForm(card) {
+  const d = S.editing.draft;
+  $$("textarea[data-k]", card).forEach((t) => { d[t.dataset.k] = t.value; });
+  $$(".tokens", card).forEach((t) => {
+    const vals = $$(".chip", t).map((c) => c.firstChild.textContent);
+    const typed = $("input", t).value.trim();
+    if (typed) vals.push(...typed.split(/[\s,]+/).filter(Boolean));
+    d[t.dataset.k] = t.dataset.single === "1" ? (vals[0] || "") : [...new Set(vals)];
+  });
+  return d;
+}
+
+function showErr(card, msg) {
+  const e = $(".ferr", card);
+  e.textContent = msg;
+  e.hidden = !msg;
+}
+
+function validateDraft(d) {
+  const spec = KIND_SPEC[d.kind];
+  const miss = spec.fields.filter((f) => f.req && !(Array.isArray(d[f.k]) ? d[f.k].length : String(d[f.k] || "").trim())).map((f) => f.label);
+  if (!String(d.statement || "").trim()) miss.unshift("Statement");
+  if (d.kind === "insight" && !(d.basis || []).length && !String(d.basis_note || "").trim()) miss.push("Grounded in or a grounding note");
+  if (d.origin === "unclear" && !String(d.origin_note || "").trim()) miss.push("Origin note");
+  return miss.length ? `Still needed: ${miss.join(", ")}.` : "";
+}
+
+function bindEditor(card) {
+  const ed = S.editing;
+  const rerender = () => { readForm(card); renderInbox(true); };
+  $$("[data-kind]", card).forEach((b) => b.onclick = () => { readForm(card); ed.draft.kind = b.dataset.kind; renderInbox(true); });
+  $$(".choice", card).forEach((g) => $$("button", g).forEach((b) => b.onclick = () => {
+    readForm(card);
+    ed.draft[g.dataset.k] = ed.draft[g.dataset.k] === b.dataset.v && g.dataset.k !== "origin" ? "" : b.dataset.v;
+    renderInbox(true);
+  }));
+  $$(".tokens", card).forEach((t) => {
+    const inp = $("input", t);
+    t.onclick = (e) => { if (e.target === t) inp.focus(); };
+    inp.onkeydown = (e) => {
+      if ((e.key === "Enter" || e.key === "," || e.key === " ") && inp.value.trim()) { e.preventDefault(); rerender(); }
+      if (e.key === "Backspace" && !inp.value) { const last = $$(".chip", t).pop(); if (last) { last.remove(); rerender(); } }
+    };
+    inp.onchange = () => { if (inp.value.trim()) rerender(); };   // picked from the suggestion list
+    $$("[data-rm]", t).forEach((b) => b.onclick = () => { b.parentElement.remove(); rerender(); });
+  });
+  $$(".quick button", card).forEach((b) => b.onclick = () => {
+    const ta = $('textarea[data-k="reason"]', card);
+    ta.value = (ta.value.trim() ? ta.value.trim() + "; " : "") + b.dataset.q;
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+  });
+  const submit = async (act, origin) => {
+    try {
+      if (act === "cancel") return closeEditor();
+      if (act === "accept-as") {
+        const r = await api("POST", `/api/candidates/${ed.id}/accept`, { origin });
+        toast(`Accepted as ${r.id}.`);
+      } else if (act === "confirm-reject") {
+        const reason = $('textarea[data-k="reason"]', card).value.trim();
+        if (!reason) return showErr(card, "Write a reason — it's what stops future distills from proposing this again.");
+        await api("POST", `/api/candidates/${ed.id}/reject`, { reason });
+        toast(`Rejected ${ed.id}.`);
+      } else {
+        const d = readForm(card);
+        const err = validateDraft(d);
+        if (err && act === "save-accept") return showErr(card, err);
+        const fields = ["kind", "statement", "rationale", "origin", "origin_note", ...KIND_SPEC[d.kind].fields.map((f) => f.k)];
+        const changes = Object.fromEntries(fields.map((k) => [k, Array.isArray(d[k]) ? d[k].join(", ") : (d[k] ?? "")]));
+        await api("POST", `/api/candidates/${ed.id}/update`, { changes });
+        if (act === "save-accept") {
+          const r = await api("POST", `/api/candidates/${ed.id}/accept`, {});
+          toast(`Saved and accepted as ${r.id}.`);
+        } else toast(err ? `Saved. Before accepting: ${err.replace("Still needed: ", "")}` : "Saved. Still waiting for you to accept it.");
       }
-      const r = await api("POST", `/api/candidates/${c.id}/accept`, { origin });
-      toast(`Accepted as ${r.id}.`);
-    } else if (act === "reject") {
-      const r = await ask(`Reject ${c.id}`, `<p>Rejected candidates are kept with your reason, so future distills won't propose the same thing again.</p>` +
-        field("Reason", "reason", "", "", 3), "Reject");
-      if (!r) return;
-      await api("POST", `/api/candidates/${c.id}/reject`, { reason: r.reason });
-    } else if (act === "edit") {
-      const r = await ask(`Edit ${c.id}`,
-        `<p>Assumption vs hypothesis is decided by its current role: relied on but not scheduled for testing → assumption; a test has been arranged → hypothesis.</p>` +
-        select("Kind", "kind", KIND, c.kind) +
-        field("Statement", "statement", c.statement, "", 3) +
-        field("Rationale", "rationale", c.rationale, "", 3) +
-        field("Supports", "relied_on_by", fmtv(c.relied_on_by), "assumption, required · ids, comma-separated") +
-        field("Refuted if", "falsifier", c.falsifier, "hypothesis, required") +
-        field("How it will be tested", "validation", c.validation, "hypothesis, required") +
-        field("Confidence", "confidence", c.confidence, "low / medium / high") +
-        field("Maturity", "maturity", c.maturity, "question: vague / scoped / formalized") +
-        field("Importance", "importance", c.importance, "uncertainty: low / medium / high") +
-        field("Firmness", "firmness", c.firmness, "insight: hunch / working / settled") +
-        field("Grounded in", "basis", fmtv(c.basis), "insight · ids") +
-        field("Grounding note", "basis_note", c.basis_note, "insight · a source outside the state") +
-        field("Informs", "informs", fmtv(c.informs), "insight · ids") +
-        field("Would change if", "change_mind", c.change_mind, "insight, optional") +
-        field("Derived from insight", "derived_from", c.derived_from, "assumption · IN###"), "Save");
-      if (!r) return;
-      await api("POST", `/api/candidates/${c.id}/update`, { changes: r });
-      toast("Saved. It is still waiting for you to accept it.");
+      S.editing = null;
+      await loadInbox();
+      renderInbox(true);
+    } catch (e) { showErr(card, e.message); }
+  };
+  $$("button[data-act]", card).forEach((b) => b.onclick = () => submit(b.dataset.act, b.dataset.origin));
+  card.onkeydown = (e) => {
+    if (e.key === "Escape") { e.preventDefault(); closeEditor(); }
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      submit(ed.mode === "reject" ? "confirm-reject" : "save");
     }
-  } catch (err) { fail(err); }
-  loadInbox();
+  };
+  const first = ed.mode === "reject" ? $('textarea[data-k="reason"]', card) : null;
+  if (first) first.focus();
+}
+
+async function candAct(act, c) {
+  if (act === "edit") return openEditor(c, "edit");
+  if (act === "reject") return openEditor(c, "reject");
+  if (act === "accept") {
+    if (c.origin === "unclear") return openEditor(c, "accept");
+    try {
+      const r = await api("POST", `/api/candidates/${c.id}/accept`, {});
+      toast(`Accepted as ${r.id}.`);
+    } catch (err) { fail(err); openEditor(c, "edit"); return; }
+    loadInbox();
+  }
 }
 
 async function reviewAct(act, r) {
@@ -694,6 +915,7 @@ function connect() {
   connect();
   try {
     S.notes = await api("GET", "/api/notifications");
+    S.dsList = await api("GET", "/api/discussions");
     await Promise.all([loadShift(), loadInbox(), loadOverview()]);
   } catch (err) { fail(err); }
   route();

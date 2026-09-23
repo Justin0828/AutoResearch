@@ -51,6 +51,7 @@ def make_handler(app):
                 "assumptions": objs("assumption"),
                 "hypotheses": objs("hypothesis"), "uncertainties": objs("uncertainty"),
                 "dead_ends": objs("dead-end"), "evidence": objs("evidence"),
+                "papers": objs("paper"),
                 "bias": metrics.bias_by_origin(st),
                 "reviews": reviews.list_all(st, "open"),
                 "validation": {"errors": errs, "warnings": warns},

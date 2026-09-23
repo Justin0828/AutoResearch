@@ -74,6 +74,33 @@ class ServerTest(unittest.TestCase):
         self.assertIn("A002", [a["id"] for a in o["assumptions"]])
         self.assertEqual(o["validation"]["errors"], [])
 
+    def test_inline_edit_payload_then_accept(self):
+        """前端内联编辑发的形态：id 列表是逗号分隔字符串、可同时改类别，然后接受。"""
+        from autoresearch import candidates, discussion
+        st = self.daemon.store
+        ds = discussion.create(st, "t")
+        discussion.append_turn(st, ds, "human", "我们下周做粒度消融。")
+        cid = candidates.propose(st, kind="assumption", statement="粒度是瓶颈", rationale="r",
+                                 origin="unclear", origin_note="拿不准", source=ds, turns=[1],
+                                 relied_on_by=["Q001"], task="T1", actor="agent")
+        changes = {"kind": "hypothesis", "statement": "动作粒度是瓶颈", "rationale": "已安排消融",
+                   "origin": "human", "origin_note": "", "falsifier": "消融无差异",
+                   "validation": "下周粒度消融", "confidence": ""}
+        s, r = self.req("POST", f"/api/candidates/{cid}/update", {"changes": changes})
+        self.assertEqual(s, 200, r)
+        s, r = self.req("POST", f"/api/candidates/{cid}/accept", {})
+        self.assertEqual((s, r.get("id")), (200, "H003"), r)
+        meta, _ = st.read_obj("H003")
+        self.assertEqual(meta["validation"], "下周粒度消融")
+        self.assertEqual(st.provenance()["H003"]["origin"], "human")
+        # 列表字段以字符串提交
+        cid2 = candidates.propose(st, kind="assumption", statement="x", rationale="r", origin="ai",
+                                  source=ds, turns=[1], relied_on_by=["Q001"], task="T1", actor="agent")
+        s, r = self.req("POST", f"/api/candidates/{cid2}/update",
+                        {"changes": {"relied_on_by": "Q001, H001", "derived_from": ""}})
+        self.assertEqual(s, 200, r)
+        self.assertEqual(candidates.load(st, cid2)[0]["relied_on_by"], ["Q001", "H001"])
+
     def test_errors_are_400(self):
         s, r = self.req("POST", "/api/candidates/C999/reject", {"reason": "x"})
         self.assertEqual(s, 400)
