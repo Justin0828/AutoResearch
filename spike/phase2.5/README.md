@@ -53,9 +53,9 @@ register_paper / open_paper、ListMcpResources / ReadMcpResource，最后让它�
 - **Phase 2 的所有任务都给了裸 `Read`**，因此 judge 任务能读宿主机任意文件——包括 `$AR_ROOT/run/tasks/*/briefing.md`：
   讨论 / 蒸馏任务的 briefing 带着“提出者=human”。judge 的路径封读只封了 State 里的目录，`run/` 不在其中。
   这是 origin 屏蔽的一条物理旁路（agent 要主动去找才会碰到，但 §5.6 的原则是不靠它不去找）。
-  修法：judge 任务也加 `--restricted`（它们本就只需要 cwd + State + library）。待用户确认后再改（改动的是 Phase 2 行为）。
+  修法是 judge 任务也加 `--restricted`。**用户决定不改**（2026-09-23）：要主动去翻才会碰到，偏差表兜底；记为已知缺口（DESIGN §5.9）。
 - MCP server 在 `AR_TOOLSET` 为空时注册**全部**工具（fail-open）。runner 总会设它，但推演任务的安全性不该依赖这一点；
-  改为未设置即只给 checkpoint（fail-closed）。
+  已改为未设置即只给 checkpoint（fail-closed）。
 
 ## 真实 claude 管线冒烟（`smoke.py`，$2.37，5h 窗口 19% → 28%）
 
