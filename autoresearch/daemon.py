@@ -411,9 +411,18 @@ class Daemon:
                                                   since=task.get("started"))
                     if c.get("blocking")]
         if blocking:
-            task.update(status="blocked_on_human", blocked_on=blocking[-1]["id"])
-            self.bus.notify("warn", f"{task['id']} needs a paper you can fetch ({blocking[-1]['id']}); "
-                            "it is suspended and other work continues.", task=task["id"])
+            rid = blocking[-1]["id"]
+            rq, _ = self.store.read_obj(rid)
+            status = (rq or {}).get("status")
+            if status == "open":
+                task.update(status="blocked_on_human", blocked_on=rid)
+                self.bus.notify("warn", f"{task['id']} needs a paper you can fetch ({rid}); "
+                                "it is suspended and other work continues.", task=task["id"])
+            elif status == "fulfilled":
+                # 任务还没结束，全文就已经到了：直接重新入队，不挂起
+                task.update(status="queued", priority=2,
+                            resume_note=f"你请求的全文（{rid}）已经上传，现在可以读全文了。")
+            # dismissed：研究者已经说拿不到，任务按摘要级做完即可，不再挂起
         self.bus.publish("state", {"task": task["id"]})
         if task.get("batch"):
             why = self._major_result(task)

@@ -548,7 +548,7 @@ Claude Code Max 5x 的 5 小时滚动窗口会强制结束 session。**系统不
 4. **状态迁移规则**：由 MCP tool 强制，见 0.4。
 5. **Decision 记录时机**：凡改变研究方向的动作必须留理由。
 
-以下 5.1–5.4 为 Phase 1 定下的具体形态（v1.2）；5.5–5.8 为 Phase 2 的四个契约（v1.3，**草案，待用户确认**）。机器可读的单一定义在 `autoresearch/schema.py`，本节是它的说明；二者冲突时以改本节为准、再改代码。
+以下 5.1–5.4 为 Phase 1 定下的具体形态（v1.2）；5.5–5.8 为 Phase 2 的四个契约（v1.3，2026-09-23 用户确认：摘要级证据规则、无人值守额度默认值、H002 保持 disputed 单列 unknown、已有对象的署名线索由人审过 diff 后中性化）。机器可读的单一定义在 `autoresearch/schema.py`，本节是它的说明；二者冲突时以改本节为准、再改代码。
 
 ### 5.1 State schema
 
@@ -677,6 +677,23 @@ Phase 1 的任务种类：
 | `discuss_turn` | interactive | Read Grep Glob WebSearch WebFetch | check_dead_ends, propose_candidate, checkpoint |
 | `distill` | background | Read Grep Glob | check_dead_ends, propose_candidate, update_discussion_summary, checkpoint |
 
+Phase 2 新增的评判类任务（全部 `judge` profile、background 通道，由 planner 机械派发，§5.7）：
+
+| kind | 可用工具 | MCP 工具 | 产出 |
+|---|---|---|---|
+| `lit_search` | Read Grep Glob WebSearch | search_papers, register_paper, check_dead_ends, checkpoint | 为目标登记 0–6 篇最能检验它的论文（两个方向都搜） |
+| `read_paper` | Read Grep Glob **Edit（仅 `papers/**`）** | open_paper, record_evidence, request_paper, register_paper, check_dead_ends, checkpoint | 阅读笔记 + 追到段落的证据；拿不到全文时请求并挂起 |
+| `assess` | Read Grep Glob | transition_hypothesis, examine_assumption, invalidate_assumption, propose_candidate, check_dead_ends, checkpoint | 据全部证据决定状态；证据不够就不动 |
+| `contradiction_scan` | Read Grep Glob | propose_candidate, checkpoint | 证据冲突 → 不确定性候选 |
+| `grounding` | Read Grep Glob WebSearch | search_papers, register_paper, open_paper, annotate_grounding, check_dead_ends, checkpoint | 接地结论，只标注 |
+
+- judge 任务另经 `--add-dir $AR_ROOT/library` 读论文全文；`discuss_turn` 新增 `note_prep_request`（记下研究者对“今晚查什么”的回答）。
+- **Edit 的白名单必须带路径**：`--allowedTools "Edit(//$STATE/papers/**)"`，其余 State 目录另加 `Edit(...)` deny。
+  dontAsk 模式下不在白名单里的 Edit 一律拒绝——cwd 与宿主机其他位置都写不了（Phase 2 spike 3 实测）。
+  runner 在 tool_result 后再查一遍：受保护 / 越权路径整文件回滚，论文 frontmatter 被改则**字段级恢复**（保留正文笔记，
+  避免快速连续编辑时误伤合法内容），执行层已拦下的尝试只记入 `violations.jsonl`。
+- 被挂起（`blocked_on_human`）后重跑的任务，判断“本次做了什么”只看本次 `started` 之后的工具调用。
+
 - 禁用有三层：`--tools` 只加载列出的内置工具（Phase 1 实测：init 事件里的 tools 只剩列出的几个，比 deny-list 更牢，因为 CLI 新版本加的工具不会漏网）；`--disallowedTools` 显式再禁一遍 Bash / Task 等（§0.6，保留作为纵深）；MCP server 按 `AR_TOOLSET` 只注册该任务能用的工具（`--allowedTools` 不移除 MCP 工具，同样不能靠它）。
 - 统一加 `--setting-sources ""`（不加载宿主机的用户/项目设置与 hooks）、`--strict-mcp-config`、`--no-session-persistence`、`--permission-mode dontAsk`。**不用 `--bare`**。
 - 讨论回合每轮开新 session，只靠 briefing 接续——每一轮都在验收“新 session 从 briefing 能接着谈”。`--resume` 作为之后的省额度优化，不影响正确性。
@@ -764,7 +781,7 @@ quote 校验是反编造的第二道闸：agent 可以读错，但不能凭空�
 3. **对象正文**：路径规则管不到对象文件本身的文字。实测真实 State 的 H003 `validation` 写着“AI 在第 2 轮提议……研究者尚未认可”。
    因此：(a) 候选确认时，写进正式对象的文字经 `neutralize()`，原话留在候选（judge 读不到）里，对象正文只写“来由见 C###”；
    (b) 校验器对 Q/A/H/U/P/E 的正文与自由文本字段扫描署名线索，给**警告**（不报错——人手写的时候可以有）；
-   (c) 派发 judge 任务前若有警告，前端提示一次。已有对象不自动改写，由人决定。
+   (c) 派发 judge 任务前若有警告，前端提示一次。已有对象不自动改写：由系统给出中性化 diff，人审过后以 `ar-human` 身份提交（2026-09-23 定）。
 
 **状态迁移只走 MCP**：judge 任务不能 Edit 任何对象的状态字段。可用的迁移工具与各自的硬约束：
 
@@ -782,7 +799,7 @@ quote 校验是反编造的第二道闸：agent 可以读错，但不能凭空�
 **被核查对象一个字不改**。Phase 2.5 的 Idea 直接复用这个对象。
 
 **偏差指标**：M8 的按-origin 反驳率由 provenance + hypothesis status 实时计算（已实现），Phase 2 起真实迁移会让它第一次有数据；
-`disputed` 的归属单列为 unknown，不计入 human / ai 任一方，直到人裁定。
+`disputed` 的归属单列（前端显示为 “Disputed origin (not counted)”），不计入 human / ai 任一方，直到人裁定。
 
 ### 5.7 模式与交棒契约（Phase 2，v1.3）
 
@@ -814,6 +831,9 @@ T 自上次评估后有新证据                → assess(T)               ┘ 
 **重大结果 → 建议收回，不自己闭环**。以下任一发生，规划器停止派发新的验证任务（在飞的做完提交），前端出横幅“建议回到讨论模式”并写明原因：
 批次内任一假设迁到 supported / refuted；任一前提被推翻或判为 fragile；矛盾扫描提交了候选；批次全部饱和。
 人选择“收回”（切回讨论）或“继续验证”（写 Decision 说明为何继续）。
+
+hold 分两种：**重大结果**必须由人决定；**饱和**（没有够格的工作了）只是第 9 级的收工——若还有任务挂起在等人取论文，
+不算饱和；人上传全文后饱和 hold 自动解除，因为新到的全文就是新的工作。
 
 **收回**：人随时可切回讨论模式。排队中的验证任务取消，在飞的做完并提交（它们本就增量提交，杀掉只会浪费额度）。写 Decision（kind=mode）。
 
