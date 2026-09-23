@@ -1,6 +1,6 @@
 # AI Research Partner — 系统设计 v1.2（模块级）
 
-> v0 由 `CLARIFICATION.md` 转换而来，只做模块划分。v1 锁定了运行环境约束、首个研究方向 profile 与若干悬空的架构决定。v1.1 加入了讨论/验证双模式（0.2）与网络分流。v1.2 在 §5 定下 Phase 1 的 State schema、Briefing/Handoff 契约、Task 契约与增量提交协议；其余模块仍不涉及 API 签名和代码结构。
+> v0 由 `CLARIFICATION.md` 转换而来，只做模块划分。v1 锁定了运行环境约束、首个研究方向 profile 与若干悬空的架构决定。v1.1 加入了讨论/验证双模式（0.2）与网络分流。v1.2 在 §5 定下 Phase 1 的 State schema、Briefing/Handoff 契约、Task 契约与增量提交协议；v1.3 在 §5.5–5.8 定下 Phase 2 的 Paper 与证据出处、评判类任务、模式与交棒、Paper Request Queue 四个契约。其余模块仍不涉及 API 签名和代码结构。
 
 ---
 
@@ -548,7 +548,7 @@ Claude Code Max 5x 的 5 小时滚动窗口会强制结束 session。**系统不
 4. **状态迁移规则**：由 MCP tool 强制，见 0.4。
 5. **Decision 记录时机**：凡改变研究方向的动作必须留理由。
 
-以下 5.1–5.4 为 Phase 1 定下的具体形态（v1.2）。机器可读的单一定义在 `autoresearch/schema.py`，本节是它的说明；二者冲突时以改本节为准、再改代码。
+以下 5.1–5.4 为 Phase 1 定下的具体形态（v1.2）；5.5–5.8 为 Phase 2 的四个契约（v1.3，**草案，待用户确认**）。机器可读的单一定义在 `autoresearch/schema.py`，本节是它的说明；二者冲突时以改本节为准、再改代码。
 
 ### 5.1 State schema
 
@@ -572,7 +572,9 @@ $AR_ROOT/
 | `assumptions/A###.md` | Assumption | agent / 人（Phase 1 经候选区） |
 | `hypotheses/H###.md` | Hypothesis | agent / 人；**状态迁移只能经 `transition_hypothesis`** |
 | `evidence/E###.md` | Evidence | 仅 `record_evidence` |
-| `papers/P###.md` | Paper | agent / 人 |
+| `groundings/GR###.md` | 对抗性接地结论（§5.6） | 仅 `annotate_grounding` |
+| `requests/RQ###.md` | Paper Request（§5.8） | 仅 `request_paper`；人经前端处理 |
+| `papers/P###.md` | Paper | 仅 `register_paper` 建；正文（阅读笔记）agent / 人可改，身份与阅读状态字段归工具（§5.5） |
 | `dead-ends/D###.md` | DeadEnd | agent / 人 |
 | `uncertainties/U###.md` | Uncertainty | agent / 人 |
 | `insights/IN###.md` | Insight（理解） | agent / 人（Phase 1 经候选区；人可直接记） |
@@ -657,7 +659,7 @@ $AR_ROOT/
 
 1. 不输出 provenance，也不输出含对话的章节。
 2. 正文规范化：替换“研究者认为 / 我认为 / 人提出 / AI 提出 / 你提出”一类署名线索为中性表述。
-3. 同时在执行层封路：`--disallowedTools` 加 `Read(provenance.json)`、`Read(discussions/**)`、`Read(candidates/**)`、`Read(handoffs/**)`（及对应 Grep/Glob）。
+3. 同时在执行层封路：`--disallowedTools` 加 `Read(provenance.json)`、`Read(discussions/**)`、`Read(candidates/**)`、`Read(handoffs/**)`（及对应 Grep/Glob）。Phase 2 起手 spike 实测绝对路径写法 `Read(//$STATE/…)` 成立，并补封 `.git/**`；完整清单见 §5.6。
 4. 屏蔽不可能完美（git 历史、行文风格都会泄漏），所以 **M8 的按-origin 反驳率是必需项**：Phase 1 即在总览里给出，数据来自 provenance + hypothesis status，不依赖任何 agent。
 
 ### 5.3 Task 契约（Phase 1 子集）
@@ -695,6 +697,143 @@ State 的每次写入在写入者手里立即提交，没有“任务结束统�
 - 只提交本次写入的路径（`git commit -- <paths>`），不顺手卷走别人的改动。
 - 提交作者区分身份：`ar-agent` / `ar-human` / `ar-system`；message 带 `AR-Task:` trailer。`git log --author` 即可回答“谁改的”。
 - 讨论回合：人的发言在调用 agent **之前**就已提交；回复被截断则只丢未完成的那条回复，人的话还在，下一班会补答。
+
+### 5.5 Paper 与证据出处（Phase 2，v1.3）
+
+目标：M1.2 的“任何结论都能一路追到论文段落”，且**系统里不可能出现编造的论文**。两条都落在工具上，不落在提示词上。
+
+#### Paper 只能经工具登记，登记即核实
+
+- `papers/P###.md` 的**身份字段**只由 `register_paper` 写：`title` `authors` `year` `venue`，以及 `arxiv` / `doi` / `url` **至少其一**。
+  登记时工具去权威源取元数据（arXiv API；DOI 走 Crossref，失败再试 OpenAlex；纯 URL 要求可访问），**取不到就拒绝登记**。
+  agent 报一个记错的 arXiv id，结果是“查无此文”，而不是一条虚构的 P###。
+- 同一 arXiv id / DOI 重复登记返回已有的 P###（去重归工具）。
+- 阅读状态字段也归工具：`read`: none / abstract / fulltext（**实际读到了哪一层**，由工具在 agent 取全文时更新，不由 agent 自报）；
+  `fulltext`: none / open / uploaded / requested / unavailable；`for`：为哪些 H### / A### 而读（合并写入）；`found_via`：发现它的任务与查询。
+- 正文是**阅读笔记**，agent 可以用 Edit/Write 直接写（问题、方法、结论、实验设置、局限，M4.3）。这是系统第一次让 agent 直接编辑 State 文件：
+  runner 在看到 tool_result 时校验并提交（§5.4）；**身份字段与阅读状态字段被改动则整文件回滚并记违规**（字段级受保护，比对 HEAD 版本）。
+- 凭记忆提到、但没有登记的论文只能出现在讨论文字里，并标“未核对”（讨论协议已有此条）。**State 里不存在“未核对的 Paper”。**
+
+#### 全文不进 State 的 git
+
+```text
+$AR_ROOT/library/P###/
+  source.pdf | source.html     原件（arXiv 下载或人上传）
+  fulltext.md                  转换后的正文，带稳定段落锚点
+  meta.json                    来源、sha256、转换方式、时间
+```
+
+- 理由：PDF 动辄 10MB+，进 git 会让 State 仓库膨胀且无法瘦身；而研究状态真正需要的是“引用了哪一段”，不是原件字节。
+  `papers/P###.md` 记 `fulltext_sha`，原件被替换可以察觉。
+- 转换：arXiv 官方 HTML 优先（章节结构可靠，spike 实测 5s/篇），否则 `pdftotext`（宿主已有 poppler，零安装）。
+  `fulltext.md` 按章节切分、段落编号，锚点形如 `[s3.2-p4]`（第 3.2 节第 4 段）；摘要固定为 `[abstract]`。
+- `library/` 经 `--add-dir` 只读挂给阅读类任务；人上传的 PDF 不可再生（要走清华认证），**归入 M10.1 的备份范围**（备份本身不在 Phase 2）。
+
+#### Evidence 追到段落
+
+`evidence/E###.md` 字段变更（Phase 1 的真实 State 里还没有任何 evidence，无迁移成本）：
+
+| 字段 | 约束 |
+|---|---|
+| `target` | 替代原 `hypothesis`：H### **或 A###**——前提审视（M5.1b）产出的证据指向前提 |
+| `source` | 已登记的 P###，或 X###（Phase 3）；不得是 dead-end（不变） |
+| `locator` | source 为 P### 时必填：一个或多个段落锚点，如 `[s4.1-p2, tab3]` 或 `abstract` |
+| `quote` | 必填，原文摘录（≤400 字）。**工具校验它确实出现在 locator 指向的段落里**（归一化空白后子串匹配），对不上就拒绝 |
+| `basis` | abstract / fulltext，由工具按 locator 推出，不由 agent 填 |
+| `stance` `strength` | 不变；**basis=abstract 时 strength 不得为 strong** |
+
+quote 校验是反编造的第二道闸：agent 可以读错，但不能凭空写出论文里没有的话还挂在某一段上。
+
+状态迁移对证据的要求（`transition_hypothesis` 强制）：迁到 supported 至少一条 fulltext 的 support；迁到 refuted 至少一条 fulltext 的 contradict。
+只凭摘要不能把一条假设判死或判活。`abandoned` 只有人能做（放弃是方向决定，不是证据结论）。
+
+### 5.6 评判类任务（judge）契约（Phase 2，v1.3）
+
+**哪些是评判类**：凡是读证据、产出证据、据证据改变状态的任务——文献检索、精读与证据抽取、假设评估、前提审视、矛盾扫描、对抗性接地——一律 `judge` profile。
+检索也算：挑哪些论文来读本身就会偏（只找支持的），归属可见时这种偏会顺着 origin 走。
+非评判类（保留 origin）只有策展与路由：夜间预习的选题、议程、进展报告——Phase 2 里它们由后端机械完成，不派 agent。
+
+**三层屏蔽**：
+
+1. **briefing**：§5.2 的 judge profile（剥离 origin、无候选区与讨论、无 3b 当前理解）。上一班交接只给“被截断的任务与其 checkpoint”，
+   不给“本班 State 变更”的提交列表与“待处理”（二者都带归属线索）。
+2. **路径封读**（Phase 2 起手 spike 实测成立，见 `spike/phase2/README.md`）：`Read/Grep/Glob(//$STATE/…)` 封
+   `provenance.json` `discussions/**` `candidates/**` `handoffs/**` `.git/**`，并加
+   **`insights/**`**（评判看不到理解）与 **`decisions/**`**（人推翻前提、选批次的决定都是权威线索）。
+   规范化后的路径变体、`/proc/self/root` 前缀、目录级 Grep/Glob 均已实测被挡。
+3. **对象正文**：路径规则管不到对象文件本身的文字。实测真实 State 的 H003 `validation` 写着“AI 在第 2 轮提议……研究者尚未认可”。
+   因此：(a) 候选确认时，写进正式对象的文字经 `neutralize()`，原话留在候选（judge 读不到）里，对象正文只写“来由见 C###”；
+   (b) 校验器对 Q/A/H/U/P/E 的正文与自由文本字段扫描署名线索，给**警告**（不报错——人手写的时候可以有）；
+   (c) 派发 judge 任务前若有警告，前端提示一次。已有对象不自动改写，由人决定。
+
+**状态迁移只走 MCP**：judge 任务不能 Edit 任何对象的状态字段。可用的迁移工具与各自的硬约束：
+
+| 工具 | 作用 | 硬约束 |
+|---|---|---|
+| `record_evidence` | 记证据；目标假设若为 proposed 且在当前批次内，自动迁到 investigating（簿记归工具） | §5.5 |
+| `transition_hypothesis` | proposed/investigating → supported / refuted / inconclusive | §5.5；不能迁到 abandoned |
+| `examine_assumption` | 前提审视结论：`holds`（→ examined）/ `fragile`（→ examined + fragile=true） | 至少一条 target 为该前提的证据 |
+| `invalidate_assumption` | 前提被证据推翻 → 触发 M5.6b 对账 | 至少一条 contradict 证据（已实现） |
+| `propose_candidate` | 前提可证伪 → 提升为假设的**候选**；矛盾 → 不确定性的候选 | 评判类任务提交的候选 `source` 为任务号、`basis` 必须指向 E/P，origin 固定为 ai；不能提 insight |
+| `annotate_grounding` | 对抗性接地的结论，只标注不改写 | 见下 |
+
+**对抗性接地**（M4.6）：Phase 2 还没有 Idea，接地的对象是**假设与待确认的假设/前提候选**（由人在前端点“接地核查”，或批次里的假设自动做一次）。
+结论写成独立的 `groundings/GR###.md`（仅工具可写）：`target`、`verdict`（novel / prior_work / contradicted / mixed）、`refs`（P### / E###）、正文。
+**被核查对象一个字不改**。Phase 2.5 的 Idea 直接复用这个对象。
+
+**偏差指标**：M8 的按-origin 反驳率由 provenance + hypothesis status 实时计算（已实现），Phase 2 起真实迁移会让它第一次有数据；
+`disputed` 的归属单列为 unknown，不计入 human / ai 任一方，直到人裁定。
+
+### 5.7 模式与交棒契约（Phase 2，v1.3）
+
+**模式只有人能切**。`project.md` 的 `mode` 仅由后端经前端操作写（它本就是受保护路径），每次切换写一条 `Decision`（kind=mode）。
+
+**交棒进验证模式**：人在前端从三处挑本轮验证批次——待确认的 hypothesis/assumption 候选（挑中即确认入库）、unexamined 的前提、
+proposed/investigating 的假设——并可写一句本轮想弄清什么。确认后：
+
+1. 写 `Decision`（kind=handoff）：`refs` = 批次，正文 = 人的说明；`project.md` 写 `mode: validation`、`batch: DEC###`。
+2. 排队中的夜间预习任务取消（文献工作由验证模式接管）；讨论回合照常——验证模式下人仍然可以聊，讨论 agent 的 briefing 会写明当前批次。
+
+**验证模式的调度**（M2.0b 阶梯的 Phase 2 实现，机械规划，不派 agent 决定做什么）。对批次里每个目标 T 推导下一步：
+
+```text
+没检索过 T                          → lit_search(T)            ┐
+有为 T 登记、可读、未读的论文且未超预算 → read_paper(P, T)        ├ 每个目标一条流水线
+T 自上次评估后有新证据                → assess(T)               ┘  （H 迁移状态 / A 审视结论）
+批次证据自上次扫描后新增 ≥5 条         → contradiction_scan
+以上都没有                           → 第 9 级：收工、留额度
+```
+
+- 每个目标的预算：检索 ≤2 次、全文精读 ≤6 篇；到顶即视为该目标饱和。每个任务的 `why` 字段由规划器机械写明
+  （“H001 的第 3 篇：由 T00041 的检索‘action chunk contact-rich’找到”），前端“为什么读这篇”直接读它（M2.6 的精神；
+  不为每个任务写 Decision，那会淹没真正的方向决定）。
+- **窗口份额**：无人值守的验证任务只在 5h 窗口利用率 < 60% 时启动（`AR_UNATTENDED_CAP`），剩下的留给你的交互使用；
+  周额度 ≥95% 全面暂停（已实现）。
+- 任务 blocked_on_human 时该目标的流水线跳过这篇，继续别的。
+
+**重大结果 → 建议收回，不自己闭环**。以下任一发生，规划器停止派发新的验证任务（在飞的做完提交），前端出横幅“建议回到讨论模式”并写明原因：
+批次内任一假设迁到 supported / refuted；任一前提被推翻或判为 fragile；矛盾扫描提交了候选；批次全部饱和。
+人选择“收回”（切回讨论）或“继续验证”（写 Decision 说明为何继续）。
+
+**收回**：人随时可切回讨论模式。排队中的验证任务取消，在飞的做完并提交（它们本就增量提交，杀掉只会浪费额度）。写 Decision（kind=mode）。
+
+**夜间预习**（讨论模式下）：人最后一次发言后空闲 ≥90 分钟、窗口空闲时启动，每次最多 6 个任务，只做检索与精读（**不做评估、不迁移状态**——那是验证模式的事）。
+选题：人在前端 Chat 页“今晚查什么”里写了就用它（讨论 agent 在讨论收尾时会主动问）；没写则规划器从 unexamined 前提、无证据的假设、importance=high 的不确定性里机械挑一个。
+启动时写 `Decision`（kind=research）：选了什么、为什么（“你在 Chat 里要求” 或 “A001 是唯一 unexamined 的前提，且支撑 Q001”）。你下次打开前端时第一屏就是这份说明与产出。
+
+### 5.8 blocked_on_human 与 Paper Request Queue（Phase 2，v1.3）
+
+**登记**：精读任务发现全文不可得（非 arXiv、出版商付费墙）时调用 `request_paper(paper, why, blocking)`，工具写 `requests/RQ###.md`（仅工具可写）：
+`paper`（P###，已按 DOI 登记，元数据已核实）、`task`、`status`（open / fulfilled / dismissed）、正文写为什么需要它、阻塞了什么。
+Paper 的 `fulltext` 置为 requested。
+
+**挂起**：`blocking=true` 时工具告诉 agent“本任务将挂起，记一条 checkpoint 后结束”。任务正常结束后，daemon 从 tools.jsonl 看到这次请求，
+把任务置为 `blocked_on_human`（`blocked_on: RQ###`），**不占通道**，loop 继续做别的。挂起不计入被切断次数（MAX_ATTEMPTS）。
+`blocking=false` 表示“有了更好，没有也能按摘要级做完”，任务不挂起。
+
+**上传与解阻**：前端 Inbox 的“待取文献”列出 open 的请求（标题、DOI、为什么要、阻塞了哪个任务）。人上传 PDF（≤100MB）→ 后端存进
+`library/P###/source.pdf`、转文本、`fulltext: uploaded`、`read` 不变，请求置 fulfilled，挂起的任务带着之前的 checkpoint 重新入队。
+人也可以“拿不到”（必须写理由）→ 请求 dismissed，`fulltext: unavailable`，任务重新入队并被告知只能按摘要级处理。
 
 ---
 
