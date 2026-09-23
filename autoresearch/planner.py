@@ -92,7 +92,7 @@ def next_step(store, ledger, cfg, targets, tasks, tag):
                 return {"kind": "read_paper", "target": target, "paper": m["id"], "priority": 4,
                         "goal": f"精读 {m['id']}「{m.get('title')}」，抽取关于 {target}（以及其他相关假设 / 前提）的证据",
                         "why": f"{target} 的第 {len(reads) + 1} 篇（上限 {cfg.reads_per_target}）："
-                               f"{m['id']} 由{via}找到，为 {target} 登记"}
+                               f"{m['id']} 由 {via} 找到，为 {target} 登记"}
         elif pending_reads:
             continue
         # 3. 检索：还没检索过，或检索过但没找到可读的论文

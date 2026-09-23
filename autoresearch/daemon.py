@@ -435,10 +435,10 @@ class Daemon:
             return f"the contradiction scan found conflicting evidence ({tid})"
         return None
 
-    def _hold(self, reason):
+    def _hold(self, reason, kind="major"):
         if self.st.get("hold"):
             return
-        self.st["hold"] = {"reason": reason, "since": now()}
+        self.st["hold"] = {"reason": reason, "since": now(), "kind": kind}
         self._save_state()
         self.bus.notify("warn", f"Validation paused: {reason}. Suggest going back to discussion mode — "
                         "or choose to continue validation.", hold=True)
@@ -473,10 +473,12 @@ class Daemon:
             if step:
                 self._create(step, batch=did)
             elif not any(t.get("batch") == did and t["status"] in planner.LIVE for t in tasks):
+                if any(t.get("batch") == did and t["status"] == "blocked_on_human" for t in tasks):
+                    return      # 还有任务在等你取论文：不算饱和，上传后会接着做
                 done = planner.batch_saturated(self.store, self.ledger, self.cfg, tasks)
                 self._hold("every item in the batch has reached a conclusion" if done else
                            "nothing worthwhile left to do on this batch within its budget — "
-                           "stopping to leave quota")
+                           "stopping to leave quota", kind="saturated")
         elif m == "discussion":
             self._plan_prep()
 
@@ -660,6 +662,12 @@ class Daemon:
                     self.ledger.save(t)
                     self.bus.publish("task", t)
                     n += 1
+            hold = self.st.get("hold") or {}
+            if n and hold.get("kind") == "saturated":
+                # 饱和是“没事可做”，新到的全文就是新的事；重大结果的 hold 仍要人决定
+                self.st.pop("hold", None)
+                self._save_state()
+                self.bus.publish("mode", self.mode_view())
             return n
 
     def _cancel(self, pred, why):

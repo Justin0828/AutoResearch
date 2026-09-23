@@ -11,6 +11,7 @@ const S = {
   page: "chat", ds: null, dsData: null, shift: null, streaming: "",
   overview: null, cands: [], reviews: [], activity: [], notes: [], unread: 0,
   inboxView: "cands", sysView: "status", editing: null, inboxStale: false, dsList: [],
+  mode: null, prep: null, requests: [], readingView: "now", chainTarget: null, reading: null, paperOpen: null,
 };
 
 async function api(method, path, body) {
@@ -39,7 +40,10 @@ const ORIGIN = { human: "you", ai: "AI", unclear: "unclear" };
 const H_STATUS = { proposed: "Proposed", investigating: "Investigating", supported: "Supported", refuted: "Refuted", inconclusive: "Inconclusive", abandoned: "Abandoned" };
 const A_STATUS = { unexamined: "Unexamined", examined: "Examined", promoted: "Promoted", retired: "Retired", invalidated: "Invalidated" };
 const T_STATUS = { queued: "Queued", running: "Running", done: "Done", failed: "Failed", interrupted: "Interrupted", cancelled: "Cancelled", blocked_on_human: "Waiting on you" };
-const T_KIND = { discuss_turn: "Reply", distill: "Distill" };
+const T_KIND = { discuss_turn: "Reply", distill: "Distill", lit_search: "Search", read_paper: "Read", assess: "Assess", contradiction_scan: "Contradiction scan", grounding: "Ground check" };
+const STANCE = { support: "Supports", contradict: "Contradicts", neutral: "Neutral" };
+const VERDICT = { novel: "No prior work found", prior_work: "Already done", contradicted: "Directly contradicted", mixed: "Mixed" };
+const MODE = { discussion: "Discussion mode", incubation: "Incubation mode", validation: "Validation mode" };
 const PAUSE = { quota_5h: "5h limit", quota_7d: "weekly limit", cutoff: "cut off", manual: "paused", crash: "crash", normal: "normal" };
 const FIELDS = {
   assumption: [["relied_on_by", "Supports"], ["derived_from", "Derived from insight"]],
@@ -103,7 +107,7 @@ const soon = (key, fn, ms = 150) => { clearTimeout(tmr[key]); tmr[key] = setTime
 // ---------------------------------------------------------------- router
 function route() {
   const [, page = "chat", arg] = (location.hash || "#/chat").split("/");
-  S.page = ["chat", "inbox", "research", "system"].includes(page) ? page : "chat";
+  S.page = ["chat", "inbox", "research", "reading", "system"].includes(page) ? page : "chat";
   $$(".page").forEach((p) => p.classList.toggle("on", p.id === "page-" + S.page));
   $$(".rail nav a").forEach((a) => a.classList.toggle("on", a.dataset.page === S.page));
   if (S.page === "chat") {
@@ -112,6 +116,11 @@ function route() {
   }
   if (S.page === "inbox") renderInbox();
   if (S.page === "research") loadOverview();
+  if (S.page === "reading") {
+    if (arg && /^[HA]\d+$/.test(arg)) { S.readingView = "chain"; S.chainTarget = arg; }
+    if (arg && /^P\d+$/.test(arg)) { S.readingView = "papers"; S.paperOpen = arg; }
+    renderReading();
+  }
   if (S.page === "system") { S.unread = 0; renderBadges(); renderSystem(); }
 }
 window.addEventListener("hashchange", route);
@@ -127,7 +136,10 @@ function ask(title, bodyHtml, okLabel = "Confirm") {
     dlg.onclose = () => {
       if (dlg.returnValue !== "ok") return resolve(null);
       const out = {};
-      $$("[name]", $("#dlg-body")).forEach((el) => { out[el.name] = el.value; });
+      $$("[name]", $("#dlg-body")).forEach((el) => {
+        if (el.type === "checkbox") { out[el.name] = out[el.name] || []; if (el.checked) out[el.name].push(el.value); }
+        else out[el.name] = el.value;
+      });
       resolve(out);
     };
     dlg.returnValue = "";
@@ -274,8 +286,8 @@ $("#close-ds-btn").onclick = async () => {
 
 // ================================================================ INBOX
 async function loadInbox() {
-  const [cands, revs] = await Promise.all([api("GET", "/api/candidates"), api("GET", "/api/reviews")]);
-  S.cands = cands; S.reviews = revs;
+  const [cands, revs, reqs] = await Promise.all([api("GET", "/api/candidates"), api("GET", "/api/reviews"), api("GET", "/api/requests")]);
+  S.cands = cands; S.reviews = revs; S.requests = reqs;
   renderBadges();
   if (S.page === "inbox") renderInbox();
 }
@@ -283,7 +295,9 @@ async function loadInbox() {
 function renderBadges() {
   const pc = S.cands.filter((c) => c.status === "pending").length;
   const pr = S.reviews.filter((r) => r.status === "open").length;
-  $("#inbox-badge").textContent = pc + pr || "";
+  const rq = S.requests.filter((r) => r.status === "open").length;
+  $("#inbox-badge").textContent = pc + pr + rq || "";
+  $("#seg-requests").textContent = rq || "";
   $("#seg-cands").textContent = pc || "";
   $("#seg-reviews").textContent = pr || "";
   $("#sys-badge").textContent = S.unread || "";
@@ -464,6 +478,49 @@ function reviewCard(r) {
   </div>`;
 }
 
+function paperRef(p) {
+  if (!p) return "";
+  const href = p.arxiv ? `https://arxiv.org/abs/${p.arxiv}` : p.doi ? `https://doi.org/${p.doi}` : p.url;
+  const lbl = p.arxiv ? `arXiv:${p.arxiv}` : p.doi ? `doi:${p.doi}` : "link";
+  return href ? `<a href="${esc(href)}" target="_blank" rel="noopener">${esc(lbl)}</a>` : "";
+}
+
+function requestCard(r) {
+  const p = r.paper_info || {}, t = r.task_info;
+  const open = r.status === "open";
+  return `<div class="card ${open ? "flagged" : "dim"}" data-request="${r.id}">
+    <div class="card-top"><span class="tag warn">Paper</span><span class="id">${r.id}</span><span>${esc(p.id)} · ${paperRef(p)}</span>
+      ${open ? (r.blocking ? `<span class="tag warn">A task is waiting on it</span>` : "") : `<span class="tag plain">${r.status === "fulfilled" ? "Uploaded" : "Not available"}</span>`}</div>
+    <div class="statement"><strong>${esc(p.title || "")}</strong>${p.year ? ` <span class="meta">(${esc(p.year)}${p.venue ? ", " + esc(p.venue) : ""})</span>` : ""}</div>
+    <div class="md small">${md(r.body.replace(/^## .*\n/m, ""))}</div>
+    ${t ? `<div class="meta" style="margin-top:6px">Requested by ${t.id} · ${esc(T_KIND[t.kind] || t.kind)} · ${esc(t.goal)}</div>` : ""}
+    ${open ? `<div class="acts"><label class="btn small" style="cursor:pointer">Upload PDF<input type="file" accept="application/pdf,.pdf" data-act="upload" hidden></label>
+      <button class="btn ghost small" data-act="dismiss">Can't get it</button></div>` : ""}
+  </div>`;
+}
+
+function bindRequests(body) {
+  $$("[data-request] input[data-act=upload]", body).forEach((inp) => inp.onchange = async () => {
+    const id = inp.closest(".card").dataset.request, f = inp.files[0];
+    if (!f) return;
+    toast(`Uploading ${f.name}…`);
+    try {
+      const r = await fetch(`/api/requests/${id}/upload`, { method: "POST", headers: { "Content-Type": "application/pdf" }, body: f });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || r.statusText);
+      toast(`${id}: indexed ${d.anchors} paragraphs${d.resumed ? `, resumed ${d.resumed} task(s)` : ""}.`);
+    } catch (e) { fail(e); }
+    loadInbox();
+  });
+  $$("[data-request] [data-act=dismiss]", body).forEach((b) => b.onclick = async () => {
+    const id = b.closest(".card").dataset.request;
+    const f = await ask(`${id}: can't get it`, field("Why not?", "reason", "", "the waiting task is told to work from the abstract", 3), "Save");
+    if (!f) return;
+    try { await api("POST", `/api/requests/${id}/dismiss`, f); } catch (e) { fail(e); }
+    loadInbox();
+  });
+}
+
 function renderInbox(force) {
   // Live updates must not wipe a form you're typing in; they're applied when you finish.
   if (S.editing && !force) { S.inboxStale = true; return; }
@@ -478,6 +535,13 @@ function renderInbox(force) {
     const open = S.reviews.filter((r) => r.status === "open");
     body.innerHTML = (open.length ? `<p class="lede" style="margin:0 0 16px">These objects are linked to something that was overturned. Nothing was changed automatically — decide for each one.</p>` : "") +
       (open.map(reviewCard).join("") || `<div class="empty">Nothing to re-examine. When a hypothesis is refuted or an assumption invalidated, everything linked to it shows up here.</div>`);
+  } else if (S.inboxView === "requests") {
+    const open = S.requests.filter((r) => r.status === "open");
+    const done = S.requests.filter((r) => r.status !== "open").reverse();
+    body.innerHTML = (open.length ? `<p class="lede" style="margin:0 0 16px">The AI decided these papers are worth reading in full but can't get them. Fetch the PDF through your library access and upload it here — the suspended task picks up where it stopped.</p>` : "") +
+      (open.map(requestCard).join("") || `<div class="empty">No papers waiting. When the AI needs a paywalled paper, it asks here instead of guessing.</div>`) +
+      (done.length ? `<h2 style="margin:28px 0 12px">Handled</h2>` + done.map(requestCard).join("") : "");
+    bindRequests(body);
   } else {
     const done = S.cands.filter((c) => c.status !== "pending").reverse();
     const revs = S.reviews.filter((r) => r.status !== "open").reverse();
@@ -628,7 +692,7 @@ async function loadOverview() {
   S.overview = o;
   $("#project-title").textContent = o.project.title || "Untitled project";
   $("#project-lede").textContent = firstLine(o.project.body);
-  $("#mode-pill").textContent = { discussion: "Discussion mode", incubation: "Incubation mode", validation: "Validation mode" }[o.project.mode] || o.project.mode;
+  if (o.mode) renderMode(o.mode);
   if (S.page === "research") renderResearch();
 }
 
@@ -648,6 +712,8 @@ const section = (id, title, count, desc, content, action = "") => `
     <div class="rsec-head"><div><h2>${title}<span class="count">${count ?? ""}</span></h2>${desc ? `<p>${desc}</p>` : ""}</div>${action}</div>
     ${content}
   </section>`;
+
+const inBatch = (id) => (S.mode && (S.mode.batch || []).includes(id)) ? `<span class="tag insight">In validation</span>` : "";
 
 function renderResearch() {
   const o = S.overview;
@@ -671,14 +737,16 @@ function renderResearch() {
 
   const as = o.assumptions.slice().sort((a, b) => (a.status !== "unexamined") - (b.status !== "unexamined"));
   const asHtml = as.length ? `<div class="grid">${as.map((x) => objCard(x,
-    `<span class="tag assumption">${A_STATUS[x.status] || x.status}</span>`,
+    `<span class="tag assumption">${A_STATUS[x.status] || x.status}</span>${x.fragile === "true" || x.fragile === true ? `<span class="tag warn">Fragile</span>` : ""}${inBatch(x.id)}`,
     dl([["Supports", x.relied_on_by], ["Derived from", x.derived_from], ["Promoted to", x.promoted_to], ["Invalidated by", x.invalidated_by]]),
-    x.status === "invalidated" ? "" : `<div class="acts"><button class="btn ghost small danger" data-act="invalidate">Invalidate</button></div>`)).join("")}</div>`
+    `<div class="acts"><button class="btn ghost small" data-act="chain">Evidence${(x.evidence || []).length ? ` (${x.evidence.length})` : ""}</button>` +
+    (x.status === "invalidated" ? "" : `<button class="btn ghost small" data-act="ground">Ground check</button><button class="btn ghost small danger" data-act="invalidate">Invalidate</button>`) + `</div>`)).join("")}</div>`
     : `<div class="empty">No assumptions recorded.</div>`;
 
   const hs = o.hypotheses.length ? `<div class="grid">${o.hypotheses.map((x) => objCard(x,
-    `<span class="tag hypothesis">${H_STATUS[x.status] || x.status}</span><span class="tag plain">${x.confidence} confidence</span>`,
-    dl([["Refuted if", x.falsifier], ["Tested by", x.validation], ["Evidence", x.evidence], ["From assumption", x.promoted_from]]))).join("")}</div>`
+    `<span class="tag hypothesis">${H_STATUS[x.status] || x.status}</span><span class="tag plain">${x.confidence} confidence</span>${inBatch(x.id)}`,
+    dl([["Refuted if", x.falsifier], ["Tested by", x.validation], ["From assumption", x.promoted_from]]),
+    `<div class="acts"><button class="btn ghost small" data-act="chain">Evidence${(x.evidence || []).length ? ` (${x.evidence.length})` : ""}</button><button class="btn ghost small" data-act="ground">Ground check</button></div>`)).join("")}</div>`
     : `<div class="empty">No hypotheses yet.</div>`;
 
   const us = o.uncertainties.filter((x) => x.status !== "resolved");
@@ -689,7 +757,7 @@ function renderResearch() {
     : `<div class="empty">No closed directions yet.</div>`;
 
   const bias = o.bias.length ? `<div class="card"><table class="t"><tr><th>Raised by</th><th>Hypotheses</th><th>With a verdict</th><th>Refuted</th><th>Refutation rate</th></tr>
-    ${o.bias.map((b) => `<tr><td>${ORIGIN[b.origin] || b.origin}</td><td>${b.total}</td><td>${b.resolved}</td><td>${b.refuted}</td><td>${b.refute_rate == null ? "—" : Math.round(b.refute_rate * 100) + "%"}</td></tr>`).join("")}</table></div>`
+    ${o.bias.map((b) => `<tr><td>${b.origin === "disputed" ? "Disputed origin (not counted)" : ORIGIN[b.origin] || b.origin}</td><td>${b.total}</td><td>${b.resolved}</td><td>${b.refuted}</td><td>${b.refute_rate == null ? "—" : Math.round(b.refute_rate * 100) + "%"}</td></tr>`).join("")}</table></div>`
     : `<div class="empty">No hypotheses yet.</div>`;
 
   $("#research-body").innerHTML = top +
@@ -741,6 +809,13 @@ function bindResearch() {
     try { await api("POST", `/api/insights/${id}/abandon`, r); } catch (err) { fail(err); }
     loadOverview(); loadInbox();
   });
+  $$('[data-act="chain"]', body).forEach((b) => b.onclick = () => go(`#/reading/${b.closest(".card").dataset.id}`));
+  $$('[data-act="ground"]', body).forEach((b) => b.onclick = async () => {
+    const id = b.closest(".card").dataset.id;
+    const r = await ask(`Ground check ${id}?`, `<p>A separate task searches for prior work and the strongest counter-evidence, then annotates ${id}. It never rewrites it. It can't see who proposed ${id}.</p>`, "Queue it");
+    if (!r) return;
+    try { await api("POST", "/api/grounding", { target: id }); toast(`Ground check for ${id} queued.`); } catch (err) { fail(err); }
+  });
   $$('[data-act="invalidate"]', body).forEach((b) => b.onclick = async () => {
     const id = b.closest(".card").dataset.id;
     const r = await ask(`Invalidate ${id}`, `<p>Everything linked to it goes to the Inbox for re-examination. Nothing is changed automatically.</p>` +
@@ -767,6 +842,187 @@ function spyChips() {
     });
   }, { root: $("#page-research"), rootMargin: "-80px 0px -70% 0px" });
   $$(".rsec").forEach((s) => spy.observe(s));
+}
+
+// ================================================================ MODES & HANDOFF (DESIGN §5.7)
+async function loadMode() {
+  try { renderMode(await api("GET", "/api/mode")); } catch (err) { /* server restarting */ }
+  try { S.prep = await api("GET", "/api/prep"); renderModeBanner(); } catch (err) { /* ignore */ }
+}
+
+function renderMode(m) {
+  S.mode = m;
+  $("#mode-pill").textContent = MODE[m.mode] || m.mode;
+  $("#mode-pill").className = "pill " + (m.mode === "validation" ? "ok" : "accent");
+  const b = $("#handoff-btn");
+  b.textContent = m.mode === "validation" ? "← Back to discussion" : "Hand off →";
+  b.title = m.mode === "validation" ? "Take the lead back: stop validating and return to discussion mode"
+    : "Hand a batch of premises and hypotheses to the AI to check against the literature";
+  renderModeBanner();
+}
+
+function renderModeBanner() {
+  const m = S.mode, el = $("#mode-banner");
+  if (!m || !el) return;
+  const parts = [];
+  if (m.mode === "validation") {
+    parts.push(`<div class="banner info"><strong>Validation mode.</strong> The AI is checking ${(m.batch || []).map((x) => `<a href="#/reading/${x}">${x}</a>`).join(", ")} against the literature on its own.
+      It can't see who proposed them. You can still talk here. <a href="#/reading">See what it's reading →</a></div>`);
+    if (m.hold) parts.push(`<div class="banner warn"><strong>Suggest going back to discussion:</strong> ${esc(m.hold.reason)}.
+      Validation has stopped starting new work until you decide.
+      <div class="acts"><button class="btn small" data-mode="recall">Back to discussion</button><button class="btn ghost small" data-mode="continue">Keep validating</button></div></div>`);
+  } else if (m.mode === "discussion") {
+    const p = (S.prep || {}).prep || {}, dec = (S.prep || {}).decision;
+    if (dec && (p.active || p.ended)) {
+      const tasks = (S.prep.tasks || []);
+      parts.push(`<details class="banner info" ${p.active ? "" : "open"}><summary><strong>${p.active ? "Reading while you're away" : "Overnight reading"}:</strong> ${esc(p.topic || "")}</summary>
+        <div class="md small" style="margin-top:8px">${md((dec.body || "").replace(/^## 做了什么\n\n.*?\n\n/s, ""))}</div>
+        ${tasks.length ? `<div class="meta">${tasks.map((t) => `${t.id} ${T_KIND[t.kind] || t.kind}${t.paper ? " " + t.paper : ""} · ${T_STATUS[t.status] || t.status}${t.result_brief ? " — " + esc(t.result_brief) : ""}`).join("<br>")}</div>` : ""}
+        ${p.end_reason ? `<div class="meta">Stopped: ${esc(p.end_reason)} · ${fmtTs(p.ended)} · ${dec.id}</div>` : ""}</details>`);
+    }
+    const req = m.prep_request;
+    parts.push(`<div class="prep-row"><span class="meta">Tonight, look into:</span><input id="prep-input" placeholder="${req ? "" : "optional — if empty, the AI picks an unexamined premise and says why tomorrow"}" value="${esc(req ? req.text : "")}"><button class="btn ghost small" id="prep-save">${req ? "Update" : "Set"}</button></div>`);
+  }
+  el.innerHTML = parts.join("");
+  $$("[data-mode]", el).forEach((b) => b.onclick = () => (b.dataset.mode === "recall" ? recallMode() : continueMode()));
+  const ps = $("#prep-save", el);
+  if (ps) ps.onclick = async () => {
+    try { renderMode(await api("POST", "/api/prep-request", { text: $("#prep-input").value })); toast("Noted for tonight."); } catch (err) { fail(err); }
+  };
+}
+
+async function handoffDialog() {
+  if (!S.overview) await loadOverview();
+  const o = S.overview;
+  const pend = S.cands.filter((c) => c.status === "pending" && ["hypothesis", "assumption"].includes(c.kind) && c.origin !== "unclear");
+  const as = o.assumptions.filter((x) => ["unexamined", "examined"].includes(x.status));
+  const hs = o.hypotheses.filter((x) => ["proposed", "investigating", "inconclusive"].includes(x.status));
+  const item = (id, text, tag) => `<label><input type="checkbox" name="items" value="${id}"><span><span class="id">${id}</span>${tag}<br>${esc(text.slice(0, 180))}</span></label>`;
+  const body = `<p>Pick what the AI should check against the literature. It works on its own — search, read, record evidence traced to paragraphs, and change a status only when the evidence is there. It stops and suggests coming back when something major turns up.</p>
+    <div class="checks">
+      ${hs.length ? `<h4>Hypotheses</h4>` + hs.map((x) => item(x.id, mainText(x.body), ` <span class="tag hypothesis">${H_STATUS[x.status]}</span>`)).join("") : ""}
+      ${as.length ? `<h4>Assumptions</h4>` + as.map((x) => item(x.id, mainText(x.body), ` <span class="tag assumption">${A_STATUS[x.status]}</span>`)).join("") : ""}
+      ${pend.length ? `<h4>From the Inbox (accepted on hand-off)</h4>` + pend.map((c) => item(c.id, c.statement, ` <span class="tag ${c.kind}">${KIND[c.kind]}</span>`)).join("") : ""}
+    </div>` + field("What do you want to find out?", "note", "", "optional — goes into the hand-off decision", 2);
+  const r = await ask("Hand off to validation", body, "Hand off");
+  if (!r) return;
+  if (!(r.items || []).length) return toast("Pick at least one item.", "warn");
+  try {
+    const x = await api("POST", "/api/mode/handoff", { items: r.items, note: r.note });
+    toast(`Handed off (${x.decision}): ${x.batch.join(", ")}.`);
+  } catch (err) { fail(err); }
+  loadMode(); loadOverview(); loadInbox();
+}
+
+async function recallMode() {
+  const r = await ask("Back to discussion?", `<p>Queued validation work is cancelled; anything running finishes and commits. The switch is recorded as a decision.</p>` + field("Why now?", "reason", "", "optional", 2), "Back to discussion");
+  if (!r) return;
+  try { await api("POST", "/api/mode/recall", r); toast("Back in discussion mode."); } catch (err) { fail(err); }
+  loadMode(); loadOverview();
+}
+
+async function continueMode() {
+  const r = await ask("Keep validating?", `<p>The system suggested coming back because: <em>${esc(S.mode.hold.reason)}</em>. Continuing is recorded as a decision — say why.</p>` + field("Why continue?", "reason", "", "required", 3), "Keep validating");
+  if (!r) return;
+  try { await api("POST", "/api/mode/continue", r); toast("Validation continues."); } catch (err) { fail(err); }
+  loadMode();
+}
+
+$("#handoff-btn").onclick = () => (S.mode && S.mode.mode === "validation" ? recallMode() : handoffDialog());
+
+// ================================================================ READING (M8: what, why, evidence chain)
+$$("#reading-seg button").forEach((b) => b.onclick = () => { S.readingView = b.dataset.v; renderReading(); });
+
+function taskRow(t) {
+  const p = t.paper_info;
+  return `<div class="reading-row"><div><span class="status ${t.status}">${T_STATUS[t.status] || t.status}</span><div class="mono meta">${t.id}</div></div>
+    <div><div><strong>${esc(T_KIND[t.kind] || t.kind)}</strong>${t.target ? ` · <a href="#/reading/${t.target}">${t.target}</a>` : ""}${p ? ` · <a href="#/reading/${p.id}">${p.id}</a> ${esc(p.title || "")} ${paperRef(p)}` : ""}${t.prep ? ` <span class="tag plain">overnight</span>` : ""}</div>
+      ${t.why ? `<div class="why">Why: ${esc(t.why)}</div>` : ""}
+      ${t.blocked_on ? `<div class="why">Waiting on <a href="#/inbox">${t.blocked_on}</a> — upload the PDF in the Inbox</div>` : ""}
+      ${t.result_brief ? `<div>${esc(t.result_brief)}</div>` : ""}</div></div>`;
+}
+
+async function renderReading() {
+  $$("#reading-seg button").forEach((b) => b.classList.toggle("on", b.dataset.v === S.readingView));
+  const body = $("#reading-body");
+  try {
+    if (S.readingView === "now") {
+      const r = S.reading = await api("GET", "/api/reading");
+      $("#reading-badge").textContent = r.blocked.length || "";
+      const blk = (title, rows, empty) => `<h2 style="margin:22px 0 8px">${title}</h2>` +
+        (rows.length ? `<div class="card" style="padding:4px 18px">${rows.map(taskRow).join("")}</div>` : `<div class="empty">${empty}</div>`);
+      body.innerHTML = (S.mode && S.mode.hold ? `<div class="banner warn">Validation is holding: ${esc(S.mode.hold.reason)}. <a href="#/chat">Decide in Chat →</a></div>` : "") +
+        blk("Reading now", r.running, S.mode && S.mode.mode === "validation" ? "Nothing running right now." : "Nothing running. Literature work runs in validation mode, or overnight while you're away.") +
+        blk("Up next", r.queued, "Nothing queued.") +
+        (r.blocked.length ? blk("Waiting on you", r.blocked, "") : "") +
+        blk("Recently", r.recent, "No literature work yet.");
+    } else if (S.readingView === "chain") {
+      if (!S.overview) await loadOverview();
+      const o = S.overview;
+      const targets = [...o.hypotheses, ...o.assumptions];
+      if (!S.chainTarget && targets.length) S.chainTarget = ((S.mode || {}).batch || [])[0] || targets[0].id;
+      const pick = `<div class="target-pick">${targets.map((x) => `<button data-t="${x.id}" class="${x.id === S.chainTarget ? "on" : ""}">${x.id} · ${x.id.startsWith("H") ? H_STATUS[x.status] : A_STATUS[x.status]}${(x.evidence || []).length ? ` · ${x.evidence.length} ev` : ""}</button>`).join("")}</div>`;
+      if (!S.chainTarget) { body.innerHTML = `<div class="empty">No hypotheses or assumptions yet.</div>`; return; }
+      const c = await api("GET", `/api/chain/${S.chainTarget}`);
+      body.innerHTML = pick + chainHtml(c);
+      $$(".target-pick button", body).forEach((b) => b.onclick = () => go(`#/reading/${b.dataset.t}`));
+    } else {
+      if (!S.overview) await loadOverview();
+      const ps = (S.overview.papers || []).slice().reverse();
+      $("#seg-papers").textContent = ps.length || "";
+      if (S.paperOpen) {
+        const p = await api("GET", `/api/papers/${S.paperOpen}`);
+        body.innerHTML = `<p><a href="#/reading" id="papers-back">← All papers</a></p>` + paperHtml(p);
+        $("#papers-back").onclick = (e) => { e.preventDefault(); S.paperOpen = null; S.readingView = "papers"; location.hash = "#/reading"; renderReading(); };
+        return;
+      }
+      body.innerHTML = ps.length ? `<div class="card" style="padding:4px 8px"><table class="t"><tr><th>Paper</th><th>Year</th><th>Read</th><th>Full text</th><th>For</th></tr>
+        ${ps.map((p) => `<tr><td><a href="#/reading/${p.id}" class="mono">${p.id}</a> ${esc(p.title)} ${paperRef(p)}</td><td>${esc(p.year || "")}</td><td>${esc(p.read)}</td><td>${esc(p.fulltext)}</td><td>${esc(fmtv(p.for))}</td></tr>`).join("")}</table></div>`
+        : `<div class="empty">No papers yet. Every paper here was verified against arXiv or Crossref when it was registered.</div>`;
+    }
+  } catch (err) { body.innerHTML = `<div class="empty">${esc(err.message)}</div>`; }
+}
+
+function evHtml(e) {
+  const p = e.paper || {};
+  return `<div class="ev ${e.stance}">
+    <div class="head"><span class="tag ${e.stance}">${STANCE[e.stance] || e.stance}</span><span class="id">${e.id}</span>
+      <span>${e.strength}${e.basis === "abstract" ? " · abstract only" : ""}</span>
+      <span>· <a href="#/reading/${p.id}">${p.id}</a> ${esc(p.title || "")} ${p.year ? `(${esc(p.year)})` : ""} ${paperRef(p)}</span>
+      <span>· ${esc(fmtv(e.locator))}</span>${e.task ? `<span>· by ${e.task}</span>` : ""}</div>
+    ${e.quote ? `<blockquote>“${esc(e.quote)}”</blockquote>` : ""}
+    <div class="md small">${md(e.note)}</div>
+    ${Object.keys(e.paragraphs || {}).length ? `<details><summary>The paragraph${Object.keys(e.paragraphs).length > 1 ? "s" : ""} it cites</summary>${Object.entries(e.paragraphs).map(([a, t]) => `<div class="para"><b>[${esc(a)}]</b>${esc(t)}</div>`).join("")}</details>` : ""}
+  </div>`;
+}
+
+function chainHtml(c) {
+  const t = c.target;
+  const status = t.type === "hypothesis" ? H_STATUS[t.status] : A_STATUS[t.status];
+  const sup = c.evidence.filter((e) => e.stance === "support").length, con = c.evidence.filter((e) => e.stance === "contradict").length;
+  return `<div class="card"><div class="card-top"><span class="tag ${t.type}">${status}</span><span class="id">${t.id}</span>
+      <span>${c.evidence.length} evidence · ${sup} supporting · ${con} contradicting</span>${inBatch(t.id)}</div>
+    <div class="statement md">${md(mainText(t.body))}</div>
+    ${dl([["Refuted if", t.falsifier], ["Tested by", t.validation], ["Supports", t.relied_on_by]])}</div>
+    ${c.changes.length ? `<h2 style="margin:24px 0 8px">Why the status is what it is</h2>${c.changes.map((x) => `<div class="card"><div class="md small">${md(x.text)}</div></div>`).join("")}` : ""}
+    <h2 style="margin:24px 0 8px">Evidence</h2>
+    ${c.evidence.length ? c.evidence.map(evHtml).join("") : `<div class="empty">No evidence yet.</div>`}
+    ${c.groundings.length ? `<h2 style="margin:24px 0 8px">Ground checks</h2>${c.groundings.map((g) => `<div class="card"><div class="card-top"><span class="tag warn">${VERDICT[g.verdict] || g.verdict}</span><span class="id">${g.id}</span><span>${esc(fmtv(g.refs))}</span></div><div class="md small">${md(g.body)}</div></div>`).join("")}` : ""}
+    ${c.reviews.length ? `<h2 style="margin:24px 0 8px">Re-examinations</h2>${c.reviews.map((r) => `<div class="card dim"><div class="card-top"><span class="id">${r.id}</span><span>${r.trigger} → ${r.target} · ${r.status}</span></div><div class="md small">${md(r.body)}</div></div>`).join("")}` : ""}
+    <h2 style="margin:24px 0 8px">Work on ${t.id}</h2>
+    ${c.tasks.length ? `<div class="card" style="padding:4px 18px">${c.tasks.slice().reverse().map((x) => taskRow(x)).join("")}</div>` : `<div class="empty">No literature work on it yet.</div>`}
+    ${c.papers.length ? `<h2 style="margin:24px 0 8px">Papers registered for it</h2><div class="card" style="padding:10px 18px">${c.papers.map((p) => `<div><a href="#/reading/${p.id}" class="mono">${p.id}</a> ${esc(p.title)} · read: ${esc(p.read)} · full text: ${esc(p.fulltext)} ${paperRef(p)}</div>`).join("")}</div>` : ""}`;
+}
+
+function paperHtml(p) {
+  const m = p.meta;
+  return `<div class="card"><div class="card-top"><span class="id">${m.id}</span><span>${esc(m.year || "")} ${esc(m.venue || "")} · ${paperRef(m)} · read: ${esc(m.read)} · full text: ${esc(m.fulltext)}</span></div>
+    <div class="statement"><strong>${esc(m.title)}</strong></div><div class="meta">${esc(fmtv(m.authors))}</div>
+    ${m.found_via ? `<div class="meta">Found via ${esc(m.found_via)}${m.for ? ` · for ${esc(fmtv(m.for))}` : ""}</div>` : ""}
+    <div class="md" style="margin-top:12px">${md(p.body)}</div></div>
+    <h2 style="margin:24px 0 8px">Evidence drawn from it</h2>
+    ${p.evidence.length ? p.evidence.map((e) => evHtml({ ...e, paper: m, paragraphs: {} })).join("") : `<div class="empty">None yet.</div>`}
+    ${p.library && p.library.source ? `<div class="meta" style="margin-top:16px">Text source: ${esc(p.library.source)} · ${p.library.anchors} paragraphs indexed</div>` : ""}`;
 }
 
 // ================================================================ SYSTEM
@@ -819,7 +1075,7 @@ async function renderSystem() {
         <td><span class="status ${t.status}">${T_STATUS[t.status] || t.status}${t.attempts > 1 ? ` · attempt ${t.attempts}` : ""}</span></td>
         <td class="mono">${t.shift || "—"}</td><td>${fmtTs(t.started) || "—"}</td>
         <td>${t.cost_usd ? "$" + t.cost_usd.toFixed(3) : "—"}</td>
-        <td>${esc(t.result_brief || (t.status !== "done" && t.error ? t.error.slice(0, 100) : ""))}</td></tr>`).join("")}</table></div>`
+        <td>${t.why ? `<div class="meta">${esc(t.why)}</div>` : ""}${esc(t.result_brief || (t.status !== "done" && t.error ? t.error.slice(0, 100) : ""))}</td></tr>`).join("")}</table></div>`
       : `<div class="empty">No tasks yet.</div>`;
   } else if (S.sysView === "activity") {
     body.innerHTML = `<p class="lede" style="margin:0 0 12px">Tool calls as they happen — which files the AI reads, what it searches, what it proposes.</p>` +
@@ -890,9 +1146,10 @@ function connect() {
       case "reply_reset": if (d.discussion === S.ds) { S.streaming = ""; renderStream(); } break;
       case "reply_delta": if (d.discussion === S.ds) { S.streaming += d.text; renderStream(); } break;
       case "turn": if (d.discussion === S.ds) S.streaming = ""; soon("ds", () => { refreshDs(); loadDiscussions(); }); break;
-      case "task": soon("task", () => { refreshDs(); loadDiscussions(); loadShift(); if (S.page === "system") renderSystem(); }); break;
+      case "task": soon("task", () => { refreshDs(); loadDiscussions(); loadShift(); if (S.page === "system") renderSystem(); if (S.page === "reading") renderReading(); loadMode(); }); break;
       case "candidates": case "state": soon("inbox", loadInbox); soon("ov", loadOverview); break;
       case "quota": renderQuota(d); break;
+      case "mode": renderMode(d); soon("ov", loadOverview); break;
       case "shift": renderShift(d); if (S.page === "system") renderSystem(); break;
       case "activity":
         S.activity.unshift(ev); S.activity = S.activity.slice(0, 200);
@@ -916,7 +1173,7 @@ function connect() {
   try {
     S.notes = await api("GET", "/api/notifications");
     S.dsList = await api("GET", "/api/discussions");
-    await Promise.all([loadShift(), loadInbox(), loadOverview()]);
+    await Promise.all([loadShift(), loadInbox(), loadOverview(), loadMode()]);
   } catch (err) { fail(err); }
   route();
 })();

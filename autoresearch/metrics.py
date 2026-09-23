@@ -10,7 +10,9 @@ def bias_by_origin(store):
     prov = store.provenance()
     rows = {}
     for meta, _ in store.list("hypothesis"):
-        origin = (prov.get(meta["id"]) or {}).get("origin", "unknown")
+        rec = prov.get(meta["id"]) or {}
+        # 归属有争议的单列，不计入 human / ai 任一方，直到人裁定（2026-09-23 用户决定，H002）
+        origin = "disputed" if rec.get("disputed") else rec.get("origin", "unknown")
         r = rows.setdefault(origin, {"origin": origin, "total": 0, "resolved": 0,
                                      **{s: 0 for s in RESOLVED}, "open": 0})
         r["total"] += 1

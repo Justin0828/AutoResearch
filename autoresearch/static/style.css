@@ -338,3 +338,36 @@ body.ds-hidden .ds-col { visibility: hidden; border: 0; }
   .conv-actions .pill, .conv-actions button:last-child { display: none; }
   .card dl { grid-template-columns: 1fr; }
 }
+
+/* ---------------------------------------------------------------- Phase 2: modes, reading, evidence chains */
+.banner.info { border-color: var(--accent); background: var(--accent-soft); color: var(--ink-2); }
+.banner .acts { margin-top: 10px; }
+#mode-banner { padding: 0 28px; }
+#mode-banner:empty { display: none; }
+#mode-banner .banner { margin: 12px 0 0; }
+.status.blocked_on_human { color: var(--warn); } .status.cancelled { color: var(--muted); }
+.checks { display: flex; flex-direction: column; gap: 6px; max-height: 46vh; overflow: auto; margin: 6px 0 14px; }
+.checks label { display: flex; gap: 10px; align-items: flex-start; font-weight: 400; font-size: 13px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
+.checks label:hover { background: var(--surface-2); }
+.checks input { margin-top: 3px; }
+.checks .id { font-family: var(--mono, ui-monospace, monospace); font-size: 12px; color: var(--muted); margin-right: 6px; }
+.checks h4 { margin: 10px 0 2px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.tag.support { background: var(--ok-soft); color: var(--ok); }
+.tag.contradict { background: var(--bad-soft); color: var(--bad); }
+.tag.neutral { background: var(--surface-3); color: var(--ink-2); }
+.ev { border-left: 3px solid var(--line); padding: 10px 0 10px 14px; margin: 12px 0; }
+.ev.support { border-left-color: var(--ok); } .ev.contradict { border-left-color: var(--bad); }
+.ev .head { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; font-size: 12.5px; color: var(--muted); }
+.ev blockquote { margin: 8px 0; padding: 8px 12px; background: var(--surface-2); border-radius: 8px; font-style: italic; font-size: 13px; }
+.ev details { margin-top: 6px; font-size: 12.5px; }
+.ev .para { font-size: 12.5px; color: var(--ink-2); background: var(--surface-2); border-radius: 8px; padding: 8px 12px; margin-top: 6px; }
+.ev .para b { font-family: var(--mono, ui-monospace, monospace); font-weight: 600; margin-right: 6px; color: var(--muted); }
+.reading-row { display: grid; grid-template-columns: 110px 1fr; gap: 4px 14px; padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.reading-row:last-child { border-bottom: 0; }
+.reading-row .why { color: var(--muted); }
+.target-pick { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 18px; }
+.target-pick button { font: inherit; font-size: 12.5px; border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 4px 10px; cursor: pointer; color: var(--ink-2); }
+.target-pick button.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-ink); }
+.prep-row { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+.prep-row input { flex: 1; font: inherit; font-size: 13px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); }
+.pill.ok { background: var(--ok-soft); color: var(--ok); }

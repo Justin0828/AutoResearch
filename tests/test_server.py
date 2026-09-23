@@ -57,7 +57,7 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(s, 200)
         self.assertEqual(o["project"]["mode"], "discussion")
         self.assertEqual(o["validation"]["errors"], [])
-        self.assertEqual({b["origin"] for b in o["bias"]}, {"human"})
+        self.assertEqual({b["origin"] for b in o["bias"]}, {"human", "disputed"})   # H002 单列
 
     def test_discussion_to_candidate_to_state(self):
         s, r = self.req("POST", "/api/discussions", {"title": "瓶颈"})
