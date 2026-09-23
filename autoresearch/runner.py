@@ -199,6 +199,13 @@ class Runner:
         if rel.startswith(".."):
             return
         writable = tuple(KINDS[task["kind"]].get("writable", ()))
+        with self.store.locked():
+            dirty = self.store.git("status", "--porcelain", "--", rel).strip()
+        if not dirty:
+            # 执行层已拦下（deny 规则 / dontAsk），或写入与 HEAD 相同：没有要提交或回滚的
+            if schema.is_protected(rel) or not rel.startswith(writable):
+                self._violation(task, rel, "尝试越界写入，执行层已拦下", notify=False)
+            return
         why = None
         if schema.is_protected(rel):
             why = "受保护路径"
@@ -232,8 +239,9 @@ class Runner:
         with self.store.locked():
             self.store._commit([rel], f"agent({task['kind']}): 编辑 {rel}", "agent", task["id"])
 
-    def _violation(self, task, rel, why):
-        self.bus.notify("warn", f"{task['id']} edited {rel} out of bounds ({why}).", task=task["id"])
+    def _violation(self, task, rel, why, notify=True):
+        if notify:
+            self.bus.notify("warn", f"{task['id']} edited {rel} out of bounds ({why}).", task=task["id"])
         with open(self.ledger.path(task["id"]) / "violations.jsonl", "a", encoding="utf-8") as f:
             f.write(json.dumps({"path": rel, "why": why}, ensure_ascii=False) + "\n")
 

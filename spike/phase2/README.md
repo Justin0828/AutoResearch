@@ -42,3 +42,22 @@
 结论：arXiv 全链路可用，PDF 速度够用（单篇 10–20s）。Semantic Scholar 无 key 基本不可用，不作为依赖；
 OpenAlex / Crossref 可作 DOI 元数据补充。本机有 `pdftotext`（poppler），PDF 可在后端转文本，
 不必让 agent 用 Read 直接吃 PDF（那样按页算 token，且无法稳定定位段落）。
+
+## 3. 真实 claude 下 runner 的 Edit 提交与回滚 —— 成立
+
+`edit_scope.py` 用正式的 `Runner`（与 daemon 同一条执行路径）跑 read_paper 任务，让 agent 逐条尝试 7 种写入，
+判定只看磁盘与 git。$0.18。
+
+| # | 尝试 | 结果 |
+|---|---|---|
+| 1 | Edit 论文笔记正文 | ✅ 写入，runner 以 `ar-agent` 提交 |
+| 2 | Edit 论文 frontmatter 的 title | Edit 返回成功，runner 发现改了工具字段 → **字段级恢复**（title 回到原值，同一文件里合法的笔记保留） |
+| 3 | Edit `hypotheses/H001.md` 的 status | 执行层拒绝（`Edit(//$STATE/hypotheses/**)` deny） |
+| 4 | Edit 任务目录（cwd）里的文件 | 执行层拒绝（dontAsk + 白名单只有 `Edit(//$STATE/papers/**)`） |
+| 5 | Edit State 与 cwd 之外的文件 | 执行层拒绝（同上）——**Edit 不会写到宿主机其他地方** |
+| 6 | Write 新建文件 | 工具不存在（`--tools` 未列出） |
+| 7 | Edit `provenance.json` | 执行层拒绝 |
+
+结论：Edit 的白名单要写成带路径的 `Edit(//abs/**)`，不能给不带路径的 `Edit`——dontAsk 模式下未列入白名单的一律拒绝，
+这正是“只能写论文笔记”的执行层保证；runner 的回滚是第二道。
+先前的整文件回滚在快速连续编辑下会误伤合法笔记（假 claude 测出的竞态），已改为字段级恢复。
