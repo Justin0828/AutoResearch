@@ -24,6 +24,10 @@
         <svg viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/></svg>
         <span>Research</span>
       </a>
+      <a href="#/ideas" data-page="ideas">
+        <svg viewBox="0 0 24 24"><path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2V16h5v-.1c0-.8.4-1.5 1-2A6 6 0 0 0 12 3z"/></svg>
+        <span>Ideas</span><b class="badge" id="ideas-badge"></b>
+      </a>
       <a href="#/reading" data-page="reading">
         <svg viewBox="0 0 24 24"><path d="M4 5.5C6.5 4.5 9.5 4.5 12 6c2.5-1.5 5.5-1.5 8-.5V19c-2.5-1-5.5-1-8 .5-2.5-1.5-5.5-1.5-8-.5z"/><path d="M12 6v13.5"/></svg>
         <span>Reading</span><b class="badge" id="reading-badge"></b>
@@ -65,6 +69,7 @@
             <span class="pill accent" id="mode-pill">Discussion mode</span>
             <button id="distill-btn" class="btn ghost small" disabled title="Extract research content into the Inbox">Distill</button>
             <button id="close-ds-btn" class="btn ghost small" disabled>End</button>
+            <button class="btn ghost small" id="incubate-btn" title="Let the AI think on its own with search switched off">Incubate ✦</button>
             <button class="btn ghost small" id="handoff-btn" title="Hand a batch of premises and hypotheses to the AI to check against the literature">Hand off →</button>
           </div>
         </header>
@@ -96,6 +101,7 @@
         <div class="seg" id="inbox-seg">
           <button data-v="cands" class="on">Candidates <b id="seg-cands"></b></button>
           <button data-v="reviews">Re-examine <b id="seg-reviews"></b></button>
+          <button data-v="ideas">Ideas <b id="seg-ideas"></b></button>
           <button data-v="requests">Papers to fetch <b id="seg-requests"></b></button>
           <button data-v="history">History</button>
         </div>
@@ -123,6 +129,24 @@
           <a data-s="sec-bias">Bias</a>
         </nav>
         <div id="research-body"></div>
+      </div>
+    </section>
+
+    <!-- ================================================================ Ideas (incubation, DESIGN §5.10–5.14) -->
+    <section class="page scroll" id="page-ideas">
+      <div class="page-inner">
+        <header class="page-head">
+          <div>
+            <div class="eyebrow">Incubation</div>
+            <h1>Ideas</h1>
+            <p class="lede">What the AI came up with while thinking with search switched off — round by round: the foundation it started from, what changed it, the angle each chain took, and every idea with the premises it invented and what the outside check found.</p>
+          </div>
+        </header>
+        <div class="seg" id="ideas-seg">
+          <button data-v="rounds" class="on">Rounds</button>
+          <button data-v="all">All ideas</button>
+        </div>
+        <div id="ideas-body"></div>
       </div>
     </section>
 

@@ -12,6 +12,7 @@ const S = {
   overview: null, cands: [], reviews: [], activity: [], notes: [], unread: 0,
   inboxView: "cands", sysView: "status", editing: null, inboxStale: false, dsList: [],
   mode: null, prep: null, requests: [], readingView: "now", chainTarget: null, reading: null, paperOpen: null,
+  ideas: [], ideasView: "rounds",
 };
 
 async function api(method, path, body) {
@@ -40,7 +41,10 @@ const ORIGIN = { human: "you", ai: "AI", unclear: "unclear" };
 const H_STATUS = { proposed: "Proposed", investigating: "Investigating", supported: "Supported", refuted: "Refuted", inconclusive: "Inconclusive", abandoned: "Abandoned" };
 const A_STATUS = { unexamined: "Unexamined", examined: "Examined", promoted: "Promoted", retired: "Retired", invalidated: "Invalidated" };
 const T_STATUS = { queued: "Queued", running: "Running", done: "Done", failed: "Failed", interrupted: "Interrupted", cancelled: "Cancelled", blocked_on_human: "Waiting on you" };
-const T_KIND = { discuss_turn: "Reply", distill: "Distill", lit_search: "Search", read_paper: "Read", assess: "Assess", contradiction_scan: "Contradiction scan", grounding: "Ground check" };
+const T_KIND = { discuss_turn: "Reply", distill: "Distill", lit_search: "Search", read_paper: "Read", assess: "Assess", contradiction_scan: "Contradiction scan", grounding: "Ground check", incubate: "Incubate", ground_idea: "Idea check" };
+const I_STATUS = { grounding: "Being checked", shortlisted: "Passed", screened_out: "Contradicted", accepted: "Accepted", rejected: "Rejected" };
+// For ideas, related work is a lead, not a strike: it's the thought that matters, not whether someone implemented it (§5.14)
+const I_VERDICT = { novel: "No related work found", prior_work: "Related work exists", contradicted: "Directly contradicted", mixed: "Partly contradicted" };
 const STANCE = { support: "Supports", contradict: "Contradicts", neutral: "Neutral" };
 const VERDICT = { novel: "No prior work found", prior_work: "Already done", contradicted: "Directly contradicted", mixed: "Mixed" };
 const MODE = { discussion: "Discussion mode", incubation: "Incubation mode", validation: "Validation mode" };
@@ -107,7 +111,7 @@ const soon = (key, fn, ms = 150) => { clearTimeout(tmr[key]); tmr[key] = setTime
 // ---------------------------------------------------------------- router
 function route() {
   const [, page = "chat", arg] = (location.hash || "#/chat").split("/");
-  S.page = ["chat", "inbox", "research", "reading", "system"].includes(page) ? page : "chat";
+  S.page = ["chat", "inbox", "research", "ideas", "reading", "system"].includes(page) ? page : "chat";
   $$(".page").forEach((p) => p.classList.toggle("on", p.id === "page-" + S.page));
   $$(".rail nav a").forEach((a) => a.classList.toggle("on", a.dataset.page === S.page));
   if (S.page === "chat") {
@@ -116,6 +120,7 @@ function route() {
   }
   if (S.page === "inbox") renderInbox();
   if (S.page === "research") loadOverview();
+  if (S.page === "ideas") renderIdeas();
   if (S.page === "reading") {
     if (arg && /^[HA]\d+$/.test(arg)) { S.readingView = "chain"; S.chainTarget = arg; }
     if (arg && /^P\d+$/.test(arg)) { S.readingView = "papers"; S.paperOpen = arg; }
@@ -286,8 +291,8 @@ $("#close-ds-btn").onclick = async () => {
 
 // ================================================================ INBOX
 async function loadInbox() {
-  const [cands, revs, reqs] = await Promise.all([api("GET", "/api/candidates"), api("GET", "/api/reviews"), api("GET", "/api/requests")]);
-  S.cands = cands; S.reviews = revs; S.requests = reqs;
+  const [cands, revs, reqs, ideas] = await Promise.all([api("GET", "/api/candidates"), api("GET", "/api/reviews"), api("GET", "/api/requests"), api("GET", "/api/ideas")]);
+  S.cands = cands; S.reviews = revs; S.requests = reqs; S.ideas = ideas.ideas;
   renderBadges();
   if (S.page === "inbox") renderInbox();
 }
@@ -296,7 +301,10 @@ function renderBadges() {
   const pc = S.cands.filter((c) => c.status === "pending").length;
   const pr = S.reviews.filter((r) => r.status === "open").length;
   const rq = S.requests.filter((r) => r.status === "open").length;
-  $("#inbox-badge").textContent = pc + pr + rq || "";
+  const ic = S.ideas.filter((i) => i.status === "shortlisted").length;
+  $("#inbox-badge").textContent = pc + pr + rq + ic || "";
+  $("#seg-ideas").textContent = ic || "";
+  $("#ideas-badge").textContent = ic || "";
   $("#seg-requests").textContent = rq || "";
   $("#seg-cands").textContent = pc || "";
   $("#seg-reviews").textContent = pr || "";
@@ -535,6 +543,15 @@ function renderInbox(force) {
     const open = S.reviews.filter((r) => r.status === "open");
     body.innerHTML = (open.length ? `<p class="lede" style="margin:0 0 16px">These objects are linked to something that was overturned. Nothing was changed automatically — decide for each one.</p>` : "") +
       (open.map(reviewCard).join("") || `<div class="empty">Nothing to re-examine. When a hypothesis is refuted or an assumption invalidated, everything linked to it shows up here.</div>`);
+  } else if (S.inboxView === "ideas") {
+    const pass = S.ideas.filter((i) => i.status === "shortlisted");
+    const out = S.ideas.filter((i) => i.status === "screened_out");
+    const wait = S.ideas.filter((i) => i.status === "grounding");
+    body.innerHTML = (pass.length ? `<p class="lede" style="margin:0 0 16px">Ideas from incubation that passed the gates: they say when they'd be wrong, their invented premises are listed, and the outside check found nothing that directly contradicts them. Fewest invented premises first. Only you can judge whether one is worth it.</p>` : "") +
+      (pass.map(ideaCard).join("") || `<div class="empty">No ideas waiting. Start incubation from Chat once the research question is formalized.</div>`) +
+      (wait.length ? `<h2 style="margin:28px 0 12px">Still being checked</h2>` + wait.map(ideaCard).join("") : "") +
+      (out.length ? `<details class="history"><summary>Contradicted by the outside check · ${out.length} — kept, and you can still take one</summary>${out.map(ideaCard).join("")}</details>` : "");
+    bindIdeas(body);
   } else if (S.inboxView === "requests") {
     const open = S.requests.filter((r) => r.status === "open");
     const done = S.requests.filter((r) => r.status !== "open").reverse();
@@ -722,7 +739,8 @@ function renderResearch() {
   const top = (o.validation.errors.length ? `<div class="banner"><strong>The research state has ${o.validation.errors.length} validation error(s).</strong><br>${o.validation.errors.map(esc).join("<br>")}</div>` : "") +
     (openReviews ? `<div class="banner warn"><strong>${openReviews} object(s) need re-examination</strong> because something they are linked to was overturned. <a href="#/inbox" id="to-reviews">Open the Inbox →</a></div>` : "");
 
-  const q = o.questions.map((x) => objCard(x, `<span class="tag question">${x.maturity}</span>`)).join("");
+  const q = o.questions.map((x) => objCard(x, `<span class="tag question">${x.maturity}</span>`, "",
+    `<div class="acts"><button class="btn ghost small" data-act="maturity">Set maturity</button></div>`)).join("");
 
   const ord = { settled: 0, working: 1, hunch: 2 };
   const insAll = o.insights || [];
@@ -777,7 +795,7 @@ function renderResearch() {
 }
 
 function bindResearch() {
-  const body = $("#research-body");
+  const body = $("#research-body"), o = S.overview;
   const byId = (id) => [...(S.overview.insights || []), ...S.overview.assumptions].find((x) => x.id === id);
   const firm = (cur) => select("Firmness", "firmness", { hunch: "Hunch — a feel", working: "Working — an understanding we act on", settled: "Settled — solid" }, cur);
   const nb = $('[data-act="new-insight"]', body);
@@ -808,6 +826,14 @@ function bindResearch() {
     if (!r) return;
     try { await api("POST", `/api/insights/${id}/abandon`, r); } catch (err) { fail(err); }
     loadOverview(); loadInbox();
+  });
+  $$('[data-act="maturity"]', body).forEach((b) => b.onclick = async () => {
+    const id = b.closest(".card").dataset.id, x = o.questions.find((y) => y.id === id);
+    const r = await ask(`Maturity of ${id}`, `<p><b>Formalized</b> means the question has a measurable definition. Incubation only starts from a formalized main question — without one, thinking with search switched off just spins.</p>` +
+      select("Maturity", "maturity", { vague: "Vague", scoped: "Scoped — boundaries are clear", formalized: "Formalized — measurable definition" }, x.maturity), "Save");
+    if (!r) return;
+    try { await api("POST", `/api/questions/${id}/maturity`, r); toast(`${id} is now ${r.maturity}.`); } catch (err) { fail(err); }
+    loadOverview(); loadMode();
   });
   $$('[data-act="chain"]', body).forEach((b) => b.onclick = () => go(`#/reading/${b.closest(".card").dataset.id}`));
   $$('[data-act="ground"]', body).forEach((b) => b.onclick = async () => {
@@ -854,10 +880,12 @@ function renderMode(m) {
   S.mode = m;
   $("#mode-pill").textContent = MODE[m.mode] || m.mode;
   $("#mode-pill").className = "pill " + (m.mode === "validation" ? "ok" : "accent");
-  const b = $("#handoff-btn");
-  b.textContent = m.mode === "validation" ? "← Back to discussion" : "Hand off →";
-  b.title = m.mode === "validation" ? "Take the lead back: stop validating and return to discussion mode"
+  const b = $("#handoff-btn"), away = m.mode !== "discussion";
+  b.textContent = away ? "← Back to discussion" : "Hand off →";
+  b.title = away ? "Take the lead back and return to discussion mode"
     : "Hand a batch of premises and hypotheses to the AI to check against the literature";
+  $("#incubate-btn").hidden = away;
+  $("#mode-pill").className = "pill " + (m.mode === "discussion" ? "accent" : "ok");
   renderModeBanner();
 }
 
@@ -871,6 +899,14 @@ function renderModeBanner() {
     if (m.hold) parts.push(`<div class="banner warn"><strong>Suggest going back to discussion:</strong> ${esc(m.hold.reason)}.
       Validation has stopped starting new work until you decide.
       <div class="acts"><button class="btn small" data-mode="recall">Back to discussion</button><button class="btn ghost small" data-mode="continue">Keep validating</button></div></div>`);
+  } else if (m.mode === "incubation") {
+    const inc = m.inc || {};
+    parts.push(`<div class="banner info"><strong>Incubation mode.</strong> The AI is thinking on its own with search switched off, starting from a frozen foundation${inc.round ? ` — round ${inc.round}` : ""}.
+      Every idea gets an outside check that annotates but never rewrites it. You can still talk here; what you change now reaches the next incubation, not this one. <a href="#/ideas">Watch the rounds →</a></div>`);
+    if (m.hold) parts.push(`<div class="banner ${m.hold.shortlisted ? "info" : "warn"}"><strong>Incubation finished:</strong> ${esc(m.hold.reason)}.
+      ${m.hold.shortlisted ? `${m.hold.shortlisted} idea(s) passed — <a href="#/inbox" data-goideas>triage them in the Inbox</a>.` : "Nothing worth your time this round — see the summary for why each one fell out."}
+      ${m.hold.summary ? ` <a href="#/ideas">Summary (${m.hold.summary}) →</a>` : ""}
+      <div class="acts"><button class="btn small" data-mode="recall">Back to discussion</button></div></div>`);
   } else if (m.mode === "discussion") {
     const p = (S.prep || {}).prep || {}, dec = (S.prep || {}).decision;
     if (dec && (p.active || p.ended)) {
@@ -885,6 +921,7 @@ function renderModeBanner() {
   }
   el.innerHTML = parts.join("");
   $$("[data-mode]", el).forEach((b) => b.onclick = () => (b.dataset.mode === "recall" ? recallMode() : continueMode()));
+  $$("[data-goideas]", el).forEach((a) => a.onclick = () => { S.inboxView = "ideas"; });
   const ps = $("#prep-save", el);
   if (ps) ps.onclick = async () => {
     try { renderMode(await api("POST", "/api/prep-request", { text: $("#prep-input").value })); toast("Noted for tonight."); } catch (err) { fail(err); }
@@ -915,7 +952,8 @@ async function handoffDialog() {
 }
 
 async function recallMode() {
-  const r = await ask("Back to discussion?", `<p>Queued validation work is cancelled; anything running finishes and commits. The switch is recorded as a decision.</p>` + field("Why now?", "reason", "", "optional", 2), "Back to discussion");
+  const what = S.mode && S.mode.mode === "incubation" ? "incubation" : "validation";
+  const r = await ask("Back to discussion?", `<p>Queued ${what} work is cancelled; anything running finishes and commits. The switch is recorded as a decision.</p>` + field("Why now?", "reason", "", "optional", 2), "Back to discussion");
   if (!r) return;
   try { await api("POST", "/api/mode/recall", r); toast("Back in discussion mode."); } catch (err) { fail(err); }
   loadMode(); loadOverview();
@@ -928,7 +966,141 @@ async function continueMode() {
   loadMode();
 }
 
-$("#handoff-btn").onclick = () => (S.mode && S.mode.mode === "validation" ? recallMode() : handoffDialog());
+$("#handoff-btn").onclick = () => (S.mode && S.mode.mode !== "discussion" ? recallMode() : handoffDialog());
+$("#incubate-btn").onclick = () => incubateDialog();
+
+async function incubateDialog() {
+  const m = await api("GET", "/api/mode");
+  const probs = m.entry_problems || [];
+  if (probs.length) {
+    await ask("Not ready to incubate", `<p>Incubation starts from a frozen foundation, and the foundation isn't formed yet:</p>` +
+      probs.map((p) => `<div class="banner warn md small">${md(p)}</div>`).join("") +
+      `<p class="meta">Set the maturity on the question card in <a href="#/research">Research</a> once it has a measurable definition.</p>`, "OK");
+    return;
+  }
+  const r = await ask("Start incubation", `<p>The AI thinks on its own with <b>search switched off</b> — no web, no papers, nothing but a frozen snapshot of the research state (the question, what we understand, established facts with their quotes, premises, dead ends). It works in short chains, and every idea gets an outside check that can annotate it but never rewrite it.</p>
+    <p>It stops when three ideas pass, when it has used 30% of the 5-hour window, or when two rounds in a row produce nothing — whichever comes first. Coming back empty-handed is a legitimate outcome.</p>` +
+    field("Anything you want to note?", "note", "", "optional — goes into the decision", 2), "Start incubation");
+  if (!r) return;
+  try { const x = await api("POST", "/api/mode/incubate", r); toast(`Incubation started (${x.decision}); foundation ${x.foundation} frozen.`); } catch (err) { fail(err); }
+  loadMode(); loadOverview();
+}
+
+// ================================================================ IDEAS (incubation, DESIGN §5.10–5.14)
+$$("#ideas-seg button").forEach((b) => b.onclick = () => { S.ideasView = b.dataset.v; renderIdeas(); });
+
+function ideaCard(i, compact) {
+  const sg = i.signals || {}, g = (i.grounding || []).slice(-1)[0];
+  const n = sg.n ?? (i.premises || []).length;
+  const triage = ["shortlisted", "screened_out", "grounding"].includes(i.status);
+  const stTag = { shortlisted: "insight", screened_out: "warn", grounding: "plain", accepted: "hypothesis", rejected: "plain" }[i.status] || "plain";
+  return `<div class="card idea ${i.status === "rejected" ? "dim" : ""}" data-idea="${i.id}">
+    <div class="card-top"><span class="tag ${stTag}">${I_STATUS[i.status] || i.status}</span><span class="id">${i.id}</span>
+      <span class="tag ${n >= 3 ? "warn" : "plain"}" title="Premises this idea invented along the way. The fewer, the more it stands on what we already know.">${n} invented premise${n === 1 ? "" : "s"}</span>
+      ${g ? `<span class="tag ${g.verdict === "contradicted" ? "warn" : "plain"}">${I_VERDICT[g.verdict] || g.verdict}</span>` : ""}
+      ${sg.hidden_premises ? `<span class="tag warn" title="The outside check found premises it relies on but didn't list">+${sg.hidden_premises} unlisted premise(s)</span>` : ""}
+      ${sg.silent_challenges ? `<span class="tag warn" title="It contradicts the foundation somewhere without saying so">${sg.silent_challenges} silent challenge(s)</span>` : ""}
+      <span>round ${esc(i.round || "?")} · from ${esc(i.foundation)} · chain ${esc(i.chain)}</span></div>
+    <div class="statement md">${md(i.statement)}</div>
+    <dl><dt>Wrong if</dt><dd>${esc(i.falsifier)}</dd>
+      ${i.challenges.length ? `<dt>Challenges</dt><dd>${esc(i.challenges.join(", "))} — ${esc(i.challenge_note)}</dd>` : ""}
+      ${i.builds_on.length || i.relates_to.length ? `<dt>Relation</dt><dd>${esc([...i.builds_on, ...i.relates_to].join(", "))}${i.relation && i.relation !== "（未写。）" ? " — " + esc(i.relation) : ""}</dd>` : ""}
+      ${i.promoted_to.length ? `<dt>Became</dt><dd>${esc(i.promoted_to.join(", "))}</dd>` : ""}
+      ${i.rejected_because ? `<dt>Rejected because</dt><dd>${esc(i.rejected_because)}</dd>` : ""}</dl>
+    ${n ? `<div class="premises"><div class="flabel">Premises it invented</div><ol>${i.premises.map((p) => `<li><span class="id">${p.id}</span> ${esc(p.text)}${p.status !== "unexamined" ? ` <span class="meta">(${esc(p.status)})</span>` : ""}</li>`).join("")}</ol></div>` : ""}
+    ${compact ? "" : `${(i.grounding || []).map((x) => `<details class="why" ${i.status !== "grounding" ? "open" : ""}><summary>Outside check ${x.id} · ${I_VERDICT[x.verdict] || x.verdict}${x.refs.length ? " · " + esc(x.refs.join(", ")) : ""}</summary><div class="md small">${md(x.note)}</div></details>`).join("")}
+    <details class="why"><summary>How it got here</summary><div class="md small">${md(i.reasoning)}</div><div class="meta"><a href="#" data-chain="${esc(i.chain)}">Read the whole chain ${esc(i.chain)} →</a></div></details>`}
+    ${triage && !compact ? `<div class="acts"><button class="btn small" data-act="take">Take it…</button>
+      <button class="btn ghost small danger" data-act="reject">Reject</button></div>` : ""}
+  </div>`;
+}
+
+function bindIdeas(body) {
+  $$("[data-chain]", body).forEach((a) => a.onclick = (e) => { e.preventDefault(); showText(a.dataset.chain); });
+  $$("[data-foundation]", body).forEach((a) => a.onclick = (e) => { e.preventDefault(); showText(a.dataset.foundation); });
+  $$(".card[data-idea] [data-act=take]", body).forEach((b) => b.onclick = () => takeIdea(S.ideas.find((i) => i.id === b.closest(".card").dataset.idea)));
+  $$(".card[data-idea] [data-act=reject]", body).forEach((b) => b.onclick = async () => {
+    const id = b.closest(".card").dataset.idea;
+    const r = await ask(`Reject ${id}`, `<p>It's kept with your reason and treated like a dead end: every future incubation sees it and won't come back with a rephrasing. Its invented premises are retired.</p>` + field("Why not?", "reason", "", "required", 3), "Reject");
+    if (!r) return;
+    try { await api("POST", `/api/ideas/${id}/reject`, r); toast(`${id} rejected.`); } catch (err) { fail(err); }
+    loadInbox(); if (S.page === "ideas") renderIdeas();
+  });
+}
+
+async function takeIdea(i) {
+  const r = await ask(`Take ${i.id}`, `<p class="md small">${md(i.statement)}</p>
+    <div class="checks"><label><input type="checkbox" name="make" value="h"><span><b>Send to validation</b> — split out a falsifiable hypothesis</span></label></div>` +
+    field("Hypothesis", "h_statement", i.statement, "edit freely", 2) + field("Refuted if", "h_falsifier", i.falsifier, "", 2) +
+    field("How it will be tested", "h_validation", "", "required if sending to validation", 2) +
+    `<div class="checks"><label><input type="checkbox" name="make" value="i"><span><b>Keep as an insight</b> — interesting, not yet testable</span></label></div>` +
+    field("Insight", "i_statement", i.statement, "", 2) +
+    select("Firmness", "i_firmness", { hunch: "Hunch", working: "Working", settled: "Settled" }, "hunch") +
+    field("Note", "note", "", "optional — why you're taking it", 2) +
+    `<p class="meta">Leave both unchecked to just accept it and talk it through later. Its invented premises become ordinary premises either way.</p>`, "Take it");
+  if (!r) return;
+  const make = r.make || [];
+  const body = { note: r.note };
+  if (make.includes("h")) body.hypothesis = { statement: r.h_statement, falsifier: r.h_falsifier, validation: r.h_validation };
+  if (make.includes("i")) body.insight = { statement: r.i_statement, firmness: r.i_firmness };
+  try { const x = await api("POST", `/api/ideas/${i.id}/accept`, body); toast(`${i.id} accepted${x.made.length ? " → " + x.made.join(", ") : ""}.`); } catch (err) { fail(err); }
+  loadInbox(); loadOverview(); if (S.page === "ideas") renderIdeas();
+}
+
+async function showText(id) {
+  try {
+    const t = await api("GET", `/api/text/${id}`);
+    const m = t.meta;
+    const head = id.startsWith("F")
+      ? `<p class="meta">Foundation of ${esc(m.session)}, round ${esc(m.round)}${m.parent ? ` · built from ${esc(m.parent)} plus ${esc(fmtv(m.delta))}` : " · the snapshot taken when incubation started"}. Frozen: a chain never sees it change.</p>`
+      : `<p class="meta">Chain ${esc(id)} · round ${esc(m.round)} · ${esc(m.status)} · from ${esc(m.foundation)}</p>`;
+    await ask(id.startsWith("F") ? `Foundation ${id}` : `Chain ${id}`, head + `<div class="md small textview">${md(t.body)}</div>`, "Close");
+  } catch (err) { fail(err); }
+}
+
+async function renderIdeas() {
+  $$("#ideas-seg button").forEach((b) => b.classList.toggle("on", b.dataset.v === S.ideasView));
+  const body = $("#ideas-body");
+  try {
+    if (S.ideasView === "all") {
+      S.ideas = (await api("GET", "/api/ideas")).ideas;
+      body.innerHTML = S.ideas.length ? S.ideas.slice().sort((a, b) => b.id.localeCompare(a.id, "en", { numeric: true })).map((i) => ideaCard(i)).join("")
+        : `<div class="empty">No ideas yet.</div>`;
+      bindIdeas(body);
+      return;
+    }
+    const v = await api("GET", "/api/incubation");
+    S.ideas = (await api("GET", "/api/ideas")).ideas;
+    if (!v.sessions.length) {
+      body.innerHTML = `<div class="empty">No incubation yet. Once the research question is formalized, start one from Chat with “Incubate ✦”.</div>`;
+      return;
+    }
+    const CH = { done: "recorded an idea", empty: "came back empty", interrupted: "was cut off" };
+    body.innerHTML = v.sessions.map((s) => `<section class="rsec">
+      <div class="rsec-head"><div><h2>Session ${esc(s.session)} <span class="count">${esc(s.created || "")}</span></h2>
+        ${s.note && !s.note.startsWith("（") ? `<p>${esc(s.note)}</p>` : ""}</div>
+        ${s.summary ? `<a href="#" data-summary="${esc(s.summary)}" class="btn ghost small">Summary ${esc(s.summary)}</a>` : ""}</div>
+      ${s.rounds.map((r) => {
+        const f = r.foundation;
+        return `<div class="round"><h3>Round ${r.round}</h3>
+        ${f ? `<div class="meta">Foundation <a href="#" data-foundation="${esc(f.id)}" class="mono">${esc(f.id)}</a>${f.parent ? ` — changed from ${esc(f.parent)} because of outside evidence ${esc(fmtv(f.delta))}` : " — snapshot taken at the start"}</div>`
+          : `<div class="meta">Same foundation as the round before — the last round brought back no outside evidence.</div>`}
+        ${(r.chains || []).map((c) => `<div class="chain-row"><span class="status ${c.status}">${T_STATUS[c.status] || c.status}</span>
+          <a href="#" data-chain="${esc(c.id)}" class="mono">${esc(c.id)}</a>
+          <span>${c.angle ? "Angle: " + esc(c.angle) : "<span class='meta'>no angle yet</span>"}</span>
+          <span class="meta">${c.record ? CH[c.record] || c.record : ""}</span></div>`).join("")}
+        ${(r.ideas || []).map((i) => ideaCard(S.ideas.find((x) => x.id === i.id) || i, false)).join("")}
+        </div>`;
+      }).join("")}
+    </section>`).join("");
+    $$("[data-summary]", body).forEach((a) => a.onclick = async (e) => {
+      e.preventDefault();
+      const d = await api("GET", `/api/objects/${a.dataset.summary}`);
+      await ask(`Incubation summary ${a.dataset.summary}`, `<div class="md small textview">${md(d.body)}</div>`, "Close");
+    });
+    bindIdeas(body);
+  } catch (err) { body.innerHTML = `<div class="empty">${esc(err.message)}</div>`; }
+}
 
 // ================================================================ READING (M8: what, why, evidence chain)
 $$("#reading-seg button").forEach((b) => b.onclick = () => { S.readingView = b.dataset.v; renderReading(); });
@@ -1146,8 +1318,8 @@ function connect() {
       case "reply_reset": if (d.discussion === S.ds) { S.streaming = ""; renderStream(); } break;
       case "reply_delta": if (d.discussion === S.ds) { S.streaming += d.text; renderStream(); } break;
       case "turn": if (d.discussion === S.ds) S.streaming = ""; soon("ds", () => { refreshDs(); loadDiscussions(); }); break;
-      case "task": soon("task", () => { refreshDs(); loadDiscussions(); loadShift(); if (S.page === "system") renderSystem(); if (S.page === "reading") renderReading(); loadMode(); }); break;
-      case "candidates": case "state": soon("inbox", loadInbox); soon("ov", loadOverview); break;
+      case "task": soon("task", () => { refreshDs(); loadDiscussions(); loadShift(); if (S.page === "system") renderSystem(); if (S.page === "reading") renderReading(); if (S.page === "ideas") renderIdeas(); loadMode(); }); break;
+      case "candidates": case "state": soon("inbox", loadInbox); soon("ov", loadOverview); if (S.page === "ideas") soon("ideas", renderIdeas, 400); break;
       case "quota": renderQuota(d); break;
       case "mode": renderMode(d); soon("ov", loadOverview); break;
       case "shift": renderShift(d); if (S.page === "system") renderSystem(); break;

@@ -110,3 +110,59 @@ class ServerTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IncubationApiTest(unittest.TestCase):
+    """前端走的同一套 API：闸门 → 成熟度 → 进入自演进 → 按轮看 → 分诊 → 回到讨论（Phase 2.5 验收 1/4/6）。"""
+
+    def setUp(self):
+        for k, v in (("FAKE_MODE", "judge"), ("FAKE_INC_PLAN", "idea1,idea2,blank,blank,blank,blank")):
+            os.environ[k] = v
+            self.addCleanup(os.environ.pop, k, None)
+        net = str(Path(__file__).resolve().parent / "fixtures" / "net")
+        self.cfg = temp_cfg(self, AR_CLAUDE_BIN=FAKE, AR_PORT=0, AR_NET_FIXTURES=net)
+        self.st, _ = bootstrap.init(self.cfg)
+        self.daemon = Daemon(self.cfg, self.st, Bus(self.cfg))
+        self.daemon.start()
+        self.addCleanup(self.daemon.stop)
+        self.httpd = App(self.cfg, self.st, self.daemon.bus, self.daemon).serve()
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.addCleanup(self.httpd.shutdown)
+        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+
+    req = ServerTest.req
+
+    def test_incubation_flow(self):
+        s, m = self.req("GET", "/api/mode")
+        self.assertTrue(any("scoped" in p for p in m["entry_problems"]))
+        s, e = self.req("POST", "/api/mode/incubate", {"note": "x"})
+        self.assertEqual(s, 400)
+        self.assertIn("formalized", e["error"])
+        s, _ = self.req("POST", "/api/questions/Q001/maturity", {"maturity": "formalized"})
+        self.assertEqual(s, 200)
+        s, x = self.req("POST", "/api/mode/incubate", {"note": "睡前"})
+        self.assertEqual((s, x["foundation"]), (200, "F001"))
+        t0 = time.time()
+        while not (self.daemon.st.get("hold") or {}).get("kind") == "incubation_done":
+            self.assertLess(time.time() - t0, 60, "自演进没有收工")
+            time.sleep(0.2)
+        s, v = self.req("GET", "/api/incubation")
+        sess = v["sessions"][0]
+        self.assertEqual(sess["rounds"][0]["foundation"]["id"], "F001")
+        self.assertEqual(sess["rounds"][1]["foundation"]["parent"], "F001")
+        self.assertTrue(all(c["angle"] for r in sess["rounds"] for c in r["chains"]))
+        self.assertTrue(sess["summary"])
+        s, ideas = self.req("GET", "/api/ideas")
+        ids = [i["id"] for i in ideas["ideas"]]
+        self.assertEqual([i["signals"]["n"] for i in ideas["ideas"]], [1, 2])     # N 小的在前
+        s, a = self.req("POST", f"/api/ideas/{ids[0]}/accept",
+                        {"hypothesis": {"validation": "文献核查"}, "note": "值得"})
+        self.assertEqual((s, a["made"][0][0]), (200, "H"))
+        s, e = self.req("POST", f"/api/ideas/{ids[1]}/reject", {"reason": ""})
+        self.assertEqual(s, 400)
+        s, _ = self.req("POST", f"/api/ideas/{ids[1]}/reject", {"reason": "方向不对"})
+        self.assertEqual(s, 200)
+        s, f = self.req("GET", "/api/text/F002")
+        self.assertIn("本 session 外部核查带回的结果", f["body"])
+        s, _ = self.req("POST", "/api/mode/recall", {"reason": "去讨论"})
+        self.assertEqual(self.req("GET", "/api/mode")[1]["mode"], "discussion")
