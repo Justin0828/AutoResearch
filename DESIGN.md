@@ -1,6 +1,6 @@
 # AI Research Partner — 系统设计 v1.2（模块级）
 
-> v0 由 `CLARIFICATION.md` 转换而来，只做模块划分。v1 锁定了运行环境约束、首个研究方向 profile 与若干悬空的架构决定。v1.1 加入了讨论/验证双模式（0.2）与网络分流。v1.2 在 §5 定下 Phase 1 的 State schema、Briefing/Handoff 契约、Task 契约与增量提交协议；v1.3 在 §5.5–5.8 定下 Phase 2 的 Paper 与证据出处、评判类任务、模式与交棒、Paper Request Queue 四个契约。其余模块仍不涉及 API 签名和代码结构。
+> v0 由 `CLARIFICATION.md` 转换而来，只做模块划分。v1 锁定了运行环境约束、首个研究方向 profile 与若干悬空的架构决定。v1.1 加入了讨论/验证双模式（0.2）与网络分流。v1.2 在 §5 定下 Phase 1 的 State schema、Briefing/Handoff 契约、Task 契约与增量提交协议；v1.3 在 §5.5–5.8 定下 Phase 2 的 Paper 与证据出处、评判类任务、模式与交棒、Paper Request Queue 四个契约；v1.4 在 §5.9–5.14 定下 Phase 2.5（自演进）的契约（**草案，待用户确认**）。其余模块仍不涉及 API 签名和代码结构。
 
 ---
 
@@ -238,7 +238,7 @@ Claude Code Max 5x 的 5 小时滚动窗口会强制结束 session。**系统不
 0. **模式门（Mode Gate）** —— 0.2 的落实处，优先于以下一切逻辑
    - State 持有当前 `mode`（`discussion` / `incubation` / `validation`），人拥有唯一切换权。
    - 讨论模式下，loop engine **不得**自主发起验证任务、实验或方向变更；只放行低成本文献查证。
-   - 自演进模式下，**检索类工具由 `--disallowedTools` 在 executor 层真正移除**（非提示词约束，也非“白名单里不写”），且不得发起实验或方向变更；详见 M11。
+   - 自演进模式下，**检索在 executor 层被真正移除**（非提示词约束，也非“白名单里不写”）：`--tools` 只给文件读取、MCP 不注册联网工具、deny-list 兜底，且用 `--restricted` 把文件读取关进只含基本盘快照的工作目录（Phase 2.5 spike 实测，§5.9）；不得发起实验或方向变更；详见 M11。
    - **窗口预算分配（已定）**：自演进占 **5h 窗口的 30% 上限**。按 Phase 0 实测（一个 evidence 量级任务约占窗口 1%），30% 约合 30 个任务当量；一轮"短推演 + 接地"约 2 个当量，即**每窗口约 15 轮迭代**，足够 M11.6 的累进循环跑开。
    - **交棒（Handoff）**：人从候选区挑选本轮要验证的 assumption / hypothesis 批次，确认后切到验证模式。交棒记录写入 `Decision`。
    - 验证模式产出重大结果后，主动建议切回讨论模式，而不是自行继续。
@@ -507,7 +507,7 @@ Claude Code Max 5x 的 5 小时滚动窗口会强制结束 session。**系统不
 
 1. **入场闸门**：仅当 `Question` 成熟度达到 `formalized` 时可进入。基本盘未成形就自演进，产出必然是空转。
 2. **基本盘冻结（Foundation Snapshot）**：进入时对 State 取只读快照——形式化问题定义、已确立事实、已知 dead-end、当前 assumption 集。运行期间不变，作为本轮推演的约束面。
-3. **搜索关闭的执行环境**：用 `--disallowedTools` 显式禁掉 WebSearch / WebFetch / Bash / Task 等一切可能触达外部的工具（**仅从白名单里省略是不够的**，见 §0.6），只保留基本盘读取与推演记录写入。**物理上做不到检索，而不是靠提示词请它别搜**。
+3. **搜索关闭的执行环境**：禁掉 WebSearch / WebFetch / Bash / Task 等一切可能触达外部的工具（**仅从白名单里省略是不够的**，见 §0.6），只保留基本盘读取与推演记录写入。**物理上做不到检索，而不是靠提示词请它别搜**。Phase 2.5 spike 实测：网络一侧三层禁用成立，但裸 `Read` 能读宿主机任意文件（论文可能在任何地方），必须加 `--restricted` 把读取关进工作目录——具体形态见 §5.9。
 4. **允许挑战基本盘，但必须显式**：推翻基本盘里的某条前提本身可能就是最有价值的 idea。但必须显式登记为“对 X 的挑战”，不能靠悄悄漂移。
 5. **新前提追踪（Assumption Trace）**：推演中每引入一条新前提，登记为一条 `Assumption`。终局可直接读出“这个 idea 建立在它自己发明的 N 条未检验前提上”。**最有效的机械质量信号**——N 大的大概率是流畅空话，N 小的才值得看。
 6. **短链累进循环，而非单条长链**：推演以较短的链为单位（量级上是十几分钟到半小时，不是数小时），每条链结束后立刻接一次接地核查，核查结果更新基本盘，再从**新的**基本盘开出下一条链：
@@ -548,7 +548,7 @@ Claude Code Max 5x 的 5 小时滚动窗口会强制结束 session。**系统不
 4. **状态迁移规则**：由 MCP tool 强制，见 0.4。
 5. **Decision 记录时机**：凡改变研究方向的动作必须留理由。
 
-以下 5.1–5.4 为 Phase 1 定下的具体形态（v1.2）；5.5–5.8 为 Phase 2 的四个契约（v1.3，2026-09-23 用户确认：摘要级证据规则、无人值守额度默认值、H002 保持 disputed 单列 unknown、已有对象的署名线索由人审过 diff 后中性化）。机器可读的单一定义在 `autoresearch/schema.py`，本节是它的说明；二者冲突时以改本节为准、再改代码。
+以下 5.1–5.4 为 Phase 1 定下的具体形态（v1.2）；5.5–5.8 为 Phase 2 的四个契约（v1.3，2026-09-23 用户确认：摘要级证据规则、无人值守额度默认值、H002 保持 disputed 单列 unknown、已有对象的署名线索由人审过 diff 后中性化）；5.9–5.14 为 Phase 2.5（自演进）的契约（v1.4，草案待确认）。机器可读的单一定义在 `autoresearch/schema.py`，本节是它的说明；二者冲突时以改本节为准、再改代码。
 
 ### 5.1 State schema
 
@@ -584,6 +584,8 @@ $AR_ROOT/
 | `discussions/DS###/summary.md` | 讨论摘要 | 仅 `update_discussion_summary` |
 | `handoffs/HO###.md` | 班次交接记录 | 仅后端（机械生成） |
 | `reviews/R###.md` | 待重新审视（推翻的传播，M5.6b） | 仅对账函数；人经前端处理 |
+| `ideas/I###.md` | Idea（自演进的产出，§5.10） | 仅 `record_idea` 建；分诊由人经前端做 |
+| `foundations/F###.md` | 基本盘快照（§5.11） | 仅后端（机械生成） |
 
 「仅某工具」的路径对 agent 是**受保护路径**：runner 在 stream 里看到 agent 用 Write/Edit 触碰它们时回滚并记违规。Phase 1 的讨论类任务根本不给 Write/Edit，此条是给后续阶段留的闸。
 
@@ -599,8 +601,8 @@ $AR_ROOT/
 |---|---|---|
 | `project` | `title` `mode` `main_question` | `mode`: discussion / incubation / validation |
 | `question` | `maturity` | vague / scoped / formalized |
-| `assumption` | `status` `relied_on_by` | `status`: unexamined / examined / promoted / retired / invalidated；`relied_on_by` 非空，元素须是已存在 id；可选 `fragile`（true/false）、`promoted_to`、`derived_from`（IN###，由某条理解派生）；invalidated 时须有 `invalidated_by`（E### 或 DEC###：证据，或人的推翻决定） |
-| `hypothesis` | `status` `confidence` `falsifier` `validation` `evidence` | `status`: proposed / investigating / supported / refuted / inconclusive / abandoned；`confidence`: low / medium / high；`falsifier` `validation` 非空；`evidence` 元素须存在；status≠proposed 时 evidence 非空；可选 `promoted_from`、`group` |
+| `assumption` | `status` `relied_on_by` | `status`: unexamined / examined / promoted / retired / invalidated；`relied_on_by` 非空，元素须是已存在 id；可选 `fragile`（true/false）、`promoted_to`、`derived_from`（IN###，由某条理解派生）、`idea`（I###：推演中新引入的前提，§5.10）；invalidated 时须有 `invalidated_by`（E### 或 DEC###：证据，或人的推翻决定） |
+| `hypothesis` | `status` `confidence` `falsifier` `validation` `evidence` | `status`: proposed / investigating / supported / refuted / inconclusive / abandoned；`confidence`: low / medium / high；`falsifier` `validation` 非空；`evidence` 元素须存在；status≠proposed 时 evidence 非空；可选 `promoted_from`、`group`、`idea`（由哪条 Idea 拆出，§5.14） |
 | `evidence` | `hypothesis` `stance` `strength` `source` | `stance`: support / contradict / neutral；`strength`: weak / moderate / strong；`source` 必须是已存在的 `P###` 或 `X###`（**不得是 dead-end**） |
 | `paper` | `title` | 可选 `url` `venue` `year` `read` |
 | `dead-end` | `status` `closed_by` | `status`: closed / reopened；`closed_by` 非空，元素是 `E###` / `X###` |
@@ -612,6 +614,8 @@ $AR_ROOT/
 | `discussion_summary` | `discussion` `covers_through` | 摘要覆盖到第几轮 |
 | `handoff` | `shift` `reason` `started` `ended` | `reason`: normal / quota_5h / quota_7d / cutoff / crash / manual |
 | `review` | `trigger` `event` `target` `status` `depth` | `event`: hypothesis_refuted / assumption_invalidated / insight_withdrawn；`status`: open / resolved / dismissed；`depth` 为传递距离（1 = 直接相关） |
+| `idea` | `status` `falsifier` `premises` `foundation` `chain` | 见 §5.10 |
+| `foundation` | `session` `round` `question` | 见 §5.11 |
 
 几条容易做错、因此写死的规则：
 
@@ -653,6 +657,7 @@ $AR_ROOT/
 | `discuss` | 讨论回合 | 保留 | 1–11（含 3b） |
 | `distill` | 讨论蒸馏（策展） | 保留 | 1–11（含 3b），讨论上下文给未蒸馏部分的全文 |
 | `judge` | 评估证据 / 状态迁移 / 对抗性接地 | **剥离** | 1–8 与 11；不含候选区与讨论（二者都暴露归属），**不含 3b 当前理解**（避免锚定） |
+| `incubate` | 自演进的推演链（§5.12） | **剥离** | 只有两章：本次任务、基本盘快照（F### 原文）。理由见 §5.12 |
 | `handoff` | 班次交接记录 | 保留 | 专用章节：班次概况、已完成、被截断（含 checkpoint）、队列、本班 State 变更、待人处理 |
 
 `judge` profile 的剥离规则：
@@ -857,6 +862,168 @@ Paper 的 `fulltext` 置为 requested。
 `library/P###/source.pdf`、转文本、`fulltext: uploaded`、`read` 不变，请求置 fulfilled，挂起的任务带着之前的 checkpoint 重新入队。
 人也可以“拿不到”（必须写理由）→ 请求 dismissed，`fulltext: unavailable`，任务重新入队并被告知只能按摘要级处理。
 
+### 5.9 检索关闭的执行环境（Phase 2.5，v1.4 草案）
+
+M11 的全部价值压在“推演时物理上做不到检索”上。Phase 2.5 起手 spike（`spike/phase2.5/README.md`）用金丝雀 + 只看 tool_result + 对照组实测：
+
+| 路径 | 结论 |
+|---|---|
+| WebSearch / WebFetch / Bash / ToolSearch / Agent / Task / Skill | `--tools` 不列出即在 init 里不存在，按名字调用返回 “No such tool available” |
+| MCP 的 search_papers / register_paper / open_paper | server 按 `AR_TOOLSET` 注册后同样不存在；ListMcpResources / ReadMcpResource 不存在；`--strict-mcp-config` 下只有 `state` 一个 server |
+| **裸 `Read`（`--allowedTools Read`）** | **宿主机任意文件可读**（对照组读到 `/etc/hostname`、列出 `/home`）。deny-list 枚举不完论文可能在的位置 |
+| `--restricted` | 文件工具关进工作目录与 `--add-dir`：`/etc`、`/home`、兄弟任务目录、**工作目录里指向论文库的符号链接**全部被拒，0 泄漏 |
+
+因此推演任务（`incubate`）的执行形态定为：
+
+- cwd = 任务目录，里面只有 briefing.md（= 任务说明 + 基本盘快照）与任务自己的日志；**不 `--add-dir` 任何目录**（State、library 都不挂）；加 **`--restricted`**。
+- `--tools Read,Grep,Glob`；deny-list = `ALWAYS_DENY` + WebSearch + WebFetch + 全部非本任务的 `mcp__state__*` + State 与 library 绝对路径的 Read/Grep/Glob 封读（纵深）。
+- MCP 只注册 `check_dead_ends` `record_idea` `checkpoint`。server 端改为 **fail-closed**：`AR_TOOLSET` 缺失时只给 checkpoint（原先是全给）。
+- 于是**基本盘里给多少文献，推演就只读得到多少**，这是显式决定（§5.11），不是执行层的副作用。
+- runner 在开跑前自检 cmd：incubate 任务的 cmd 里出现 `--add-dir`、缺 `--restricted`、`--tools` 含 Read/Grep/Glob 以外的任何工具，直接拒绝启动（配置回归比模型越界更可能发生）。
+
+顺带发现的 Phase 2 缺口：judge 任务同样是裸 `Read`，能读 `$AR_ROOT/run/tasks/*/briefing.md`——讨论 / 蒸馏任务的 briefing 带着“提出者=human”，
+是 origin 屏蔽的一条物理旁路。**提议**：judge 与 discuss / distill 任务也加 `--restricted`（它们本就只需要 cwd + State + library），
+改前用 `spike/phase2/edit_scope.py` 复测一次 read_paper 的 Edit 白名单在 `--restricted` 下仍成立。（待确认：改的是 Phase 2 已验收的行为。）
+
+### 5.10 Idea 对象与 Assumption Trace（Phase 2.5，v1.4 草案）
+
+`ideas/I###.md`，**只能经 `record_idea` 建**（tool_only），分诊由人经前端做。`provenance.json` 里 origin 恒为 `ai`，source 为推演任务号。
+
+| 字段 | 约束 |
+|---|---|
+| `status` | `grounding`（待接地）→ `screened_out`（没过闸门，保留）/ `shortlisted`（过关，进 Inbox）→ `accepted` / `rejected`（人） |
+| `falsifier` | **必填**：什么情况下这个想法是错的。与陈述不能相同 |
+| `premises` | Assumption Trace：推演中**新引入**的前提，每条是一个 `A###`（见下）。`N = len(premises)`，前端显式显示。可以为空，但参数必须显式给出 |
+| `challenges` | 对基本盘的显式挑战：被挑战对象的 id（A / H / D / U / E，**必须在本轮基本盘里**），每条在正文“对基本盘的挑战”一节写明挑战什么、为什么 |
+| `relates_to` | 与既有假设 / 前提 / 问题 / 不确定性的关系（id 列表），正文写明是细化、对立还是新的解释 |
+| `foundation` | 推演时的基本盘 `F###` |
+| `chain` | 推演任务 `T#####` |
+| `grounding` | 接地结论 `GR###`（工具回填，簿记归工具） |
+| `promoted_to` / `decided` | 人分诊后回填：拆出的 `H###`、分诊时间 |
+
+正文固定四节：陈述（直觉层面的断言，不要求工程细节）、推理概要（从基本盘哪几条出发、怎么走到这里）、对基本盘的挑战、与既有假设的关系。
+被拒时追加“为什么不要”一节（人写的理由）。
+
+**Assumption Trace**：`record_idea(new_premises=[...])` 里的每条前提由工具在同一次提交里建成 `A###`：`status: unexamined`、
+`relied_on_by: [I###]`、`idea: I###`。带 `idea` 字段、且该 Idea 未被接受的前提是**推测性前提**：不进讨论 / 评判 briefing 的前提一章、
+不进夜间预习选题、不能进验证批次——否则一晚上的推演会用几十条 AI 发明的前提淹没真正的前提集。Idea 被接受后它们成为普通前提；
+被拒后工具把它们置为 `retired`。
+
+**`record_idea` 的机械闸门**（过不了就拒绝，不是警告）：falsifier 非空且不同于陈述；**本任务里已调用过 `check_dead_ends`**（查 tools.jsonl）；
+`new_premises` 显式给出；`challenges` / `relates_to` 的 id 存在且挑战对象在本轮基本盘里；当前模式是 incubation；每条推演链最多记 2 条。
+工具**不接受任何自评分数**（新颖性、重要性、信心都不收）。
+
+证据与接地的对象范围随之扩展：`evidence.target` 可以是 `I###`（接地找到直接反驳这条想法本身的原文）；`grounding.target` 可以是 `I###`。
+
+### 5.11 Foundation（基本盘）快照（Phase 2.5，v1.4 草案）
+
+`foundations/F###.md`，后端机械生成、进 State 的 git（tool_only）。frontmatter：`session`（进入自演进的 Decision `DEC###`）、`round`（第几轮）、
+`question`（Q###）、`parent`（上一版 F###，首版无）、`delta`（相对 parent 新增的 E### / GR###）、`base`（首版取快照时 State 的 commit）。
+
+**内容**（首版 F001 在人切进自演进时从 State 取）：
+
+1. 形式化的研究问题（main question 正文）。
+2. 已确立的事实：supported / refuted 的假设（陈述 + 结论 + 支撑它的**全文级**证据）、审视过的前提（holds / fragile）、被推翻的前提。
+   证据只给**陈述、立场、强度、≤400 字引文与出处编号**——这是推演能看到的全部文献。
+3. 前提集：unexamined / examined 的非推测性前提（带 relied_on_by 与 fragile）。
+4. 未定的假设：proposed / investigating / inconclusive 的假设，标明“未定——不是事实，也不是约束”（Idea 要写与它们的关系）。
+5. 已关闭方向：**全部** dead-end + 被人否决的 Idea（附理由），不截断。
+6. 未决不确定性与待重新审视。
+7. 本 session 外部核查带回的结果（首版为空，见下）。
+
+**不含**：论文全文与阅读笔记、论文标题（出处只给编号与年份）、Insight、讨论与摘要、候选区、origin、Decision、交接记录、本 session 产出的 Idea 正文。
+
+> **基本盘给多少文献（要你确认）**：只给证据引文，不给全文、笔记与标题。理由：证据引文就是“已确立事实”本身的依据，删掉它们基本盘就只剩结论；
+> 全文与笔记是文献的框架，正是 M11 要摆脱的锚；标题（“Diffusion Policy”这类）本身就是框架的名字。代价：推演不知道某个事实出自哪篇名作，这是有意的。
+
+**更新规则（M11.6b 的落地）**：链内冻结——推演任务拿到的是 F### 的一份拷贝，State 之后怎么变它都看不到。**只在轮与轮之间、只由本 session
+接地任务产出的 E### 与 GR### 更新**：一轮的推演与接地全部结束后，后端生成 F(n+1) = F(n) + 第 7 节追加这些证据与接地结论
+（接地结论只取接地任务自己的话与出处，不取 Idea 的原文）。提交信息写明 `foundation: F003 ← F002：+E031 E032（GR007 GR008）`，
+`git log -p foundations/` 就是“每轮起点变了什么、因为哪条证据”。一轮没有带回任何外部证据，就不出新版，下一轮沿用。
+
+**永不由推演自身更新**：Idea、它的前提、推演任务的 checkpoint 都不进基本盘。人在自演进期间对 State 的改动也**不进本 session 的基本盘**
+（下一次进入自演进才会取到）——否则“基本盘只由外部证据推动”就多了一个口子，而且口子在人这边无从审计。
+
+### 5.12 自演进任务契约（Phase 2.5，v1.4 草案）
+
+| kind | profile | 可用工具 | MCP | 产出 |
+|---|---|---|---|---|
+| `incubate` | incubate | Read Grep Glob（`--restricted`，cwd 只有 briefing） | check_dead_ends, record_idea, checkpoint | 0–2 条 Idea（交白卷合法） |
+| `grounding`（对象为 I###） | judge | Read Grep Glob WebSearch（`--add-dir` State + library） | search_papers, register_paper, open_paper, record_evidence, annotate_grounding, check_dead_ends, checkpoint | 一条 GR（只标注），可附针对该 Idea 或其前提的证据 |
+
+**推演任务**（一条短链，timeout 30 分钟）：
+
+- 每轮开 K 条链（默认 2，`AR_INCUBATE_CHAINS`），同一基本盘、**不同切入角度**，角度由规划器机械轮换：挑战被依赖最多的一条前提 /
+  从一条已确立事实的反常处出发 / 从某个 dead-end 失败的原因找它没覆盖的变体 / 从一条 high 的不确定性出发。独立链之间的收敛是“有料”的弱证据（M11.6）。
+- 协议要点：先 `check_dead_ends`（它同时列出被否决的 Idea 与本 session 已记下的 Idea 的**陈述行**，只为不重复）；推演中每引入一条基本盘里没有的前提就记下来；
+  想法站不住（说不出何时是错的、依赖的新前提太多、撞上 dead-end）就不记；**本任务交白卷是合法且常见的结果**，结尾说明为什么。
+  briefing 里**不出现“要产出几条”**：推演链根本不知道 3 这个目标，也就没有凑数的压力。
+- 被切断：已记的 Idea 已提交；下一班带着 checkpoint 续推（M11.12，半条链是合法的可恢复状态）。
+
+**`incubate` briefing profile**：只有“本次任务”（目标、角度、轮次）与“基本盘”（F### 原文）两章。
+
+- **看不到 origin**：推演要能挑战基本盘里的任何前提。前提若标着“研究者提出”，挑战它的倾向会被压低——这正是 M1 说的慢动作谄媚，
+  只是方向从“证据判断”换成了“敢不敢想”。origin 也不是关于世界的事实，对推演没有信息量。
+- **看不到 Insight**：理解是解读框架，推演要能离开它；而凡是被拿来剪枝、真正起约束作用的理解，按角色规则已经另建了 Assumption（`derived_from`），
+  会以前提的身份进基本盘——约束进来了，框架留在外面。另一个理由：Insight 与 Idea 形态相近，放进去最可能的结果是推演把现成的理解换个说法交回来。
+  （反方意见：理解可能是好的出发点。若你想要，可以做成一个“角度”：某条链显式从一条理解出发、必须挑战它，而不是默认背景。）
+
+**Idea 的接地任务**复用 Phase 2 的 `grounding`（judge profile：看不到 origin、看不到 Insight；Idea 恒为 ai 这一点无法屏蔽，但所有 Idea 同源，不构成组间偏差）：
+
+- briefing 另附被核查的 Idea 全文与它的基本盘 F###。任务：找先例（有人做过吗）、找直接反驳、查它是否与基本盘矛盾而没登记为挑战、查它是否依赖了没登记的前提。
+- 结论 `annotate_grounding(target=I###, verdict, refs, note, hidden_premises, silent_challenges)`：后两个是计数，是给前端的信号；正文写明是哪几条。
+- 找到直接反驳时用 `record_evidence`（target 为该 Idea 或它的某条前提，追到段落，§5.5 规则照旧）。这些 E 是下一轮基本盘的唯一来源。
+- **只标注，不改写**：没有 Edit；`ideas/` 是受保护路径；工具只写 GR 与 E。
+
+### 5.13 模式与调度（Phase 2.5，v1.4 草案）
+
+**进入**：只有人能切（前端“Incubate”，写 Decision kind=mode）。闸门：当前是讨论模式（验证模式要先收回）；**main question 的 maturity 必须是 formalized**，
+否则拒绝，并说明缺什么（当前成熟度、formalized 的定义“有可测量定义”，以及问题正文里记下的未形式化之处）。通过后后端立刻生成 F001。
+maturity 由人改（前端问题卡片上的编辑，或在编辑器里改）；把问题推到 formalized 本身是讨论模式的工作。
+
+**一个 session 内的调度**（规划器机械执行，M2.0b 第 2 级）：
+
+```text
+第 r 轮（基本盘 F_r）：K 条推演链 → 每条新 Idea 一个接地任务（优先于下一条链）
+全部结束 → 有新的 E/GR 就生成 F_(r+1) → 第 r+1 轮
+```
+
+**停止**（开新链之前检查，先到先停）：
+
+1. 过关的 Idea（shortlisted）达到 3 条；
+2. 本 session 消耗达到 5h 窗口的 30%（按本 session 各任务开始 / 结束时的 `five_hour` 利用率差累加；没有额度数据时按 30 个任务当量兜底）；
+3. 连续两轮一条 Idea 都没有记下——**没有东西可说**；
+4. 轮数达到上限（默认 8，`AR_INCUBATE_MAX_ROUNDS`）。
+
+已派出的接地任务做完再停（否则 Idea 悬在 grounding 状态）。无人值守的额度护栏照旧：5h 利用率 ≥ `AR_UNATTENDED_CAP` 不开新任务，周额度 ≥95% 全面暂停。
+
+**收工**：写一条 Decision（kind=research）作为本 session 的交卷：停止原因、轮数、链数、记下几条、每条没过的原因、过关的按下面的顺序列出。
+**0 条过关时明确写“本轮没有值得你看的东西”**，并附被挡掉的理由——白卷也要让人看得出不是偷懒。然后 hold（kind=incubation_done），
+前端横幅建议回到讨论模式去分诊。模式仍由人切回。
+
+**与其他模式的关系**：自演进与验证互斥（交棒前要先收回）。夜间预习只在讨论模式发生，自演进期间不开。自演进期间人仍然可以在 Chat 里讨论（interactive 通道），
+但讨论带来的 State 变化不进本 session 的基本盘（§5.11）。
+
+### 5.14 质量闸门与分诊（Phase 2.5，v1.4 草案）
+
+全部机械化，**没有一道闸门由模型给自己打分**：
+
+| 层 | 内容 | 在哪强制 |
+|---|---|---|
+| 结构性门槛（M11.8） | 说得出何时是错的（falsifier）；已 check_dead_ends；新前提显式登记；挑战显式登记且指向基本盘 | `record_idea` 拒绝 |
+| 接地存活（M11.7） | 接地结论为 novel 或 mixed；prior_work（已被做过）或 contradicted（被直接反驳）→ `screened_out` | 后端在接地任务结束后按 GR 机械置状态 |
+| 信号（不是闸门） | **N**（它自己发明的前提数）、接地发现的未登记前提数与未登记挑战数、verdict=mixed | 前端显式显示，并用于排序 |
+
+- **“3”是目标不是配额**：它只出现在规划器的停止条件里；推演链看不到它，闸门不因“还差几条”而放松。一条都没过就交白卷。
+- **排序**（M11.10，机械）：N 小的在前；同 N 时 novel 在前于 mixed；再按接地发现的未登记前提数升序。前端 Inbox 的 Ideas 只列 shortlisted；
+  screened_out 的折叠在下面，带被挡的原因，可以看但不计入待办。
+- **分诊**（人）：
+  - **接受**：可以当场拆出一条可证伪的假设（陈述、falsifier 预填 Idea 的、validation 必填）→ 直接建 `H###`（`idea: I###`，provenance origin=ai、source=I###），
+    Idea 回填 `promoted_to`；也可以只接受、留到讨论里再拆。它的前提转为普通前提。写 Decision（kind=curation）。
+  - **拒绝**：必须写理由。Idea 置 `rejected`，推测性前提置 `retired`。**与 dead-end 同等对待**：之后每次 `check_dead_ends` 与每份 briefing 的已关闭方向一章都全文列出它与理由，不截断。
+    （它不写成 D###：dead-end 必须由证据关闭，而“我不要这个想法”是人的判断，不是证据。）
+- 自评新颖性不算过关，最终价值只有人能判断：系统的职责是把值得你花十分钟的挑出来，不替你决定什么是好的。
+
 ---
 
 ## 6. 主要风险与待决问题
@@ -908,6 +1075,15 @@ M4（含 Paper Request Queue 与 Grounding Pass）+ M5（含 Assumption 审视�
 M11。依赖 Phase 1 的讨论模式（形成基本盘）与 Phase 2 的 M4（事后接地），所以排在这里；但它不依赖实验能力，可以早于 Phase 3 交付。
 
 **验收标准**：一个空闲的 5h 窗口能产出若干条带证伪条件与前提清单的 `Idea`，其中至少有你愿意认真读的；且系统在没东西可说时会交白卷，而不是硬凑。
+
+展开（v1.4）：
+
+1. 从前端切到自演进模式（写 Decision），入场闸门生效：问题未达 formalized 时拒绝并说明缺什么；
+2. 推演 session 物理上检索不了——有 spike 实测记录（`spike/phase2.5/`），不看自述；
+3. 一个空闲窗口能产出若干条带证伪条件与新前提清单的 Idea，每条都经过接地（GR）且接地没有改写它，其中至少有你愿意认真读的；
+4. 基本盘只在链之间被外部证据更新，`git log -p foundations/` 能看出每轮起点变了什么、因为哪条证据；
+5. 没东西可说时交白卷，不硬凑；30% 预算或 3 条过关先到先停；
+6. 前端能看到每条 Idea 的证伪条件、它自己发明的 N 条前提、接地结论，并能确认 / 拒绝（拒绝写理由，与 dead-end 同等对待）。
 
 ### Phase 3 — 实验（3–4 周）
 
