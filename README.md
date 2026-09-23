@@ -25,11 +25,24 @@ cd ~/workspace/AutoResearch
 ./ar serve         # 启动班次 daemon + 前端，监听 127.0.0.1:8765
 ```
 
-在你自己的电脑上开隧道，然后用浏览器访问：
+在你自己的电脑上开隧道（服务器的 SSH 对外是 7400 端口，22 端口连不进来），然后用浏览器访问：
 
 ```bash
-ssh -L 8765:localhost:8765 panyz@<服务器地址>
+ssh -N -p 7400 -L 8765:localhost:8765 panyz@101.6.48.103
 # 浏览器打开 http://localhost:8765
+```
+
+`-N` 表示只建隧道、不开远程 shell：终端会停在那里没有输出，这是正常的，保持它开着即可，
+`Ctrl+C` 关掉隧道。想放到后台就加 `-f`：`ssh -fN -p 7400 -L 8765:localhost:8765 panyz@101.6.48.103`。
+
+也可以写进 Mac 的 `~/.ssh/config`，之后只需 `ssh -N ar`：
+
+```text
+Host ar
+    HostName 101.6.48.103
+    Port 7400
+    User panyz
+    LocalForward 8765 localhost:8765
 ```
 
 前端只绑 `127.0.0.1`，不做鉴权，只能经 SSH 隧道访问（DESIGN.md M9）。
