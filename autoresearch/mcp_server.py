@@ -361,7 +361,7 @@ TOOLS = [
       "falsifier": (S, "什么情况下它是错的：什么观察 / 结果会说明它不成立", True),
       "new_premises": (A, "推演中引入的、基本盘里没有的前提，逐条一句话；没有就传 []", True),
       "reasoning": (S, "从基本盘哪几条出发、怎么走到这里（几句话）", True),
-      "challenges": (A, "它挑战了基本盘里的哪些对象（A/H/D/U/E/IN 的 id），没有就不传", False),
+      "challenges": (A, "它挑战了基本盘里的哪些对象（Q/A/H/D/U/E/IN 的 id，包括研究问题本身的表述），没有就不传", False),
       "challenge_notes": (S, "有挑战时必填：挑战的是什么、为什么", False),
       "builds_on": (A, "它建立在哪些已有对象上（含理解 IN###）", False),
       "relates_to": (A, "与哪些已有假设 / 前提 / 问题 / 不确定性 / 想法相关", False),

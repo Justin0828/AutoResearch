@@ -141,7 +141,7 @@ class IdeaTest(Base):
         with self.assertRaisesRegex(ValueError, "不存在"):
             self.idea(builds_on=["IN999"])
         self.assertEqual(self.st.list("idea"), [])
-        iid, aids = self.idea(challenges=["A001"], challenge_notes="A001 可能不成立")
+        iid, aids = self.idea(challenges=["A001", "Q001"], challenge_notes="A001 可能不成立；Q001 的因子清单漏了阻抗")
         self.idea(new_premises=[])
         with self.assertRaisesRegex(ValueError, "最多"):
             self.idea()

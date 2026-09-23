@@ -94,7 +94,7 @@ KINDS = {k.type: k for k in [
     Kind("idea", "ideas", "I", ("status", "falsifier", "premises", "foundation", "chain"),
          {"status": {"grounding", "screened_out", "shortlisted", "accepted", "rejected"}},
          nonempty=("falsifier", "foundation", "chain"),
-         refs={"premises": ("A",), "challenges": ("A", "H", "D", "U", "E", "IN"),
+         refs={"premises": ("A",), "challenges": ("Q", "A", "H", "D", "U", "E", "IN"),
                "builds_on": ("Q", "A", "H", "D", "U", "E", "IN"),
                "relates_to": ("Q", "A", "H", "U", "IN", "I"), "foundation": ("F",),
                "grounding": ("GR",), "promoted_to": ("H", "IN"), "session": ("DEC",),

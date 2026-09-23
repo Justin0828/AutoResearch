@@ -899,7 +899,7 @@ M11 的全部价值压在“推演时物理上做不到检索”上。Phase 2.5 
 | `status` | `grounding`（待接地）→ `screened_out`（被直接反驳，保留）/ `shortlisted`（过关，进 Inbox）→ `accepted` / `rejected`（人）。人也可以分诊 screened_out 的 |
 | `falsifier` | **必填**：什么情况下这个想法是错的。与陈述不能相同 |
 | `premises` | Assumption Trace：推演中**新引入**的前提，每条是一个 `A###`（见下）。`N = len(premises)`，前端显式显示。可以为空，但参数必须显式给出 |
-| `challenges` | 可选：若它挑战了基本盘里的某条（A / H / D / U / E / IN），必须显式登记在这里，正文写明挑战什么、为什么（M11.4：挑战可以，悄悄漂移不行）。不要求每条 Idea 都是挑战 |
+| `challenges` | 可选：若它挑战了基本盘里的某条（Q / A / H / D / U / E / IN——包括研究问题的形式化本身，验收中 4 条 Idea 有 3 条是这一类），必须显式登记在这里，正文写明挑战什么、为什么（M11.4：挑战可以，悄悄漂移不行）。不要求每条 Idea 都是挑战 |
 | `builds_on` | 可选：它建立在哪些已有对象上（含 Insight：在已有理解上更进一步，或对它提出批评） |
 | `relates_to` | 与既有假设 / 前提 / 问题 / 不确定性的关系（id 列表） |
 | `foundation` / `chain` | 推演时的基本盘 `F###`、推演任务 `T#####` |
