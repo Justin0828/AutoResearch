@@ -1,0 +1,32 @@
+18:17:29 seeded H004, A002; P001 非 arXiv 论文，没有开放全文。需要全文时用 request_paper 请研究者取回。
+18:17:29 serve pid 1018036
+18:17:32 handoff {'decision': 'DEC001', 'batch': ['H001', 'H004']}
+18:17:52 T00001 read_paper H001 P001 → running $0.00 | why: H001 的第 1 篇（上限 2）：P001 由 研究者预先登记 找到，为 H001 登记 | 
+18:17:52 Paper Request RQ001 P001 T00001 ## 为什么需要
+
+library 里 P001 既没有全文，也没有摘要（元数据源缺摘要），所以一段能引用的原文都没有，record_evidence 无法做。需要全文才能判断：(1) 对 H001：论文有没有报告 action 输出频率 / chunk 粒度，有没有演示数量和成功率的关系（论文是 few-shot 设定，可能只能间接说明“数据很少也能做好接触密集任务”）；(2) 对 H002：F/T 反馈的消融（有 F/T 对比纯视觉的成功率差），这可能是 H002 的直接证据。
+18:17:57 dismiss {'ok': True, 'resumed': 0}
+18:18:17 T00001 read_paper H001 P001 → done $0.14 | why: H001 的第 1 篇（上限 2）：P001 由 研究者预先登记 找到，为 H001 登记 | P001 没法精读：库里只有一个空文件，既没有全文，也没有摘要，所以这次一条证据都没记录。 我在 `papers/P001.md` 的“阅读笔记”里写明了这个情况，另外根据标题粗略估计了它可能与哪些假设有关，这些都不能当证据用。按标题看，它是 few-shot 设定，不会去增加演示数据量，所以大概率无法检验 H001 
+18:18:17 T00002 lit_search H001  → running $0.00 | why: H001 还没有检索过 | 
+18:19:57 T00002 lit_search H001  → done $0.47 | why: H001 还没有检索过 | 我为 H001 登记了 5 篇真实论文，支持方向和反驳方向都有，本次没有读全文，也没有记录证据。反驳方向：P003 ALOHA Unleashed 只用固定的 action chunk 加 2.6 万多条演示，就做成了插齿轮、系鞋带等接触密集任务；P004 Data Scaling Laws 在固定表示下扩大演示数量，
+18:19:57 T00003 read_paper H001 P002 → running $0.00 | why: H001 的第 2 篇（上限 2）：P002 由 任务 T00002 找到，为 H001 登记 | 
+18:21:17 T00003 read_paper H001 P002 → done $0.45 | why: H001 的第 2 篇（上限 2）：P002 由 任务 T00002 找到，为 H001 登记 | 我读完了 P002（FAST）全文，写好了阅读笔记，并记了 4 条追到段落的证据。 **H001**：共 3 条，结论是一半支持一半反驳。 - **支持（2 条，都是弱支持，E001 和 E003）**：论文说明 action 的表示方式本身就可能卡住性能，跟数据没关系。朴素的逐时间步 token 化在 20/50Hz
+18:21:17 T00004 assess H001  → running $0.00 | why: H001 自上次评估后新增证据 E001, E002, E003 | 
+18:21:37 T00004 assess H001  → done $0.18 | why: H001 自上次评估后新增证据 E001, E002, E003 | H001 继续保持 investigating，这次不改状态。 我在 P002（FAST 那篇）原文里核对了三条证据引用的段落，都能对上。问题在于三条证据都出自这一篇，而且立场互相冲突，两边都偏弱： - **支持的两条都是 weak：** - E001 说明 action 表示方式本身就可能是瓶颈，但论文里的机制是 t
+18:21:37 T00005 lit_search H004  → running $0.00 | why: H004 还没有检索过 | 
+18:22:57 T00005 lit_search H004  → done $0.30 | why: H004 还没有检索过 | 我为 H004 登记了三篇论文，两个方向都有： - **P008**：OpenVLA 原论文，它的 LIBERO 实验就是 H004 证伪条件所指的实验。 - **P007**：OpenVLA-OFT，第二个出处，可以核对 OpenVLA 的成绩。 - **P009**：LIBERO-PRO，检验的是“成功率高就说明可
+18:22:57 T00006 read_paper H004 P007 → running $0.00 | why: H004 的第 1 篇（上限 2）：P007 由 任务 T00005 找到，为 H004 登记 | 
+18:24:17 T00006 read_paper H004 P007 → done $0.56 | why: H004 的第 1 篇（上限 2）：P007 由 任务 T00005 找到，为 H004 登记 | P007 全文读完了，结论是它反驳 H004 和 A002。阅读笔记已写入 `papers/P007.md`，新记了三条证据： - **E005、E007（H004，反驳，moderate）**：OpenVLA 用原配方微调后，在 LIBERO 四个套件上平均 76.5%，分别是 84.7、88.4、79.2、53.7
+18:24:17 T00007 assess H004  → running $0.00 | why: H004 自上次评估后新增证据 E005, E007 | 
+18:25:17 T00007 assess H004  → done $0.32 | why: H004 自上次评估后新增证据 E005, E007 | 我把 H004 从 investigating 改成了 refuted，依据是 E007 和 E005 两条证据。E007 是我对照 P007 全文核对过的：tab1 里 OpenVLA 在 LIBERO 四个套件上的成绩是 84.7/88.4/79.2/53.7，平均 76.5%。附录 sa1.7.4-p2 说明出处
+18:25:17 HOLD {'reason': 'H004 was refuted (T00007)', 'since': '2026-09-23T18:25:00', 'kind': 'major'}
+18:25:18 continue {'decision': 'DEC002'}
+18:25:38 T00008 contradiction_scan   → running $0.00 | why: 上次扫描后新增 7 条证据 | 
+18:26:18 T00008 contradiction_scan   → done $0.29 | why: 上次扫描后新增 7 条证据 | 我逐条核对了全部 7 条证据（E001–E007），找到两处真实冲突，已提交为不确定性候选： - **C001**（importance: medium）：H001 上，E001、E003（支持）和 E002（反驳）都出自 P002，方向却相反。我在 P002 原文 s2-p4 里确认了原因：FAST 表示的重建精度很
+18:26:18 HOLD {'reason': 'the contradiction scan found conflicting evidence (T00008)', 'since': '2026-09-23T18:26:12', 'kind': 'major'}
+18:26:18 continue {'decision': 'DEC003'}
+18:26:38 HOLD {'reason': 'nothing worthwhile left to do on this batch within its budget — stopping to leave quota', 'since': '2026-09-23T18:26:18', 'kind': 'saturated'}
+18:26:38 recall {'decision': 'DEC004'}
+18:26:38 total cost $2.70
+18:26:38 quota {'five_hour': 0.39, 'five_hour_resets': 1790160600, 'seven_day': 0.22, 'seven_day_resets': 1790391600, 'status': 'allowed', 'type': 'five_hour', 'resets': 1790160600, 'seen': 1790159124, 'five_hour_resets_iso': '2026-09-23 18:50', 'seven_day_resets_iso': '2026-09-26 11:00', 'resets_iso': '2026-09-23 18:50', 'weekly_stop': 0.95}
+18:26:38 server stopped

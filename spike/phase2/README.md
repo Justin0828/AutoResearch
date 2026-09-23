@@ -61,3 +61,20 @@ OpenAlex / Crossref 可作 DOI 元数据补充。本机有 `pdftotext`（poppler
 结论：Edit 的白名单要写成带路径的 `Edit(//abs/**)`，不能给不带路径的 `Edit`——dontAsk 模式下未列入白名单的一律拒绝，
 这正是“只能写论文笔记”的执行层保证；runner 的回滚是第二道。
 先前的整文件回滚在快速连续编辑下会误伤合法笔记（假 claude 测出的竞态），已改为字段级恢复。
+
+## 4. 真实 claude 端到端验收（`acceptance.py`，临时 AR_ROOT，$2.70，5h 窗口 23% → 39%）
+
+批次 H001（开放问题）+ H004（“OpenVLA 在 LIBERO 平均成功率 < 50%”，专门设计成能被原文反驳，A002 依赖它），
+另为 H001 预先登记一篇只有 DOI 的 RA-L 论文。每目标预算：检索 1 次、精读 2 篇。完整日志 `runs/acceptance.log`。
+
+- 8 个任务全部由 planner 机械派发，每个带 `why`：精读 P001 → 检索 H001（登记 5 篇，支持与反驳两方向都有）→ 精读 FAST（4 条证据）
+  → 评估 H001（**证据互相冲突且都出自一篇，保持 investigating，不动**）→ 检索 H004 → 精读 OpenVLA-OFT → 评估 H004
+  （**refuted**，依据 tab1 的 76.5%）→ 矛盾扫描（提了 2 条不确定性候选，source 是任务号）。
+- 7 条证据全部带锚点与逐字引文，工具核对通过；1 条只凭摘要的证据被标 basis=abstract。
+  agent 的笔记还主动指出 OFT 论文里的 76.5% 是“reported by Kim et al.”、原始数字应以 OpenVLA 原文为准。
+- 只有 DOI、元数据源连摘要都没有的 P001：agent 没有编造任何证据，写明“一段可引用的原文都没有”并登记了 Paper Request
+  （它判断这篇只间接相关，选了 blocking=false，所以真实链路上**没有走到挂起→上传→续跑**；这条路径由假 claude 测试覆盖）。
+- H004 被反驳 → hold（重大结果）→ R001（A002 失去前提）、R002（关联它的候选）进待重新审视；矛盾扫描 → 第二次 hold；
+  批次预算用完 → 饱和 hold → 收回。4 条 Decision 记下交棒、两次“继续验证”、收回。
+- 做迁移的 T00007：briefing 里没有任何归属字样，cmd 含 provenance / insights 等封读规则。无越界写入。State 校验 0 错误。
+- 按-origin 反驳率随真实迁移更新：ai 1/1 refuted；H002 单列 disputed，不计入。
