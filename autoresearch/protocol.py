@@ -88,6 +88,9 @@ CONVERGE_RULE = """
 - **不要为了收敛而硬结**：没有真的回答就不结；“聊了很多”不等于“回答了”。拍板只能是研究者做的决定，不要替研究者拍板。
 - 几条已有理解其实在说同一件事、或相互补充成一个更完整的看法时，可以提合并：propose_candidate(kind="insight", supersedes=[IN###, IN###, ...]，
   statement 写合成后的完整表述)。至少两条，都须是 active；根基自动取各条的并集。
+- **引用规则**：relates_to、informs、basis、relied_on_by、parent、merged_into、supersedes 只能填**正式对象**的 id
+  （Q/A/H/U/IN/E/P/DS……），不能填候选 C###——候选在确认前不是 State 对象，确认后编号也会变。
+  **唯一的例外**是 resolve 候选的 answered_by：它可以引用同一次提交的 insight / hypothesis 候选。
 - 问题树：新问题若是某个已有问题的子问题，给 parent（母问题 Q###）；relates_to 只表示“相关”，不参与建树。
   聚焦于某个问题的讨论里产出的新问题，默认挂在被聚焦的问题下。
 - briefing 第 3 章“已有结论的问题”作用同已关闭方向：不要把它们当作开放问题重新提出；认为结得太早就明说，研究者可以重开。

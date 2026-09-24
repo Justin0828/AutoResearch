@@ -102,6 +102,49 @@ def list_all(store, status=None):
     return out
 
 
+# 只能引用正式对象的字段：候选 C### 在确认前不是 State 对象，确认后编号也会变（§5.1 规则 4）。
+# 唯一例外是 resolve 的 answered_by（§5.16.1），它在确认时换成被引用候选的 promoted_to。
+OBJECT_ONLY = ("relates_to", "informs", "basis", "relied_on_by", "derived_from", "parent", "merged_into",
+               "supersedes")
+
+
+def check_no_candidate_refs(store, fields):
+    """提交时拦住：这些字段里出现 C### 直接拒绝，并告诉 agent 该怎么填。"""
+    for f in OBJECT_ONLY:
+        bad = [r for r in _as_list(fields.get(f)) if schema.split_id(r)[0] == "C"]
+        if not bad:
+            continue
+        hints = []
+        for r in bad:
+            m, _ = store.read_obj(r)
+            if (m or {}).get("status") == "accepted" and m.get("promoted_to"):
+                hints.append(f"{r} 已确认为 {m['promoted_to']}，请改用 {m['promoted_to']}")
+            else:
+                hints.append(f"{r} 还不是正式对象（{(m or {}).get('status', '不存在')}），不要引用它")
+        raise ValueError(f"{f} 只能引用正式对象（Q/A/H/U/IN/E/P/DS……），不能引用候选：" + "；".join(hints)
+                         + "。只有 resolve 候选的 answered_by 可以引用同批候选 C###。")
+
+
+def object_refs(store, ids):
+    """确认时兜底：已确认的候选换成它的 promoted_to，其余候选与不存在的编号去掉。返回 (新列表, 被去掉的)。"""
+    out, dropped = [], []
+    for r in _as_list(ids):
+        if schema.split_id(r)[0] == "C":
+            m, _ = store.read_obj(r)
+            new = (m or {}).get("promoted_to") if (m or {}).get("status") == "accepted" else None
+            if new and store.exists(new):
+                r = new
+            else:
+                dropped.append(r)
+                continue
+        if not store.exists(r):
+            dropped.append(r)
+            continue
+        if r not in out:
+            out.append(r)
+    return out, dropped
+
+
 def withdrawn_refs(store, ids):
     """引用了哪些已撤下的对象（只警告，§5.15.6）。"""
     out = []
@@ -234,6 +277,7 @@ def propose(store, *, kind, statement, rationale, origin, source, turns,
         if actor == "agent":
             raise ValueError(f"修订候选必须给 base_revision：起草时 {target} 的版本号"
                              f"（当前是第 {base_revision} 版）。")
+    check_no_candidate_refs(store, dict(fields, relates_to=relates_to))
     validate_proposal(store, kind, statement, rationale, origin, origin_note, source,
                       turns, fields, target=target, base_revision=base_revision, tidy=tidy,
                       resolution=resolution)
@@ -309,6 +353,12 @@ def accept(store, cid, origin=None, changes=None, actor="human", force=False, ma
     fields = {k: meta[k] for k in TARGET_FIELDS[kind] if meta.get(k) not in (None, "", [])}
     if meta.get("basis") and "basis" not in fields:
         fields["basis"] = _as_list(meta["basis"])
+    # 兜底：旧候选里可能引用了别的候选（提交时的检查是后来加的）——换成确认后的对象或去掉
+    dropped = []
+    for f in ("basis", "informs", "relied_on_by"):
+        if f in fields:
+            fields[f], d = object_refs(store, fields[f])
+            dropped += d
     tidy = schema.TASK_ID.match(meta["source"]) and bool(fields.get("supersedes"))
     validate_proposal(store, kind, s.get("陈述", ""), s.get("理由", "") or "-", origin, "",
                       meta["source"], [int(t) for t in _as_list(meta.get("turns"))], fields, tidy=tidy)
@@ -342,7 +392,8 @@ def accept(store, cid, origin=None, changes=None, actor="human", force=False, ma
                        change_mind=fields.get("change_mind"))
         if ttype == "assumption" and fields.get("derived_from"):
             obj["derived_from"] = fields["derived_from"]
-        rel = [r for r in _as_list(meta.get("relates_to")) if store.exists(r)]
+        rel, d = object_refs(store, meta.get("relates_to"))
+        dropped += d
         if rel:                               # 确认后保留关联（§5.15.4）
             obj["relates_to"] = rel
         obj["created"] = today()
@@ -368,7 +419,7 @@ def accept(store, cid, origin=None, changes=None, actor="human", force=False, ma
         if origin != meta.get("origin"):
             meta["origin"] = origin
         tx.write_obj(cid, meta, body)
-        tx.note = f"→ {new}"
+        tx.note = f"→ {new}" + (f"（去掉了引用的候选 / 不存在的对象 {', '.join(dropped)}）" if dropped else "")
     return new
 
 

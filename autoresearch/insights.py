@@ -62,6 +62,9 @@ def revise(store, iid, statement, firmness, note="", basis=None, basis_note=None
         raise ValueError(f"{iid} 已是 {old['status']}")
     basis = list(dict.fromkeys(_as_list(old.get("basis")) + _as_list(basis) + [iid]))
     informs = _as_list(informs) if informs is not None else _as_list(old.get("informs"))
+    # 继承来的 informs 只留正式对象（旧数据里可能混进了候选 C###）
+    from .candidates import object_refs
+    informs, _ = object_refs(store, informs)
     basis_note = old.get("basis_note", "") if basis_note is None else basis_note
     change_mind = old.get("change_mind", "") if change_mind is None else change_mind
     _check(store, statement, firmness, basis, basis_note, informs)

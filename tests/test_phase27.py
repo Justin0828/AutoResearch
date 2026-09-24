@@ -332,6 +332,47 @@ class TidyRulesTest(Base):
         self.ok()
 
 
+class CandidateRefsTest(Base):
+    """relates_to / informs 等字段只能引用正式对象（2026-09-24 真实使用中发现：蒸馏把同批候选 C### 填了进去）。"""
+
+    def ic(self, **kw):
+        return candidates.propose(self.st, kind="insight", statement="理解", rationale="r", origin="ai",
+                                  source=self.ds, turns=[2], firmness="hunch", basis=[self.ds], **kw)
+
+    def test_propose_rejects_candidate_refs(self):
+        c = self.ic()
+        with self.assertRaisesRegex(ValueError, "relates_to 只能引用正式对象"):
+            self.ic(relates_to=[c])
+        with self.assertRaisesRegex(ValueError, "informs 只能引用正式对象"):
+            self.ic(informs=["Q001", c])
+        new = candidates.accept(self.st, c)
+        with self.assertRaisesRegex(ValueError, f"请改用 {new}"):
+            self.ic(relates_to=[c])
+
+    def test_accept_maps_or_drops_legacy_refs(self):
+        a, b, r = self.ic(), self.ic(), self.ic()
+        new_a = candidates.accept(self.st, a)
+        candidates.reject(self.st, r, "不要")
+        c = self.ic()
+        m, body = self.st.read_obj(c)                              # 模拟旧数据：直接写进候选文件
+        with self.st.tx("旧数据", actor="human") as tx:
+            tx.write_obj(c, dict(m, relates_to=["Q001", a, r, b], informs=[a, "Q001"]), body)
+        self.ok()
+        new = candidates.accept(self.st, c)
+        nm, _ = self.st.read_obj(new)
+        self.assertEqual((nm["relates_to"], nm["informs"]), (["Q001", new_a], [new_a, "Q001"]))
+        self.ok()
+
+    def test_revise_drops_inherited_candidate_refs(self):
+        i = self.ins()
+        c = self.ic()
+        m, body = self.st.read_obj(i)
+        with self.st.tx("旧数据", actor="human") as tx:
+            tx.write_obj(i, dict(m, informs=["Q001", c]), body)
+        new = insights.revise(self.st, i, "改过的理解", "hunch")
+        self.assertEqual(self.st.read_obj(new)[0]["informs"], ["Q001"])
+
+
 class LegacyCompatTest(unittest.TestCase):
     """用户真实 State 的形态：Q001–Q005 无 status / active / parent，Q002–Q005 relates_to [Q001]。"""
 

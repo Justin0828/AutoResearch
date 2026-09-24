@@ -640,6 +640,10 @@ State 首次建立时**是空的**：只有 git 仓库、`README.md`、`.gitigno
 2. **Assumption / Hypothesis 按当前角色区分**：被**依赖**（用来剪枝或支撑其他推理）而**未安排验证** → Assumption；**已安排验证** → Hypothesis。这条落在结构上而不只是提示词里：Assumption 必须填 `relied_on_by`（它支撑着谁），Hypothesis 必须填 `validation`（验证怎么安排的）。说不出“怎么验证”就还不是 Hypothesis。
 3. **DeadEnd 不内嵌实验结果**，只用 `closed_by` 引用关闭它的 Evidence / Experiment；`closed_by` 为空是校验错误。正文只写“关了什么、为什么、什么条件下重开”。
 4. **候选对象**（M1.10）：`kind` ∈ assumption / hypothesis / question / uncertainty / insight；`status` ∈ pending / accepted / rejected / superseded；`origin` ∈ human / ai / unclear（**归属冲突写 `unclear` 加 `origin_note`，不自动裁定**，人在确认时必须选定）；`source` 为 `DS###`，`turns` 为依据的轮次。按 kind 附带目标对象所需字段（assumption → `relied_on_by`；hypothesis → `falsifier` `validation`；question → `maturity`；uncertainty → `importance`）。确认后由后端建正式对象、写 provenance、回填 `promoted_to`；被拒的保留并写明理由，供后续去重。另有 `kind: revision`：修订一个已存在的对象，而不是新建（§5.15.3）；`kind: resolve`：提议结一个问题（§5.16.1）；insight 候选可带 `supersedes`：提议合并已有理解（§5.16.3）。候选的 `relates_to` 在确认后**保留到正式对象上**（§5.15.4）。
+   **引用只能指向正式对象**（2026-09-24 真实使用中发现）：候选的 relates_to / informs / basis / relied_on_by / derived_from / parent / merged_into / supersedes
+   不得填候选 C###——候选在确认前不是 State 对象，确认后编号也会变。提交时拒绝（已确认的提示改用其 `promoted_to`）；
+   确认时再兜底一次：已确认的候选换成 `promoted_to`，待确认 / 被丢弃的去掉（所以待确认候选之间的互相引用不必事先清理，谁先确认谁就能被接上）。
+   唯一例外是 resolve 候选的 `answered_by`（§5.16.1）。
 5. **讨论记录**以 `<!-- turn N human|ai ISO时间 -->` 注释行分隔轮次（而非 markdown 标题），正文里出现任何标题都不会切错。
 
 ### 5.2 Briefing / Handoff 契约
