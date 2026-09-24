@@ -458,6 +458,7 @@ Claude Code Max 5x 的 5 小时滚动窗口会强制结束 session。**系统不
 15. **对象详情页与聚焦讨论**：任何对象可点进独立页面，看修订史、讨论、证据、关联；可从对象发起专门打磨它的讨论（§5.15）。
 16. **讨论列表的组织**：改名、分组、置顶（§5.15.5）。
 17. **撤下与撤回确认**：对象可因“不再相关”撤下（可恢复），刚确认且未被用到的可撤回（§5.15.6）。
+18. **问题树与收敛**：Research 页以问题树为主视图；问题可以结（回答 / 决定 / 合并）、可标为活跃；理解可以合并（§5.16）。
 
 ---
 
@@ -615,13 +616,13 @@ State 首次建立时**是空的**：只有 git 仓库、`README.md`、`.gitigno
 | type | 必填字段（除通用三项） | 枚举 / 约束 |
 |---|---|---|
 | `project` | `title` `mode` `main_question` | `mode`: discussion / incubation / validation |
-| `question` | `maturity` | vague / scoped / formalized（定义见 §5.15.1）；可选 `revision` `revised` `relates_to`（§5.15）；可选 `status`: open（缺省）/ withdrawn（§5.15.6） |
+| `question` | `maturity` | vague / scoped / formalized（定义见 §5.15.1）；可选 `revision` `revised` `relates_to`（§5.15）；可选 `status`: open（缺省）/ answered / decided / merged / withdrawn（§5.15.6、§5.16.1），及对应的 `answered_by` / `decided_by` / `merged_into`；可选 `parent`（母问题，§5.16.4）、`active`（true/false，§5.16.2） |
 | `assumption` | `status` `relied_on_by` | `status`: unexamined / examined / promoted / retired / invalidated；`relied_on_by` 非空，元素须是已存在 id；可选 `fragile`（true/false）、`promoted_to`、`derived_from`（IN###，由某条理解派生）、`idea`（I###：推演中新引入的前提，§5.10）；invalidated 时须有 `invalidated_by`（E### 或 DEC###：证据，或人的推翻决定） |
 | `hypothesis` | `status` `confidence` `falsifier` `validation` `evidence` | `status`: proposed / investigating / supported / refuted / inconclusive / abandoned；`confidence`: low / medium / high；`falsifier` `validation` 非空；`evidence` 元素须存在；status≠proposed 时 evidence 非空；可选 `promoted_from`、`group`、`idea`（由哪条 Idea 拆出，§5.14） |
 | `evidence` | `hypothesis` `stance` `strength` `source` | `stance`: support / contradict / neutral；`strength`: weak / moderate / strong；`source` 必须是已存在的 `P###` 或 `X###`（**不得是 dead-end**）；可选 `revision`：记录时假设处于第几版（§5.15.3，由工具自动填） |
 | `paper` | `title` | 可选 `url` `venue` `year` `read` |
 | `dead-end` | `status` `closed_by` | `status`: closed / reopened；`closed_by` 非空，元素是 `E###` / `X###` |
-| `insight` | `status` `firmness`，以及 `basis` 或 `basis_note` 至少其一 | `status`: active / superseded / abandoned；`firmness`: hunch / working / settled；`basis` 元素须是已存在 id；可选 `informs`、`change_mind`、`superseded_by` |
+| `insight` | `status` `firmness`，以及 `basis` 或 `basis_note` 至少其一 | `status`: active / superseded / abandoned；`firmness`: hunch / working / settled；`basis` 元素须是已存在 id；可选 `informs`、`change_mind`、`superseded_by`；合并产生的理解另记 `consolidates`（被合并的 IN 列表，§5.16.3） |
 | `uncertainty` | `status` `importance` | `status`: open / reduced / resolved / withdrawn（§5.15.6）；`importance`: low / medium / high |
 | `decision` | `kind` `refs` | `kind`: research / curation / mode / handoff / revision（§5.15.3） |
 | `candidate` | `kind` `status` `origin` `source` `turns` | 见下 |
@@ -638,7 +639,7 @@ State 首次建立时**是空的**：只有 git 仓库、`README.md`、`.gitigno
 1. **`origin` 不进对象文件**，统一存在 `provenance.json`（`{ "H001": {"origin": "human", "source": "C003", "discussion": "DS001", "turns": [4, 6]} }`）。理由：origin 要在评判时对 agent **不可见**（M1），而 agent 有 Read 权限——只在 briefing 里删掉是假屏蔽，它会自己去读 `hypotheses/H001.md`。放进单独文件后，评判类任务可以用 `--disallowedTools "Read(provenance.json)"` 从路径上挡住（Phase 1 实测：`Read(path)` 拒绝规则同时让 Grep 搜不到该文件）。对象文件 frontmatter 里出现 `origin` 视为**校验错误**（泄漏）。
 2. **Assumption / Hypothesis 按当前角色区分**：被**依赖**（用来剪枝或支撑其他推理）而**未安排验证** → Assumption；**已安排验证** → Hypothesis。这条落在结构上而不只是提示词里：Assumption 必须填 `relied_on_by`（它支撑着谁），Hypothesis 必须填 `validation`（验证怎么安排的）。说不出“怎么验证”就还不是 Hypothesis。
 3. **DeadEnd 不内嵌实验结果**，只用 `closed_by` 引用关闭它的 Evidence / Experiment；`closed_by` 为空是校验错误。正文只写“关了什么、为什么、什么条件下重开”。
-4. **候选对象**（M1.10）：`kind` ∈ assumption / hypothesis / question / uncertainty / insight；`status` ∈ pending / accepted / rejected / superseded；`origin` ∈ human / ai / unclear（**归属冲突写 `unclear` 加 `origin_note`，不自动裁定**，人在确认时必须选定）；`source` 为 `DS###`，`turns` 为依据的轮次。按 kind 附带目标对象所需字段（assumption → `relied_on_by`；hypothesis → `falsifier` `validation`；question → `maturity`；uncertainty → `importance`）。确认后由后端建正式对象、写 provenance、回填 `promoted_to`；被拒的保留并写明理由，供后续去重。另有 `kind: revision`：修订一个已存在的对象，而不是新建（§5.15.3）。候选的 `relates_to` 在确认后**保留到正式对象上**（§5.15.4）。
+4. **候选对象**（M1.10）：`kind` ∈ assumption / hypothesis / question / uncertainty / insight；`status` ∈ pending / accepted / rejected / superseded；`origin` ∈ human / ai / unclear（**归属冲突写 `unclear` 加 `origin_note`，不自动裁定**，人在确认时必须选定）；`source` 为 `DS###`，`turns` 为依据的轮次。按 kind 附带目标对象所需字段（assumption → `relied_on_by`；hypothesis → `falsifier` `validation`；question → `maturity`；uncertainty → `importance`）。确认后由后端建正式对象、写 provenance、回填 `promoted_to`；被拒的保留并写明理由，供后续去重。另有 `kind: revision`：修订一个已存在的对象，而不是新建（§5.15.3）；`kind: resolve`：提议结一个问题（§5.16.1）；insight 候选可带 `supersedes`：提议合并已有理解（§5.16.3）。候选的 `relates_to` 在确认后**保留到正式对象上**（§5.15.4）。
 5. **讨论记录**以 `<!-- turn N human|ai ISO时间 -->` 注释行分隔轮次（而非 markdown 标题），正文里出现任何标题都不会切错。
 
 ### 5.2 Briefing / Handoff 契约
@@ -1160,6 +1161,78 @@ v1.4 里能让对象离场的只有“它错了”一类操作（assumption 的 
 所有新字段都是可选的，缺失即默认（`revision` 视为 1，`group` 为空，`pinned` 为 false，无 `focus`）。已有 State（包括已有讨论、pending 候选）**不需要迁移脚本**，校验器必须对它报 0 错误。
 既有 pending 的 question / insight 候选照常可确认；确认后多带上 `relates_to`。
 
+### 5.16 让研究收敛：问题的生命周期、活跃集、理解的合并、问题树（Phase 2.7，v1.6，2026-09-24 用户提出）
+
+**动机**。真实使用一轮后（1 场讨论 → 5 个问题、1 条理解），用户的感受是“越垒越多”。原因在结构上：v1.5 的机制**只会往里加**——
+问题接受后永远开着（除非撤下），没有“被回答了”这个出口；每个开着的问题都以全文进入之后每一场讨论的 briefing，上下文随问题数线性增长；
+理解只能逐条修订，多条相近的直觉无法合成一条。本节给研究一个**收敛方向**：问题要能结，上下文只给正在想的，理解要能越合越少。
+
+**原则**：结一个问题和撤下一样，**不删任何东西**，只改变它在 briefing 与界面中的位置；结了的问题可以重开。所有“结”都由人确认，agent 只能提议。
+
+#### 5.16.1 问题的生命周期
+
+`status`（缺省 open）：
+
+| 状态 | 含义 | 必带字段 | 典型来源 |
+|---|---|---|---|
+| `open` | 还在推进 | — | — |
+| `answered` | 已经有了足够的回答，不再作为开放问题推进 | `answered_by`：非空，元素是 IN### / H###（回答它的理解或假设） | 聚焦讨论聊出了一条理解；或落成了可验证的假设 |
+| `decided` | 本质是一个选择，人已拍板 | `decided_by`：DEC###（`kind: research`，正文是选了什么、为什么、什么情况下重议） | “定位是 A 还是 B”这一类 |
+| `merged` | 并入另一个问题 | `merged_into`：Q###（须 open，不得成环） | 两个问题其实是同一个 |
+| `withdrawn` | 不再关心（§5.15.6，已有） | `withdrawn_by` `withdrawn_from` | — |
+
+- **拆分不是状态**：拆出的子问题是新问题（`parent` 指向原问题，§5.16.4），原问题照常开着，直到它的子问题都结了、再由人决定它是否也结了。
+- **主问题不能结**（与不能撤下同理）；要结主问题，先把主问题改指向别的问题。
+- 每次结 / 重开都写一条 `Decision`（`kind: curation`，`decided` 则另有那条 `kind: research` 的决定），对象正文追加 `## 结（日期）` / `## 重开（日期）` 一节，陈述不动。
+- **重开（Reopen）**：回到 open，清掉 answered_by / decided_by / merged_into（旧值留在 Decision 与正文状态史里）。
+- 合并后，反向索引把被并入问题的讨论、关联、子问题一并显示在目标问题页（标“来自 Q00x”）；被并入问题的子问题 `parent` 不自动改写，前端提示可一键改挂。
+
+**提议结问题——`kind: resolve` 候选**：必填 `target`（Q###）、`resolution`（answered / decided / merged），按 resolution 带 `answered_by` / `merged_into`，
+decided 则在 `陈述` 里写建议的决定；`理由` 写依据哪几轮、为什么认为可以结了。
+
+- `answered_by` 可以引用**同一次蒸馏产出的 pending 候选**（C###）：典型情形是一场聚焦讨论同时产出一条 insight 候选和“用它结掉这个问题”的 resolve 候选。
+  确认 resolve 时，被引用的候选若仍 pending，前端给出“一并确认”（先确认被引用的，再用其 `promoted_to` 替换引用）；若被拒，resolve 不能确认。
+- 讨论协议追加：当一个问题在讨论中被回答了、被拍板了、或被发现与另一个问题重复时，明说，蒸馏据此出 resolve 候选。**不要为了收敛而硬结**——没有真的回答就不结。
+- decided 的确认只能由人：前端对话框里人写 / 改决定正文，后端写 `Decision kind=research` 后回填 `decided_by`。
+
+#### 5.16.2 活跃集
+
+- 问题可选 `active: true`，表示“现在在想的”。由人在问题树 / 对象页切换（每次一次提交，actor human），agent 不能改。
+- **briefing 第 3 章改为分层**：
+  1. 项目 + 主问题：全文（不变）；
+  2. 活跃的 open 问题：全文；
+  3. 其余 open 问题：每条一行（id、成熟度、陈述首行、母问题）；
+  4. 已结的问题（answered / decided / merged）：每条一行 + 指向答案 / 决定 / 目标——**作用同已关闭方向**：告诉 agent 这些已经有结论，不要重新提出；
+  5. 已撤下的：沿用 §5.15.6 的末尾一行。
+  聚焦讨论的聚焦对象无论是否活跃都在 2b 章给全文（已有）。截断时写明路径，agent 可自行 Read。
+- 活跃集不设硬上限；超过 3 个时前端提示“活跃太多等于没有活跃”。
+- 自演进基本盘：仍只含主问题全文；活跃问题各给一行作为“当前关注”，已结问题各给一行作为“已有结论”。
+- 夜间预习选题可以从活跃问题里选（以“核查 / 调研 Q00x”为题），理由照常写明。
+
+#### 5.16.3 理解的合并
+
+- insight 候选可带 `supersedes: [IN###, ...]`（≥2 条，均须 active）：提议把几条相近 / 相互补充的理解合成一条。
+  确认时新建 IN（`consolidates` 记被合并的列表），被合并的标 `superseded`、`superseded_by` 指向新的；新条目的 `basis` = 各条 basis 的并集 + 被合并的 IN 本身（与 `insights.revise` 一致），`informs` 取并集；
+  `firmness` 由人在确认时选定（预填候选建议值）。被合并条目派生的 assumption **不进 Review**——理解没有被撤回，只是换了一种说法；它们的 `derived_from` 不自动改写，对象页显示“已并入 IN00x”。
+- 提议来源：(a) 蒸馏，讨论中明显出现重叠时；(b) **Tidy up**：前端手动触发的一次整理任务（profile 同 distill，但讨论上下文换成全部 active 理解与全部 open 问题的全文），
+  只允许产出 `supersedes` 型 insight 候选与 resolve 候选（合并重复问题、指出已被回答的问题），**不产新想法**。不做自动定时整理（额度，§0.5）；当 active 理解 > 12 或 open 问题 > 8 时，前端在 Research 页提示可以整理一下。
+- 整理任务同样可以交白卷：“没有值得合并的”是合法输出。
+
+#### 5.16.4 问题树
+
+- 问题可选 `parent: Q###`（单一母问题，不得成环，母问题须存在）。question 候选可提议 `parent`；聚焦讨论里产出的问题候选默认 `parent` = 聚焦的问题（若它是问题）。
+  `relates_to` 保持“相关”的泛义，不参与建树。
+- 人可在对象页改 `parent`（后端写，一次提交）。**兼容**：没有 `parent` 的非主问题归在树根下的“未归位”区；若它的 `relates_to` 恰好只含一个问题，前端给出“挂到 Q00x 下”的一键建议——
+  不自动写入（不做迁移），由人点。
+- **Research 页以问题树为主视图**：根是主问题；每个节点显示状态、成熟度、活跃标记、挂在它上面的理解与假设数（经 `answered_by`、`relates_to`、`informs` 的反向索引），可展开子问题；
+  已结的节点变淡并默认折叠子树，答案 / 决定 / 合并目标作为可点击的链接直接显示在节点上。点节点进对象页（§5.15.4）。
+  理解、前提、假设等其他列表保留在树下方（紧凑行，已有），已被合并 / 已结的默认折叠。
+
+#### 5.16.5 兼容
+
+所有新字段可选：`status` 缺省 open、`active` 缺省 false、无 `parent` 归“未归位”。已有 State 不需要迁移，校验 0 错误。
+**行为变化须知**：升级后已有的非主问题默认都不活跃，briefing 里从全文变为一行——这是本节的目的，但升级后第一次打开时前端应提示“把正在想的问题标为活跃”。
+
 ---
 
 ## 6. 主要风险与待决问题
@@ -1234,6 +1307,19 @@ M11。依赖 Phase 1 的讨论模式（形成基本盘）与 Phase 2 的 M4（�
 5. 讨论可改名、分组、置顶，刷新后保持。
 6. 用户当前的真实 State（副本）在新代码下校验 0 错误，已有讨论与 pending 候选照常可用。
 7. 任一类型对象可撤下（写理由、链接保留、不触发 Review、可恢复）；主问题不可撤下；刚确认且未被用到的对象可撤回确认，候选回到 pending；被用到的对象撤回按钮不可用并说明原因。
+
+### Phase 2.7 — 让研究收敛（数天）
+
+§5.16。用户在真实使用中发现 State“越垒越多”：问题没有出口、每个问题都以全文进每场讨论、理解只增不减。
+
+**验收标准**：
+
+1. 在聚焦讨论里把一个子问题聊到有答案：蒸馏同时产出 insight 候选与引用它的 resolve 候选，前端“一并确认”后问题变 answered、链接到新理解；可重开。
+2. 一个定位类问题可由人经对话框写决定并结为 decided（Decision kind=research）；两个重复问题可合并，目标问题页能看到被并入问题的讨论。
+3. 活跃集生效：briefing 第 3 章只给主问题与活跃问题全文，其余 open 与已结问题各一行（用 `./ar brief discuss` 肉眼检查）。
+4. Tidy up 能对多条相近理解提出合并候选；确认后旧条目 superseded、新条目 consolidates 列出它们；没有可合并的时交白卷。
+5. Research 页是问题树：状态、活跃、答案链接一眼可见；未归位的问题有一键挂靠建议。
+6. 用户当前真实 State（副本）在新代码下校验 0 错误，已有问题、理解、讨论、候选照常可用。
 
 ### Phase 3 — 实验（3–4 周）
 
