@@ -21,7 +21,7 @@ async function api(method, path, body) {
     body: body ? JSON.stringify(body) : undefined,
   });
   const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(data.error || r.statusText);
+  if (!r.ok) { const e = new Error(data.error || r.statusText); e.status = r.status; e.data = data; throw e; }
   return data;
 }
 
@@ -35,7 +35,12 @@ function toast(msg, level = "info", ms = 4200) {
 const fail = (err) => toast(err.message || String(err), "error", 7000);
 
 // ---------------------------------------------------------------- labels
-const KIND = { assumption: "Assumption", hypothesis: "Hypothesis", question: "Question", uncertainty: "Uncertainty", insight: "Insight" };
+const KIND = { assumption: "Assumption", hypothesis: "Hypothesis", question: "Question", uncertainty: "Uncertainty", insight: "Insight", revision: "Revision" };
+const TYPE = { question: "Question", assumption: "Assumption", hypothesis: "Hypothesis", uncertainty: "Uncertainty", insight: "Insight", evidence: "Evidence", "dead-end": "Dead end", decision: "Decision", candidate: "Candidate", review: "Re-examination", paper: "Paper", idea: "Idea", grounding: "Ground check", discussion: "Discussion" };
+const U_STATUS = { open: "Open", reduced: "Reduced", resolved: "Resolved", withdrawn: "Withdrawn" };
+const Q_STATUS = { open: "Open", withdrawn: "Withdrawn" };
+const MATURITY = { vague: "Vague", scoped: "Scoped", formalized: "Formalized" };
+const FOCUSABLE = ["question", "assumption", "hypothesis", "uncertainty", "insight"];
 const FIRM = { hunch: "Hunch", working: "Working", settled: "Settled" };
 const ORIGIN = { human: "you", ai: "AI", unclear: "unclear" };
 const H_STATUS = { proposed: "Proposed", investigating: "Investigating", supported: "Supported", refuted: "Refuted", inconclusive: "Inconclusive", abandoned: "Abandoned" };
@@ -57,6 +62,16 @@ const FIELDS = {
   insight: [["firmness", "Firmness"], ["basis", "Grounded in"], ["basis_note", "Grounding note"], ["informs", "Informs"], ["change_mind", "Would change if"]],
 };
 const fmtv = (v) => Array.isArray(v) ? v.join(", ") : (v ?? "");
+
+// Every object id on screen is a link to its page (DESIGN §5.15.4). Works on already-escaped text.
+const ID_RE = /(^|[^\w#/=".-])((?:DS|DEC|IN|GR|RQ|Q|A|H|U|E|P|D|I|C|R)\d{3,})(?![\w])/g;
+function idHref(id) {
+  if (/^P\d/.test(id)) return `#/reading/${id}`;
+  if (/^DS\d/.test(id)) return `#/chat/${id}`;
+  return `#/obj/${id}`;
+}
+const linkIds = (html) => String(html).replace(ID_RE, (_, pre, id) => `${pre}<a class="idlink" href="${idHref(id)}">${id}</a>`);
+const idl = (v) => linkIds(esc(fmtv(v)));
 const fmtTs = (ts) => (ts || "").replace("T", " ").slice(0, 16);
 
 // ---------------------------------------------------------------- tiny markdown (escape first, then mark up)
@@ -68,7 +83,8 @@ function md(src) {
     .replace(/`([^`]+)`/g, "<code>$1</code>")
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, "$1<em>$2</em>")
-    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+    .replace(ID_RE, (_, pre, id) => `${pre}<a class="idlink" href="${idHref(id)}">${id}</a>`);
   const flush = () => {
     if (para.length) { out.push(`<p>${inline(para.join("<br>"))}</p>`); para = []; }
     if (list) { out.push(`</${list}>`); list = null; }
@@ -111,9 +127,10 @@ const soon = (key, fn, ms = 150) => { clearTimeout(tmr[key]); tmr[key] = setTime
 // ---------------------------------------------------------------- router
 function route() {
   const [, page = "chat", arg] = (location.hash || "#/chat").split("/");
-  S.page = ["chat", "inbox", "research", "ideas", "reading", "system"].includes(page) ? page : "chat";
+  S.page = ["chat", "inbox", "research", "ideas", "reading", "system", "obj"].includes(page) ? page : "chat";
   $$(".page").forEach((p) => p.classList.toggle("on", p.id === "page-" + S.page));
-  $$(".rail nav a").forEach((a) => a.classList.toggle("on", a.dataset.page === S.page));
+  $$(".rail nav a").forEach((a) => a.classList.toggle("on", a.dataset.page === (S.page === "obj" ? "research" : S.page)));
+  if (S.page === "obj") { if (arg) renderObject(arg); $("#page-obj").scrollTop = 0; }
   if (S.page === "chat") {
     if (arg && arg !== S.ds) { S.ds = arg; S.dsData = null; S.streaming = ""; refreshDs(); }
     loadDiscussions();
@@ -132,9 +149,10 @@ window.addEventListener("hashchange", route);
 const go = (hash) => { if (location.hash !== hash) location.hash = hash; else route(); };
 
 // ---------------------------------------------------------------- dialog
-function ask(title, bodyHtml, okLabel = "Confirm") {
+function ask(title, bodyHtml, okLabel = "Confirm", opts = {}) {
   return new Promise((resolve) => {
     const dlg = $("#dlg");
+    dlg.classList.toggle("wide", !!opts.wide);
     $("#dlg-title").textContent = title;
     $("#dlg-body").innerHTML = bodyHtml;
     $("#dlg-ok").textContent = okLabel;
@@ -161,19 +179,68 @@ const select = (label, name, opts, cur) =>
     `<option value="${k}" ${k === cur ? "selected" : ""}>${n}</option>`).join("")}</select>`;
 
 // ================================================================ CHAT
+// List order (DESIGN §5.15.5): pinned → groups (collapsible, remembered) → ungrouped; newest activity first within each.
+const lastAct = (d) => d.last_ts || d.created || "";
+function dsItem(d) {
+  return `<li data-id="${d.id}" class="${d.id === S.ds ? "sel" : ""} ${d.status === "closed" ? "closed" : ""}">
+      <span class="t">${d.pinned ? `<span class="pin" title="Pinned">●</span>` : ""}${esc(d.title)}</span>
+      <span class="m">${d.focus ? `<span class="ftag" title="Focused on ${esc(d.focus)}">${esc(d.focus)}</span>` : ""}${d.turns} turn${d.turns === 1 ? "" : "s"}${d.status === "closed" ? " · ended" : ""}
+        ${d.awaiting_reply ? `<span class="await">· awaiting reply</span>` : ""}</span>
+      <button class="ds-more" data-edit="${d.id}" title="Rename, group, pin" aria-label="Organize">⋯</button>
+    </li>`;
+}
 async function loadDiscussions() {
   const list = await api("GET", "/api/discussions");
   S.dsList = list;
   const ul = $("#ds-list");
-  ul.innerHTML = list.slice().reverse().map((d) => `
-    <li data-id="${d.id}" class="${d.id === S.ds ? "sel" : ""} ${d.status === "closed" ? "closed" : ""}">
-      <span class="t">${esc(d.title)}</span>
-      <span class="m">${d.turns} turn${d.turns === 1 ? "" : "s"}${d.status === "closed" ? " · ended" : ""}
-        ${d.awaiting_reply ? `<span class="await">· awaiting reply</span>` : ""}</span>
-    </li>`).join("") || `<li class="empty">No discussions yet.</li>`;
-  $$("li[data-id]", ul).forEach((li) => li.onclick = () => go(`#/chat/${li.dataset.id}`));
-  if (!S.ds && list.length) go(`#/chat/${list[list.length - 1].id}`);
+  const recent = (xs) => xs.slice().sort((a, b) => lastAct(b).localeCompare(lastAct(a)));
+  const pinned = recent(list.filter((d) => d.pinned));
+  const groups = {};
+  list.filter((d) => !d.pinned && d.group).forEach((d) => (groups[d.group] = groups[d.group] || []).push(d));
+  const loose = recent(list.filter((d) => !d.pinned && !d.group));
+  const names = Object.keys(groups).sort((a, b) => lastAct(recent(groups[b])[0]).localeCompare(lastAct(recent(groups[a])[0])));
+  const html = [];
+  if (pinned.length) html.push(`<li class="grp-h static"><span>Pinned</span></li>`, ...pinned.map(dsItem));
+  for (const g of names) {
+    const open = fold.get("grp." + g, true);
+    html.push(`<li class="grp-h" data-grp="${esc(g)}"><span class="caret-i">${open ? "▾" : "▸"}</span><span class="gname">${esc(g)}</span><b>${groups[g].length}</b>
+      <button class="ds-more" data-grp-edit="${esc(g)}" title="Rename or ungroup" aria-label="Rename group">⋯</button></li>`);
+    if (open) html.push(...recent(groups[g]).map(dsItem));
+  }
+  if (loose.length && (pinned.length || names.length)) html.push(`<li class="grp-h static"><span>Other</span></li>`);
+  html.push(...loose.map(dsItem));
+  ul.innerHTML = html.join("") || `<li class="empty">No discussions yet.</li>`;
+  $$("li[data-id]", ul).forEach((li) => li.onclick = (e) => { if (!e.target.closest("[data-edit]")) go(`#/chat/${li.dataset.id}`); });
+  $$("[data-edit]", ul).forEach((b) => b.onclick = () => organizeDs(list.find((d) => d.id === b.dataset.edit)));
+  $$("li[data-grp]", ul).forEach((li) => li.onclick = (e) => {
+    if (e.target.closest("[data-grp-edit]")) return;
+    fold.set("grp." + li.dataset.grp, !fold.get("grp." + li.dataset.grp, true));
+    loadDiscussions();
+  });
+  $$("[data-grp-edit]", ul).forEach((b) => b.onclick = () => renameGroup(b.dataset.grpEdit));
+  if (!S.ds && list.length && S.page === "chat") go(`#/chat/${recent(list)[0].id}`);
   if (!list.length) renderTurns();
+}
+
+async function organizeDs(d) {
+  const groups = [...new Set(S.dsList.map((x) => x.group).filter(Boolean))];
+  const r = await ask(`Organize ${d.id}`, field("Title", "title", d.title, "only the label changes; the transcript keeps its history") +
+    `<label>Group <span class="hint">— a label; leave empty for none</span></label><input name="group" list="grp-list" value="${esc(d.group || "")}">
+     <datalist id="grp-list">${groups.map((g) => `<option value="${esc(g)}">`).join("")}</datalist>
+     <div class="checks"><label><input type="checkbox" name="pinned" value="1" ${d.pinned ? "checked" : ""}><span>Pin to the top</span></label></div>`, "Save");
+  if (!r) return;
+  try {
+    await api("POST", `/api/discussions/${d.id}/meta`, { title: r.title, group: r.group, pinned: (r.pinned || []).length > 0 });
+  } catch (err) { fail(err); }
+  loadDiscussions(); if (d.id === S.ds) refreshDs();
+}
+
+async function renameGroup(g) {
+  const r = await ask(`Group “${g}”`, `<p>A group is just a label on its discussions. Renaming relabels them all; an empty name ungroups them.</p>` +
+    field("New name", "to", g), "Save");
+  if (!r) return;
+  try { await api("POST", "/api/discussion-groups/rename", { from: g, to: r.to }); } catch (err) { fail(err); }
+  loadDiscussions();
 }
 
 async function refreshDs() {
@@ -183,7 +250,8 @@ async function refreshDs() {
   S.dsData = d;
   if (d.streaming && !S.streaming) S.streaming = d.streaming;
   $("#ds-title").textContent = d.meta.title;
-  $("#ds-meta").textContent = `${d.meta.id} · ${d.turns.length} turns · ` +
+  $("#ds-meta").innerHTML = (d.meta.focus ? `Focused on <a class="idlink" href="#/obj/${esc(d.meta.focus)}">${esc(d.meta.focus)}</a> · ` : "") +
+    `${esc(d.meta.id)} · ${d.turns.length} turns · ` +
     (d.summary.covers_through ? `summary through turn ${d.summary.covers_through}` : "not distilled yet") +
     (d.meta.status === "closed" ? " · ended" : "");
   const open = d.meta.status === "open";
@@ -216,7 +284,9 @@ function renderTurns() {
   if (last && last.role === "human") html.push(`<div id="stream-slot"></div>`);
   const distilling = d.tasks.find((t) => t.kind === "distill");
   if (distilling) html.push(`<div class="turn-note"><span class="tag insight">Distilling</span><span class="thinking">Extracting research content into the Inbox</span></div>`);
-  if (!d.turns.length) html.push(`<div class="empty-state"><h2>${esc(d.meta.title)}</h2><p>Write your first message below. The title is only a label — the AI starts replying once you send something.</p></div>`);
+  if (!d.turns.length) html.push(d.meta.focus
+    ? `<div class="empty-state"><h2>${esc(d.meta.title)}</h2><p>This discussion is about <a class="idlink" href="#/obj/${esc(d.meta.focus)}">${esc(d.meta.focus)}</a>. The AI sees its full text, its history and everything linked to it. The goal is to get it clear and precise — not necessarily to move it up a maturity level. When the wording gets sharper, distilling proposes a revision.</p></div>`
+    : `<div class="empty-state"><h2>${esc(d.meta.title)}</h2><p>Write your first message below. The title is only a label — the AI starts replying once you send something.</p></div>`);
   const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
   box.innerHTML = html.join("");
   renderStream();
@@ -397,7 +467,7 @@ function editForm(c, draft) {
   const insightReq = draft.kind === "insight" ? `<div class="fnote">Needs “Grounded in” or a grounding note — at least one.</div>` : "";
   return `<div class="card editing" data-id="${c.id}">
     <div class="card-top"><span class="id">${c.id}</span><span>editing · from ${c.source} · turn ${fmtv(c.turns)}</span></div>
-    <div class="kinds">${Object.entries(KIND).map(([k, n]) => `<button type="button" data-kind="${k}" class="tag ${k} ${k === draft.kind ? "on" : ""}">${n}</button>`).join("")}</div>
+    <div class="kinds">${Object.entries(KIND).filter(([k]) => k !== "revision").map(([k, n]) => `<button type="button" data-kind="${k}" class="tag ${k} ${k === draft.kind ? "on" : ""}">${n}</button>`).join("")}</div>
     <div class="khint">${spec.hint}</div>
     <textarea class="stmt" data-k="statement" rows="2" placeholder="Statement">${esc(draft.statement || "")}</textarea>
     <div class="form">
@@ -452,22 +522,43 @@ function candCard(c) {
   if (ed && ed.mode === "reject") return rejectForm(c, ed.draft);
   if (ed && ed.mode === "accept") return acceptForm(c);
   const pending = c.status === "pending";
+  if (c.kind === "revision") return revisionCard(c);
   const fields = (FIELDS[c.kind] || []).filter(([k]) => c[k] && fmtv(c[k]))
-    .map(([k, n]) => `<dt>${n}</dt><dd>${esc(k === "firmness" ? FIRM[c[k]] || c[k] : fmtv(c[k]))}</dd>`).join("");
-  const state = c.status === "accepted" ? `<span class="tag plain">Accepted → ${c.promoted_to}</span>`
+    .map(([k, n]) => `<dt>${n}</dt><dd>${k === "firmness" ? esc(FIRM[c[k]] || c[k]) : idl(c[k])}</dd>`).join("");
+  const state = c.status === "accepted" ? `<span class="tag plain">Accepted → ${idl(c.promoted_to)}</span>`
     : c.status === "rejected" ? `<span class="tag plain">Rejected</span>` : "";
   return `<div class="card ${pending ? "" : "dim"} ${c.origin === "unclear" && pending ? "flagged" : ""}" data-id="${c.id}">
     <div class="card-top"><span class="tag ${c.kind}">${KIND[c.kind]}</span><span class="id">${c.id}</span>
-      <span>from ${c.source} · turn ${fmtv(c.turns)} · proposed by ${ORIGIN[c.origin] || c.origin}</span>
+      <span>from ${idl(c.source)} · turn ${fmtv(c.turns)} · proposed by ${ORIGIN[c.origin] || c.origin}</span>
       ${c.origin === "unclear" && pending ? `<span class="tag warn">Origin needs your call</span>` : ""}${state}</div>
     <div class="statement md">${md(c.statement)}</div>
     ${fields || c.relates_to || c.origin_note ? `<dl>${fields}
-      ${c.relates_to ? `<dt>Related to</dt><dd>${esc(fmtv(c.relates_to))}</dd>` : ""}
+      ${c.relates_to ? `<dt>Related to</dt><dd>${idl(c.relates_to)}</dd>` : ""}
       ${c.origin_note ? `<dt>Origin note</dt><dd>${esc(c.origin_note)}</dd>` : ""}</dl>` : ""}
     <details class="why"><summary>Why this was proposed</summary><div class="md">${md(c.rationale)}</div></details>
     ${c.decision_note ? `<details class="why" open><summary>Your note</summary><div class="md">${md(c.decision_note)}</div></details>` : ""}
     ${pending ? `<div class="acts"><button class="btn small" data-act="accept">Accept</button>
+      <button class="btn ghost small" data-act="accept-discuss" title="Accept, then open a discussion focused on the new object">Accept & discuss</button>
       <button class="btn ghost small" data-act="edit">Edit</button>
+      <button class="btn ghost small danger" data-act="reject">Reject</button></div>` : ""}
+  </div>`;
+}
+
+// A revision changes an existing object in place: same id, version +1, old wording kept (§5.15.3)
+function revisionCard(c) {
+  const pending = c.status === "pending";
+  const state = c.status === "accepted" ? `<span class="tag plain">Accepted → ${idl(c.promoted_to)}</span>`
+    : c.status === "rejected" ? `<span class="tag plain">Rejected</span>` : "";
+  return `<div class="card ${pending ? "" : "dim"} ${c.stale && pending ? "flagged" : ""}" data-id="${c.id}">
+    <div class="card-top"><span class="tag plain">Revision</span><span class="id">${c.id}</span>
+      <span>revises ${idl(c.target)}${c.target_type ? ` (${TYPE[c.target_type] || c.target_type})` : ""} · drafted on v${esc(c.base_revision)} · from ${idl(c.source)} turn ${fmtv(c.turns)} · proposed by ${ORIGIN[c.origin] || c.origin}</span>
+      ${c.stale && pending ? `<span class="tag warn" title="Another revision of ${c.target} was accepted after this was drafted">Drafted on an old version (now v${c.target_revision})</span>` : ""}${state}</div>
+    <div class="statement md">${md(c.statement)}</div>
+    ${c.maturity ? `<dl><dt>Suggested maturity</dt><dd>${esc(MATURITY[c.maturity] || c.maturity)} — you decide when confirming</dd></dl>` : ""}
+    <details class="why"><summary>Why this revision</summary><div class="md">${md(c.rationale)}</div></details>
+    ${c.decision_note ? `<details class="why" open><summary>Your note</summary><div class="md">${md(c.decision_note)}</div></details>` : ""}
+    ${pending ? `<div class="acts"><button class="btn small" data-act="revise">Compare & accept…</button>
+      <a class="btn ghost small" href="#/obj/${c.target}">Open ${c.target}</a>
       <button class="btn ghost small danger" data-act="reject">Reject</button></div>` : ""}
   </div>`;
 }
@@ -476,13 +567,13 @@ function reviewCard(r) {
   const open = r.status === "open";
   const ev = { hypothesis_refuted: "was refuted", assumption_invalidated: "was invalidated", insight_withdrawn: "was withdrawn" }[r.event] || r.event;
   return `<div class="card ${open ? "flagged" : "dim"}" data-review="${r.id}">
-    <div class="card-top"><span class="tag warn">Re-examine</span><span class="id">${r.target}</span>
-      <span>because ${r.trigger} ${ev} · distance ${r.depth}</span>
+    <div class="card-top"><span class="tag warn">Re-examine</span><span class="id">${idl(r.target)}</span>
+      <span>because ${idl(r.trigger)} ${ev} · distance ${r.depth}</span>
       ${open ? "" : `<span class="tag plain">${r.status === "resolved" ? "Adjusted" : "Not affected"}</span>`}</div>
     <div class="statement small md">${md(r.body)}</div>
     ${open ? `<div class="acts"><button class="btn small" data-act="resolved">I adjusted it</button>
       <button class="btn ghost small" data-act="dismissed">Not affected</button>
-      <button class="btn ghost small" data-act="goto">View in Research</button></div>` : ""}
+      <button class="btn ghost small" data-act="goto">Open ${r.target}</button></div>` : ""}
   </div>`;
 }
 
@@ -684,6 +775,16 @@ function bindEditor(card) {
 async function candAct(act, c) {
   if (act === "edit") return openEditor(c, "edit");
   if (act === "reject") return openEditor(c, "reject");
+  if (act === "revise") { await reviewRevision(c.id); return loadInbox(); }
+  if (act === "accept-discuss") {
+    if (c.origin === "unclear") { toast("Pick who raised it first (Accept), then discuss it from its page.", "warn"); return openEditor(c, "accept"); }
+    try {
+      const r = await api("POST", `/api/candidates/${c.id}/accept`, {});
+      toast(`Accepted as ${r.id}.`);
+      await discussThis(r.id);
+    } catch (err) { fail(err); openEditor(c, "edit"); return; }
+    return loadInbox();
+  }
   if (act === "accept") {
     if (c.origin === "unclear") return openEditor(c, "accept");
     try {
@@ -695,7 +796,7 @@ async function candAct(act, c) {
 }
 
 async function reviewAct(act, r) {
-  if (act === "goto") return go("#/research");
+  if (act === "goto") return go(`#/obj/${r.target}`);
   const f = await ask(act === "resolved" ? `${r.target}: adjusted` : `${r.target}: not affected`,
     field(act === "resolved" ? "What did you change?" : "Why does it still stand?", "note", "", "kept as a record", 3), "Save");
   if (!f) return;
@@ -713,16 +814,9 @@ async function loadOverview() {
   if (S.page === "research") renderResearch();
 }
 
-function objCard(x, tags, extra = "", acts = "") {
-  const p = x.provenance;
-  const who = p ? `raised by ${ORIGIN[p.origin] || p.origin}${p.disputed ? " (disputed)" : ""}` : "";
-  return `<div class="card" data-id="${x.id}">
-    <div class="card-top"><span class="id">${x.id}</span>${tags}<span>${who}</span></div>
-    <div class="statement small md">${md(mainText(x.body))}</div>${extra}${acts}</div>`;
-}
 const dl = (rows) => {
   const r = rows.filter(([, v]) => v && fmtv(v));
-  return r.length ? `<dl>${r.map(([k, v]) => `<dt>${k}</dt><dd>${esc(fmtv(v))}</dd>`).join("")}</dl>` : "";
+  return r.length ? `<dl>${r.map(([k, v]) => `<dt>${k}</dt><dd>${idl(v)}</dd>`).join("")}</dl>` : "";
 };
 const section = (id, title, count, desc, content, action = "") => `
   <section class="rsec" id="${id}">
@@ -732,127 +826,344 @@ const section = (id, title, count, desc, content, action = "") => `
 
 const inBatch = (id) => (S.mode && (S.mode.batch || []).includes(id)) ? `<span class="tag insight">In validation</span>` : "";
 
+// Collapsed/expanded state per browser. Storage can throw (private mode, blocked site data): fall back to the default.
+const fold = {
+  get: (k, def) => { try { const v = localStorage.getItem("ar.fold." + k); return v === null ? def : v === "1"; } catch { return def; } },
+  set: (k, v) => { try { localStorage.setItem("ar.fold." + k, v ? "1" : "0"); } catch { /* private mode */ } },
+};
+const bindFolds = (root) => $$("details[data-fold]", root).forEach((d) => d.ontoggle = () => fold.set(d.dataset.fold, d.open));
+
+function statusTag(x) {
+  const t = x.type;
+  if (t === "question") return `<span class="tag question">${MATURITY[x.maturity] || x.maturity}</span>`;
+  if (t === "assumption") return `<span class="tag assumption">${A_STATUS[x.status] || x.status}</span>${x.fragile === "true" || x.fragile === true ? `<span class="tag warn">Fragile</span>` : ""}`;
+  if (t === "hypothesis") return `<span class="tag hypothesis">${H_STATUS[x.status] || x.status}</span>`;
+  if (t === "uncertainty") return `<span class="tag uncertainty">${esc(x.importance)} importance</span>${x.status !== "open" ? `<span class="tag plain">${U_STATUS[x.status] || x.status}</span>` : ""}`;
+  if (t === "insight") return `<span class="tag insight">${FIRM[x.firmness] || x.firmness}</span>${x.status !== "active" ? `<span class="tag plain">${x.status === "superseded" ? "Superseded by " + x.superseded_by : "Abandoned"}</span>` : ""}`;
+  return x.status ? `<span class="tag plain">${esc(x.status)}</span>` : "";
+}
+
+// Compact row: id, type tag, first line, link counts. The page behind it holds everything else (§5.15.4).
+function orow(x, extra = "") {
+  const c = x.counts || {};
+  const n = (k, one, many) => c[k] ? `${c[k]} ${c[k] === 1 ? one : many}` : "";
+  const bits = [c.revision > 1 ? `v${c.revision}` : "", n("evidence", "evidence", "evidence"), n("discussions", "discussion", "discussions"),
+    n("related", "link", "links"), n("candidates", "pending", "pending"), n("reviews", "to re-examine", "to re-examine")].filter(Boolean);
+  return `<a class="orow ${x.withdrawn ? "dim" : ""}" href="#/obj/${x.id}"><span class="id">${x.id}</span>
+    <span class="tags">${statusTag(x)}${extra}${inBatch(x.id)}${x.withdrawn ? `<span class="tag plain">Withdrawn</span>` : ""}</span>
+    <span class="t">${esc(firstLine(mainText(x.body)))}</span><span class="cnt">${bits.join(" · ")}</span></a>`;
+}
+const olist = (xs, extra) => `<div class="olist">${xs.map((x) => orow(x, extra ? extra(x) : "")).join("")}</div>`;
+function listWithFolded(key, live, folded, empty, foldedTitle = "Withdrawn", extra) {
+  return (live.length ? olist(live, extra) : `<div class="empty">${empty}</div>`) +
+    (folded.length ? `<details class="history" data-fold="research.${key}" ${fold.get("research." + key, false) ? "open" : ""}><summary>${foldedTitle} · ${folded.length}</summary>${olist(folded, extra)}</details>` : "");
+}
+
 function renderResearch() {
   const o = S.overview;
   if (!o) return;
   const openReviews = (o.reviews || []).length;
   const top = (o.validation.errors.length ? `<div class="banner"><strong>The research state has ${o.validation.errors.length} validation error(s).</strong><br>${o.validation.errors.map(esc).join("<br>")}</div>` : "") +
     (openReviews ? `<div class="banner warn"><strong>${openReviews} object(s) need re-examination</strong> because something they are linked to was overturned. <a href="#/inbox" id="to-reviews">Open the Inbox →</a></div>` : "");
-
-  const q = o.questions.map((x) => objCard(x, `<span class="tag question">${x.maturity}</span>`, "",
-    `<div class="acts"><button class="btn ghost small" data-act="maturity">Set maturity</button></div>`)).join("");
+  const main = o.project.main_question;
+  const qs = o.questions.slice().sort((a, b) => (a.id !== main) - (b.id !== main));
+  const q = listWithFolded("q", qs.filter((x) => !x.withdrawn), qs.filter((x) => x.withdrawn), "No questions yet.", "Withdrawn",
+    (x) => x.id === main ? `<span class="tag insight">Main</span>` : "");
 
   const ord = { settled: 0, working: 1, hunch: 2 };
   const insAll = o.insights || [];
   const ins = insAll.filter((x) => x.status === "active").sort((a, b) => ord[a.firmness] - ord[b.firmness]);
-  const insOld = insAll.filter((x) => x.status !== "active");
-  const insHtml = (ins.length ? `<div class="grid">${ins.map((x) => objCard(x, `<span class="tag insight">${FIRM[x.firmness]}</span>`,
-    dl([["Grounded in", x.basis], ["Grounding note", x.basis_note], ["Informs", x.informs], ["Would change if", x.change_mind]]),
-    `<div class="acts"><button class="btn ghost small" data-act="revise">Revise</button><button class="btn ghost small danger" data-act="abandon">Abandon</button></div>`)).join("")}</div>`
-    : `<div class="empty">No insights yet. An insight can be just a feel for the problem — as long as you say where it comes from.</div>`) +
-    (insOld.length ? `<details class="history"><summary>How our understanding changed · ${insOld.length} earlier version(s)</summary><div class="grid">${insOld.map((x) =>
-      objCard(x, `<span class="tag plain">${x.status === "superseded" ? "Superseded by " + x.superseded_by : "Abandoned"}</span>`)).join("")}</div></details>` : "");
+  const insHtml = listWithFolded("ins", ins, insAll.filter((x) => x.status !== "active"),
+    "No insights yet. An insight can be just a feel for the problem — as long as you say where it comes from.", "How our understanding changed");
 
   const as = o.assumptions.slice().sort((a, b) => (a.status !== "unexamined") - (b.status !== "unexamined"));
-  const asHtml = as.length ? `<div class="grid">${as.map((x) => objCard(x,
-    `<span class="tag assumption">${A_STATUS[x.status] || x.status}</span>${x.fragile === "true" || x.fragile === true ? `<span class="tag warn">Fragile</span>` : ""}${inBatch(x.id)}`,
-    dl([["Supports", x.relied_on_by], ["Derived from", x.derived_from], ["Promoted to", x.promoted_to], ["Invalidated by", x.invalidated_by]]),
-    `<div class="acts"><button class="btn ghost small" data-act="chain">Evidence${(x.evidence || []).length ? ` (${x.evidence.length})` : ""}</button>` +
-    (x.status === "invalidated" ? "" : `<button class="btn ghost small" data-act="ground">Ground check</button><button class="btn ghost small danger" data-act="invalidate">Invalidate</button>`) + `</div>`)).join("")}</div>`
-    : `<div class="empty">No assumptions recorded.</div>`;
-
-  const hs = o.hypotheses.length ? `<div class="grid">${o.hypotheses.map((x) => objCard(x,
-    `<span class="tag hypothesis">${H_STATUS[x.status] || x.status}</span><span class="tag plain">${x.confidence} confidence</span>${inBatch(x.id)}`,
-    dl([["Refuted if", x.falsifier], ["Tested by", x.validation], ["From assumption", x.promoted_from]]),
-    `<div class="acts"><button class="btn ghost small" data-act="chain">Evidence${(x.evidence || []).length ? ` (${x.evidence.length})` : ""}</button><button class="btn ghost small" data-act="ground">Ground check</button></div>`)).join("")}</div>`
-    : `<div class="empty">No hypotheses yet.</div>`;
-
-  const us = o.uncertainties.filter((x) => x.status !== "resolved");
-  const usHtml = us.length ? `<div class="grid">${us.map((x) => objCard(x, `<span class="tag uncertainty">${x.importance} importance</span><span class="tag plain">${x.status}</span>`)).join("")}</div>`
-    : `<div class="empty">No open uncertainties.</div>`;
-
-  const de = o.dead_ends.length ? `<div class="grid">${o.dead_ends.map((x) => objCard(x, `<span class="tag plain">${x.status}</span>`, dl([["Closed by", x.closed_by]]))).join("")}</div>`
-    : `<div class="empty">No closed directions yet.</div>`;
+  const asHtml = listWithFolded("a", as.filter((x) => !x.withdrawn), as.filter((x) => x.withdrawn), "No assumptions recorded.");
+  const hs = o.hypotheses;
+  const hsHtml = listWithFolded("h", hs.filter((x) => !x.withdrawn), hs.filter((x) => x.withdrawn), "No hypotheses yet.");
+  const us = o.uncertainties;
+  const usLive = us.filter((x) => !["resolved", "withdrawn"].includes(x.status));
+  const usHtml = listWithFolded("u", usLive, us.filter((x) => ["resolved", "withdrawn"].includes(x.status)), "No open uncertainties.", "Resolved or withdrawn");
+  const de = o.dead_ends.length ? olist(o.dead_ends) : `<div class="empty">No closed directions yet.</div>`;
 
   const bias = o.bias.length ? `<div class="card"><table class="t"><tr><th>Raised by</th><th>Hypotheses</th><th>With a verdict</th><th>Refuted</th><th>Refutation rate</th></tr>
     ${o.bias.map((b) => `<tr><td>${b.origin === "disputed" ? "Disputed origin (not counted)" : ORIGIN[b.origin] || b.origin}</td><td>${b.total}</td><td>${b.resolved}</td><td>${b.refuted}</td><td>${b.refute_rate == null ? "—" : Math.round(b.refute_rate * 100) + "%"}</td></tr>`).join("")}</table></div>`
     : `<div class="empty">No hypotheses yet.</div>`;
 
   $("#research-body").innerHTML = top +
-    section("sec-question", "Research question", o.questions.length, "", q) +
+    section("sec-question", "Research questions", qs.filter((x) => !x.withdrawn).length, "Click any row to see its history, discussions and links — and to discuss it.", q) +
     section("sec-insights", "Understanding", ins.length, "What we've come to think so far. Understanding, not evidence — it can be a feel, but it must say where it comes from.", insHtml,
       `<button class="btn small" data-act="new-insight">Add insight</button>`) +
-    section("sec-assumptions", "Assumptions", as.length, "Premises the research relies on. Unexamined ones come first — they're the dangerous ones.", asHtml) +
-    section("sec-hypotheses", "Hypotheses", o.hypotheses.length, "Claims with an arranged test. Status only changes with evidence attached.", hs) +
-    section("sec-uncertainties", "Uncertainties", us.length, "Unknowns that discount our conclusions.", usHtml) +
+    section("sec-assumptions", "Assumptions", as.filter((x) => !x.withdrawn).length, "Premises the research relies on. Unexamined ones come first — they're the dangerous ones.", asHtml) +
+    section("sec-hypotheses", "Hypotheses", hs.filter((x) => !x.withdrawn).length, "Claims with an arranged test. Status only changes with evidence attached.", hsHtml) +
+    section("sec-uncertainties", "Uncertainties", usLive.length, "Unknowns that discount our conclusions.", usHtml) +
     section("sec-deadends", "Dead ends", o.dead_ends.length, "Closed directions. Every session is shown all of them before exploring anything new.", de) +
     section("sec-bias", "Bias check", "", "Origin is hidden from the AI when it judges evidence. Masking is never perfect — if your hypotheses are refuted far less often than the AI's, either you're right more often, or the masking leaks.", bias);
 
   const tr = $("#to-reviews");
   if (tr) tr.onclick = () => { S.inboxView = "reviews"; };
-  bindResearch();
+  bindFolds($("#research-body"));
+  const nb = $('[data-act="new-insight"]', $("#research-body"));
+  if (nb) nb.onclick = newInsight;
   spyChips();
 }
 
-function bindResearch() {
-  const body = $("#research-body"), o = S.overview;
-  const byId = (id) => [...(S.overview.insights || []), ...S.overview.assumptions].find((x) => x.id === id);
-  const firm = (cur) => select("Firmness", "firmness", { hunch: "Hunch — a feel", working: "Working — an understanding we act on", settled: "Settled — solid" }, cur);
-  const nb = $('[data-act="new-insight"]', body);
-  if (nb) nb.onclick = async () => {
-    const r = await ask("Add an insight",
-      field("The insight", "statement", "", "can be descriptive — a feel is fine", 4) + firm("hunch") +
-      field("Grounded in", "basis", "", "ids from the state, comma-separated, e.g. DS001, H002") +
-      field("Or a grounding note", "basis_note", "", "a source outside the state, e.g. years of assembly work") +
-      field("Informs", "informs", "", "optional · ids it shapes") +
-      field("Would change if", "change_mind", "", "optional"), "Add");
+// ---------------------------------------------------------------- object actions (used by the object page)
+const firmSel = (cur) => select("Firmness", "firmness", { hunch: "Hunch — a feel", working: "Working — an understanding we act on", settled: "Settled — solid" }, cur);
+const after = () => { loadOverview(); loadInbox(); if (S.page === "obj" && S.objId) renderObject(S.objId); };
+
+async function newInsight() {
+  const r = await ask("Add an insight",
+    field("The insight", "statement", "", "can be descriptive — a feel is fine", 4) + firmSel("hunch") +
+    field("Grounded in", "basis", "", "ids from the state, comma-separated, e.g. DS001, H002") +
+    field("Or a grounding note", "basis_note", "", "a source outside the state, e.g. years of assembly work") +
+    field("Informs", "informs", "", "optional · ids it shapes") +
+    field("Would change if", "change_mind", "", "optional"), "Add");
+  if (!r) return;
+  try { const x = await api("POST", "/api/insights", r); toast(`Added ${x.id}.`); } catch (err) { fail(err); }
+  loadOverview();
+}
+async function reviseInsight(x) {
+  const r = await ask(`Revise ${x.id}`, `<p>Nothing is overwritten. A new insight replaces this one; the old one stays in the history and becomes part of the new one's grounding.</p>` +
+    field("Revised insight", "statement", mainText(x.body), "", 4) + firmSel(x.meta.firmness) +
+    field("Would change if", "change_mind", x.meta.change_mind || "") +
+    field("Why revise", "note", ""), "Revise");
+  if (!r) return;
+  try { const n = await api("POST", `/api/insights/${x.id}/revise`, r); toast(`Revised as ${n.id}.`); go(`#/obj/${n.id}`); } catch (err) { fail(err); }
+  after();
+}
+async function setMaturity(x) {
+  const r = await ask(`Maturity of ${x.id}`, `<p><b>Vague</b>: a direction, but you can't yet say what's outside it. <b>Scoped</b>: you can say what's studied, what isn't, and what's taken as given. <b>Formalized</b>: you can say what's measured, in what setting, and what result would answer it — incubation only starts from a formalized main question.</p>` +
+    select("Maturity", "maturity", { vague: "Vague", scoped: "Scoped — boundaries are clear", formalized: "Formalized — measurable definition" }, x.meta.maturity), "Save");
+  if (!r) return;
+  try { await api("POST", `/api/questions/${x.id}/maturity`, r); toast(`${x.id} is now ${r.maturity}.`); } catch (err) { fail(err); }
+  after(); loadMode();
+}
+async function groundCheck(id) {
+  const r = await ask(`Ground check ${id}?`, `<p>A separate task searches for prior work and the strongest counter-evidence, then annotates ${id}. It never rewrites it. It can't see who proposed ${id}.</p>`, "Queue it");
+  if (!r) return;
+  try { await api("POST", "/api/grounding", { target: id }); toast(`Ground check for ${id} queued.`); } catch (err) { fail(err); }
+}
+async function invalidate(id) {
+  const r = await ask(`Invalidate ${id}`, `<p>Use this when the premise doesn't hold. Everything linked to it goes to the Inbox for re-examination. Nothing is changed automatically. (If it's merely no longer relevant, withdraw it instead.)</p>` +
+    field("Why doesn't this premise hold anymore?", "reason", "", "", 4), "Invalidate");
+  if (!r) return;
+  try {
+    const x = await api("POST", `/api/assumptions/${id}/invalidate`, r);
+    toast(x.reviews.length ? `Invalidated. ${x.reviews.length} linked object(s) need re-examination.` : "Invalidated. Nothing depended on it.", x.reviews.length ? "warn" : "info");
+  } catch (err) { fail(err); }
+  after();
+}
+async function withdrawObj(x) {
+  const t = x.meta.type;
+  if (t === "insight") {
+    const r = await ask(`Abandon ${x.id}`, `<p>Assumptions derived from it will be flagged for re-examination.</p>` + field("Reason", "reason", "", "", 3), "Abandon");
     if (!r) return;
-    try { const x = await api("POST", "/api/insights", r); toast(`Added ${x.id}.`); } catch (err) { fail(err); }
-    loadOverview();
-  };
-  $$('[data-act="revise"]', body).forEach((b) => b.onclick = async () => {
-    const x = byId(b.closest(".card").dataset.id);
-    const r = await ask(`Revise ${x.id}`, `<p>Nothing is overwritten. A new insight replaces this one; the old one stays in the history and becomes part of the new one's grounding.</p>` +
-      field("Revised insight", "statement", mainText(x.body), "", 4) + firm(x.firmness) +
-      field("Would change if", "change_mind", x.change_mind || "") +
-      field("Why revise", "note", ""), "Revise");
+    try { await api("POST", `/api/insights/${x.id}/abandon`, r); } catch (err) { fail(err); }
+    return after();
+  }
+  const to = { question: "withdrawn", assumption: "retired", hypothesis: "abandoned", uncertainty: "withdrawn" }[t];
+  const r = await ask(`Withdraw ${x.id}`, `<p>For things that are <b>no longer relevant</b> — not wrong. ${x.id} becomes <i>${to}</i>; every link to it stays, nothing is sent for re-examination, and you can restore it later. The AI stops seeing it, except for one line that keeps it from being proposed again.</p>` +
+    field("Why is it no longer relevant?", "reason", "", "required · recorded as a decision", 3), "Withdraw");
+  if (!r) return;
+  try { const d = await api("POST", `/api/objects/${x.id}/withdraw`, r); toast(`${x.id} withdrawn (${d.decision}).`); } catch (err) { fail(err); }
+  after();
+}
+async function restoreObj(x) {
+  const r = await ask(`Restore ${x.id}`, `<p>It goes back to <i>${esc(x.withdrawn.from)}</i>. Recorded as a decision.</p>` + field("Why bring it back?", "reason", "", "optional", 2), "Restore");
+  if (!r) return;
+  try { await api("POST", `/api/objects/${x.id}/restore`, r); toast(`${x.id} restored.`); } catch (err) { fail(err); }
+  after();
+}
+async function undoAccept(x) {
+  const src = (x.provenance || {}).source;
+  const r = await ask(`Undo accepting ${x.id}?`, `<p>Nothing uses ${x.id} yet, so it can be taken back: ${x.id} is deleted, ${esc(src)} returns to the Inbox as pending, and the undo is recorded as a decision. The id ${x.id} won't be reused.</p>` +
+    field("Why?", "reason", "", "optional", 2), "Undo accept");
+  if (!r) return;
+  try { const d = await api("POST", `/api/objects/${x.id}/undo-accept`, r); toast(`${x.id} removed; ${d.candidate} is pending again.`); go("#/inbox"); } catch (err) { fail(err); }
+  loadOverview(); loadInbox();
+}
+async function discussThis(id) {
+  try {
+    const r = await api("POST", "/api/discussions", { focus: id });
+    toast(`Opened ${r.id}, focused on ${id}.`);
+    go(`#/chat/${r.id}`);
+    setTimeout(() => input.focus(), 50);
+  } catch (err) { fail(err); }
+}
+
+// ---------------------------------------------------------------- revision review (DESIGN §5.15.3)
+async function reviewRevision(cid) {
+  let pv;
+  try { pv = await api("GET", `/api/candidates/${cid}/revision`); } catch (err) { fail(err); return false; }
+  const c = S.cands.find((y) => y.id === cid) || {};
+  const isQ = pv.type === "question";
+  const cur = pv.current.meta;
+  const fieldRows = pv.changes.filter((ch) => ch.field !== "statement" && ch.field !== "maturity")
+    .map((ch) => `<tr><td>${esc(ch.field)}</td><td>${idl(ch.old)}</td><td>${idl(ch.new)}</td></tr>`).join("");
+  const suggested = (pv.proposed.fields || {}).maturity;
+  const html =
+    (pv.stale ? `<div class="banner warn"><strong>Drafted on an older version.</strong> ${cid} was written against v${pv.base_revision}; ${pv.target} is now v${pv.revision} because another revision was accepted meanwhile. Compare with the current text below. Nothing is merged automatically — confirming replaces the current text with this one.</div>` : "") +
+    (pv.falsifier_evidence ? `<div class="banner warn"><strong>This moves the goalposts.</strong> It changes what would refute ${pv.target}, and ${pv.falsifier_evidence} evidence item(s) were judged against the old condition. They stay attached and are marked with the version they were judged under; the change is written into the decision.</div>` : "") +
+    (pv.withdrawn ? `<div class="fnote">${pv.target} is currently withdrawn. Revising it doesn't restore it.</div>` : "") +
+    `<div class="diff"><div><div class="flabel">Current · v${pv.revision}</div><div class="md small cur">${md(pv.current.statement)}</div></div>
+      <div><div class="flabel">Proposed · v${pv.revision + 1} <span>edit freely</span></div><textarea name="statement" rows="9">${esc(pv.proposed.statement)}</textarea></div></div>` +
+    (fieldRows ? `<table class="t diff-t"><tr><th>Field</th><th>Now</th><th>Proposed</th></tr>${fieldRows}</table>` : "") +
+    (isQ ? select(`Maturity${suggested && suggested !== cur.maturity ? ` — the AI suggests ${MATURITY[suggested]}` : ""}`, "maturity",
+      { vague: "Vague — can't yet say what's outside it", scoped: "Scoped — says what's in, what's out, what's given", formalized: "Formalized — says what's measured and what answers it" },
+      suggested || cur.maturity) + `<p class="meta">Only you set this. Staying at the same level is a perfectly good revision.</p>` : "") +
+    (c.origin === "unclear" ? select("Who raised this revision first?", "origin", { human: "Me", ai: "The AI" }, "human") : "") +
+    `<details class="why"><summary>Why the revision</summary><div class="md small">${md(pv.proposed.rationale)}</div></details>`;
+  const r = await ask(`Revise ${pv.target} — ${cid}`, html, pv.stale ? "Confirm anyway" : "Confirm revision", { wide: true });
+  if (!r) return false;
+  const body = { force: !!pv.stale };
+  if (isQ) body.maturity = r.maturity;
+  if (r.origin) body.origin = r.origin;
+  if ((r.statement || "").trim() !== (pv.proposed.statement || "").trim()) body.changes = { statement: r.statement };
+  try {
+    const x = await api("POST", `/api/candidates/${cid}/accept`, body);
+    toast(x.id === pv.target ? `${pv.target} is now v${pv.revision + 1}.` : `${pv.target} superseded by ${x.id}.`);
+  } catch (err) {
+    if (err.status === 409) { toast(`${pv.target} changed while you were reviewing — compare again.`, "warn"); return reviewRevision(cid); }
+    fail(err); return false;
+  }
+  after();
+  return true;
+}
+
+// ================================================================ OBJECT PAGE (DESIGN §5.15.4)
+const USE = { discussion: "focused on by", evidence: "evidence", decision: "decision", candidate: "candidate", review: "re-examination" };
+function undoWhy(x) {
+  if (x.undo_code === "not_from_candidate") return "it wasn't created by accepting a candidate";
+  if (x.undo_code === "revised") return `it has been revised (now v${x.revision})`;
+  const us = (x.users || []).map((u) => u.id === "project" ? "it's the project's main question"
+    : `${USE[u.type] ? USE[u.type] + " " : ""}${linkIds(esc(u.id))}${["discussion", "evidence"].includes(u.type) ? "" : ` (${esc(u.field)})`}`);
+  return `it's already in use — ${us.join(", ")}`;
+}
+const WITHDRAW_WHY = { main_question: "It's the main question — point the project at another question first.", already: "Already withdrawn or closed.", not_withdrawable: "This kind of object can't be withdrawn." };
+function block(key, title, count, content, defOpen = false) {
+  const open = fold.get("obj." + key, defOpen);
+  return `<details class="blk" data-fold="obj.${key}" ${open ? "open" : ""}><summary><span>${title}</span><b class="cnt">${count}</b></summary><div class="blk-body">${content}</div></details>`;
+}
+
+function objFields(m) {
+  const t = m.type;
+  const rows = {
+    question: [["Maturity", MATURITY[m.maturity] || m.maturity]],
+    assumption: [["Supports", m.relied_on_by], ["Fragile", m.fragile], ["Derived from", m.derived_from], ["Promoted to", m.promoted_to], ["Invalidated by", m.invalidated_by]],
+    hypothesis: [["Refuted if", m.falsifier], ["Tested by", m.validation], ["Confidence", m.confidence], ["From assumption", m.promoted_from]],
+    uncertainty: [["Importance", m.importance]],
+    insight: [["Grounded in", m.basis], ["Grounding note", m.basis_note], ["Informs", m.informs], ["Would change if", m.change_mind], ["Superseded by", m.superseded_by]],
+    evidence: [["About", m.target], ["Stance", m.stance], ["Strength", m.strength], ["Source", m.source], ["Quote", m.quote]],
+    candidate: [["Kind", m.kind], ["Status", m.status], ["Target", m.target], ["Became", m.promoted_to], ["From", m.source]],
+    review: [["Target", m.target], ["Because of", m.trigger], ["Status", m.status]],
+    decision: [["Kind", m.kind], ["Refs", m.refs]],
+  }[t] || [];
+  return dl([...rows, ["Related to", m.relates_to]]);
+}
+
+async function renderObject(id) {
+  S.objId = id;
+  const body = $("#obj-body");
+  let x;
+  try { x = await api("GET", `/api/objects/${id}/links`); } catch (err) {
+    body.innerHTML = `<p><a href="#/research">← Research</a></p><div class="empty">${esc(err.status === 404 ? `${id} doesn't exist (it may have been taken back).` : err.message)}</div>`;
+    return;
+  }
+  if (S.objId !== id) return;
+  S.obj = x;
+  const m = x.meta, t = m.type, p = x.provenance || {};
+  const focusable = FOCUSABLE.includes(t);
+  const who = p.origin ? `raised by ${ORIGIN[p.origin] || p.origin}` : "";
+  const src = [who, p.discussion ? `in <a href="#/chat/${p.discussion}">${p.discussion}</a>${(p.turns || []).length ? ` turn ${p.turns.join(", ")}` : ""}` : "",
+    /^C\d/.test(p.source || "") ? `via <a class="idlink" href="#/obj/${p.source}">${p.source}</a>` : "",
+    m.created ? `created ${esc(m.created)}` : "", m.revised ? `revised ${esc(m.revised)}` : ""].filter(Boolean).join(" · ");
+  const acts = [];
+  if (focusable) acts.push(`<button class="btn small" data-act="discuss">Discuss this</button>`);
+  if (t === "question" && !x.withdrawn) acts.push(`<button class="btn ghost small" data-act="maturity">Set maturity</button>`);
+  if (["assumption", "hypothesis"].includes(t)) acts.push(`<a class="btn ghost small" href="#/reading/${id}">Evidence chain</a>`);
+  if (["assumption", "hypothesis"].includes(t) && !x.withdrawn && m.status !== "invalidated") acts.push(`<button class="btn ghost small" data-act="ground">Ground check</button>`);
+  if (t === "assumption" && !["invalidated", "retired"].includes(m.status)) acts.push(`<button class="btn ghost small danger" data-act="invalidate">Invalidate</button>`);
+  if (t === "insight" && m.status === "active") acts.push(`<button class="btn ghost small" data-act="revise-insight">Revise</button>`);
+  if (focusable && x.withdrawn) acts.push(`<button class="btn ghost small" data-act="restore">Restore</button>`);
+  else if (focusable) acts.push(`<button class="btn ghost small danger" data-act="withdraw" ${x.withdraw_code ? `disabled title="${esc(WITHDRAW_WHY[x.withdraw_code] || "")}"` : ""}>${t === "insight" ? "Abandon" : "Withdraw"}</button>`);
+  if (focusable) acts.push(`<button class="btn ghost small" data-act="undo" ${x.can_undo ? "" : `disabled title="Not available: ${esc(undoWhy(x).replace(/<[^>]+>/g, ""))}"`}>Undo accept</button>`);
+
+  const pend = x.candidates.filter((c) => c.kind === "revision" && c.status === "pending");
+  const others = x.candidates.filter((c) => !(c.kind === "revision" && c.status === "pending"));
+  const pendHtml = pend.map((c) => `<div class="card ${c.stale ? "flagged" : ""}" data-cand="${c.id}">
+      <div class="card-top"><span class="id">${c.id}</span><span>drafted on v${esc(c.base_revision)} · from ${idl(c.source)} turn ${esc(fmtv(c.turns))} · proposed by ${ORIGIN[c.origin] || c.origin}</span>
+        ${c.stale ? `<span class="tag warn">Drafted on an old version</span>` : ""}</div>
+      <div class="statement small md">${md(c.statement)}</div>
+      <details class="why"><summary>Why</summary><div class="md">${md(c.rationale)}</div></details>
+      <div class="acts"><button class="btn small" data-act="review">Review…</button><button class="btn ghost small danger" data-act="reject-cand">Reject</button></div></div>`).join("")
+    || `<div class="empty">No revisions waiting. Discuss it — when the wording gets sharper, the distiller proposes a revision here.</div>`;
+
+  const hist = x.revisions.map((h) => `<details class="rev"><summary><b>v${esc(h.from)} → v${esc(h.to)}</b> · ${esc(h.created)} · ${idl(h.id)}${h.candidate ? ` · from ${idl(h.candidate)}` : ""}</summary><div class="md small">${md(h.body)}</div></details>`).join("")
+    + `<div class="meta rev-origin">v1 · ${esc(m.created || "")}${p.source ? ` · ${idl(p.source)}` : ""}</div>`
+    + (x.decisions.length ? `<h4>Other decisions</h4>` + x.decisions.map((d) => `<details class="rev"><summary>${idl(d.id)} · ${esc(d.kind)} · ${esc(d.created)}</summary><div class="md small">${md(d.body)}</div></details>`).join("") : "");
+
+  const dsHtml = x.discussions.map((d) => `<a class="orow" href="#/chat/${d.id}"><span class="id">${d.id}</span>
+      <span class="tags">${d.relation === "focus" ? `<span class="tag insight">Focused on it</span>` : `<span class="tag plain">Where it came from</span>`}${d.status === "closed" ? `<span class="tag plain">Ended</span>` : ""}</span>
+      <span class="t">${esc(d.title)}</span><span class="cnt">${d.turns} turn${d.turns === 1 ? "" : "s"}${d.last_ts ? " · " + fmtTs(d.last_ts) : ""}</span></a>`).join("");
+  const dsBlock = (dsHtml ? `<div class="olist">${dsHtml}</div>` : `<div class="empty">No discussions yet.</div>`) +
+    (focusable ? `<div class="acts" style="margin-top:10px"><button class="btn ghost small" data-act="discuss">New discussion about ${id}</button></div>` : "");
+
+  const byRev = {};
+  x.evidence.forEach((e) => { const r = e.via ? "via" : (e.revision || 1); (byRev[r] = byRev[r] || []).push(e); });
+  const evRow = (e) => `<div class="ev ${e.stance}"><div class="head"><span class="tag ${e.stance}">${STANCE[e.stance] || e.stance}</span><a class="id idlink" href="#/obj/${e.id}">${e.id}</a>
+      <span>${esc(e.strength)}${e.basis === "abstract" ? " · abstract only" : ""} · ${idl(e.source)}${e.via ? ` · ${esc(e.via)}` : ""}</span>
+      ${e.revision && e.revision !== x.revision && !e.via ? `<span class="tag warn" title="Judged before the latest revision">Judged under v${e.revision}</span>` : ""}</div>
+      ${e.quote ? `<blockquote>“${esc(e.quote)}”</blockquote>` : ""}<div class="md small">${md(e.note)}</div></div>`;
+  const evHtmlAll = Object.keys(byRev).sort((a, b) => (a === "via") - (b === "via") || b - a).map((r) =>
+    (x.revision > 1 || r === "via" ? `<h4>${r === "via" ? "Indirect" : `Under v${r}${+r === x.revision ? " (current)" : ""}`}</h4>` : "") + byRev[r].map(evRow).join("")).join("")
+    || `<div class="empty">No evidence.</div>`;
+
+  const DIR = { in: "→ it", out: "it →" };
+  const relHtml = x.related.length ? `<div class="olist">${x.related.map((r) => `<a class="orow ${r.withdrawn ? "dim" : ""}" href="${idHref(r.id)}"><span class="id">${r.id}</span>
+      <span class="tags"><span class="tag ${FOCUSABLE.includes(r.type) ? r.type : "plain"}">${TYPE[r.type] || esc(r.type)}</span>${r.withdrawn ? `<span class="tag plain">Withdrawn</span>` : ""}</span>
+      <span class="t">${esc(r.text)}</span><span class="cnt">${r.dir === "in" ? `its ${esc(r.field)} ${DIR.in}` : `${DIR.out} via ${esc(r.field)}`}</span></a>`).join("")}</div>` : `<div class="empty">Nothing linked.</div>`;
+  const rvHtml = x.reviews.length ? x.reviews.map(reviewCard).join("") : `<div class="empty">Nothing to re-examine.</div>`;
+  const cHtml = others.length ? `<div class="olist">${others.map((c) => `<a class="orow ${c.status !== "pending" ? "dim" : ""}" href="#/obj/${c.id}"><span class="id">${c.id}</span>
+      <span class="tags"><span class="tag ${c.kind === "revision" ? "plain" : c.kind}">${KIND[c.kind] || c.kind}</span><span class="tag plain">${esc(c.status)}</span>${c.own ? `<span class="tag plain">Created it</span>` : ""}</span>
+      <span class="t">${esc(firstLine(c.statement))}</span><span class="cnt">${esc(c.field)}</span></a>`).join("")}</div>` : `<div class="empty">No other candidates mention it.</div>`;
+
+  body.innerHTML = `<p class="back"><a href="#/research">← Research</a></p>
+    <header class="obj-head">
+      <div class="eyebrow">${TYPE[t] || esc(t)} · ${id}${x.revision > 1 ? ` · v${x.revision}` : ""}${x.is_main_question ? " · main question" : ""}</div>
+      <div class="obj-tags">${statusTag(m)}${inBatch(id)}${x.withdrawn ? `<span class="tag plain">Withdrawn</span>` : ""}</div>
+      <div class="obj-statement md">${md(x.statement || x.body)}</div>
+      ${objFields(m)}
+      <div class="meta obj-src">${src}</div>
+      ${x.withdrawn ? `<div class="banner warn"><strong>Withdrawn</strong> ${esc(x.withdrawn.date || "")} (${idl(x.withdrawn.decision)}, was <i>${esc(x.withdrawn.from)}</i>): ${esc(x.withdrawn.reason)}. Every link to it is kept; nothing was sent for re-examination.</div>` : ""}
+      <div class="acts">${acts.join("")}</div>
+      ${focusable && !x.can_undo ? `<div class="meta undo-why">Undo accept isn't available: ${undoWhy(x)}.${x.withdrawn || x.withdraw_code ? "" : " Withdraw it instead if it's no longer relevant."}</div>` : ""}
+    </header>
+    ${focusable ? block("pending", "Revisions waiting", pend.length, pendHtml, true) : ""}
+    ${block("history", "Revision history", x.revisions.length + x.decisions.length, hist)}
+    ${block("discussions", "Discussions", x.discussions.length, dsBlock)}
+    ${block("evidence", "Evidence", x.evidence.length, evHtmlAll)}
+    ${block("related", "Linked objects", x.related.length, relHtml)}
+    ${block("reviews", "Re-examinations", x.reviews.length, rvHtml)}
+    ${block("candidates", "Candidates that mention it", others.length, cHtml)}`;
+  bindFolds(body);
+  const on = (act, fn) => $$(`[data-act="${act}"]`, body).forEach((b) => b.onclick = fn);
+  on("discuss", () => discussThis(id));
+  on("maturity", () => setMaturity(x));
+  on("ground", () => groundCheck(id));
+  on("invalidate", () => invalidate(id));
+  on("revise-insight", () => reviseInsight(x));
+  on("withdraw", () => withdrawObj(x));
+  on("restore", () => restoreObj(x));
+  on("undo", () => undoAccept(x));
+  $$("[data-cand] [data-act=review]", body).forEach((b) => b.onclick = () => reviewRevision(b.closest(".card").dataset.cand));
+  $$("[data-cand] [data-act=reject-cand]", body).forEach((b) => b.onclick = async () => {
+    const cid = b.closest(".card").dataset.cand;
+    const r = await ask(`Reject ${cid}`, field("Why not?", "reason", "", "kept, so future distills won't propose this again", 3), "Reject");
     if (!r) return;
-    try { const n = await api("POST", `/api/insights/${x.id}/revise`, r); toast(`Revised as ${n.id}.`); } catch (err) { fail(err); }
-    loadOverview();
+    try { await api("POST", `/api/candidates/${cid}/reject`, r); toast(`Rejected ${cid}.`); } catch (err) { fail(err); }
+    after();
   });
-  $$('[data-act="abandon"]', body).forEach((b) => b.onclick = async () => {
-    const id = b.closest(".card").dataset.id;
-    const r = await ask(`Abandon ${id}`, `<p>Assumptions derived from it will be flagged for re-examination.</p>` + field("Reason", "reason", "", "", 3), "Abandon");
-    if (!r) return;
-    try { await api("POST", `/api/insights/${id}/abandon`, r); } catch (err) { fail(err); }
-    loadOverview(); loadInbox();
-  });
-  $$('[data-act="maturity"]', body).forEach((b) => b.onclick = async () => {
-    const id = b.closest(".card").dataset.id, x = o.questions.find((y) => y.id === id);
-    const r = await ask(`Maturity of ${id}`, `<p><b>Formalized</b> means the question has a measurable definition. Incubation only starts from a formalized main question — without one, thinking with search switched off just spins.</p>` +
-      select("Maturity", "maturity", { vague: "Vague", scoped: "Scoped — boundaries are clear", formalized: "Formalized — measurable definition" }, x.maturity), "Save");
-    if (!r) return;
-    try { await api("POST", `/api/questions/${id}/maturity`, r); toast(`${id} is now ${r.maturity}.`); } catch (err) { fail(err); }
-    loadOverview(); loadMode();
-  });
-  $$('[data-act="chain"]', body).forEach((b) => b.onclick = () => go(`#/reading/${b.closest(".card").dataset.id}`));
-  $$('[data-act="ground"]', body).forEach((b) => b.onclick = async () => {
-    const id = b.closest(".card").dataset.id;
-    const r = await ask(`Ground check ${id}?`, `<p>A separate task searches for prior work and the strongest counter-evidence, then annotates ${id}. It never rewrites it. It can't see who proposed ${id}.</p>`, "Queue it");
-    if (!r) return;
-    try { await api("POST", "/api/grounding", { target: id }); toast(`Ground check for ${id} queued.`); } catch (err) { fail(err); }
-  });
-  $$('[data-act="invalidate"]', body).forEach((b) => b.onclick = async () => {
-    const id = b.closest(".card").dataset.id;
-    const r = await ask(`Invalidate ${id}`, `<p>Everything linked to it goes to the Inbox for re-examination. Nothing is changed automatically.</p>` +
-      field("Why doesn't this premise hold anymore?", "reason", "", "", 4), "Invalidate");
-    if (!r) return;
-    try {
-      const x = await api("POST", `/api/assumptions/${id}/invalidate`, r);
-      toast(x.reviews.length ? `Invalidated. ${x.reviews.length} linked object(s) need re-examination.` : "Invalidated. Nothing depended on it.", x.reviews.length ? "warn" : "info");
-    } catch (err) { fail(err); }
-    loadOverview(); loadInbox();
-  });
+  $$(".card[data-review] button", body).forEach((b) => b.onclick = () => reviewAct(b.dataset.act, x.reviews.find((r) => r.id === b.closest(".card").dataset.review)));
 }
 
 $$("#research-chips a").forEach((a) => a.onclick = () => {
@@ -995,7 +1306,7 @@ function ideaCard(i, compact) {
   const triage = ["shortlisted", "screened_out", "grounding"].includes(i.status);
   const stTag = { shortlisted: "insight", screened_out: "warn", grounding: "plain", accepted: "hypothesis", rejected: "plain" }[i.status] || "plain";
   return `<div class="card idea ${i.status === "rejected" ? "dim" : ""}" data-idea="${i.id}">
-    <div class="card-top"><span class="tag ${stTag}">${I_STATUS[i.status] || i.status}</span><span class="id">${i.id}</span>
+    <div class="card-top"><span class="tag ${stTag}">${I_STATUS[i.status] || i.status}</span><a class="id idlink" href="#/obj/${i.id}">${i.id}</a>
       <span class="tag ${n >= 3 ? "warn" : "plain"}" title="Premises this idea invented along the way. The fewer, the more it stands on what we already know.">${n} invented premise${n === 1 ? "" : "s"}</span>
       ${g ? `<span class="tag ${g.verdict === "contradicted" ? "warn" : "plain"}">${I_VERDICT[g.verdict] || g.verdict}</span>` : ""}
       ${sg.hidden_premises ? `<span class="tag warn" title="The outside check found premises it relies on but didn't list">+${sg.hidden_premises} unlisted premise(s)</span>` : ""}
@@ -1003,11 +1314,11 @@ function ideaCard(i, compact) {
       <span>round ${esc(i.round || "?")} · from ${esc(i.foundation)} · chain ${esc(i.chain)}</span></div>
     <div class="statement md">${md(i.statement)}</div>
     <dl><dt>Wrong if</dt><dd>${esc(i.falsifier)}</dd>
-      ${i.challenges.length ? `<dt>Challenges</dt><dd>${esc(i.challenges.join(", "))} — ${esc(i.challenge_note)}</dd>` : ""}
-      ${i.builds_on.length || i.relates_to.length ? `<dt>Relation</dt><dd>${esc([...i.builds_on, ...i.relates_to].join(", "))}${i.relation && i.relation !== "（未写。）" ? " — " + esc(i.relation) : ""}</dd>` : ""}
-      ${i.promoted_to.length ? `<dt>Became</dt><dd>${esc(i.promoted_to.join(", "))}</dd>` : ""}
+      ${i.challenges.length ? `<dt>Challenges</dt><dd>${idl(i.challenges)} — ${linkIds(esc(i.challenge_note))}</dd>` : ""}
+      ${i.builds_on.length || i.relates_to.length ? `<dt>Relation</dt><dd>${idl([...i.builds_on, ...i.relates_to])}${i.relation && i.relation !== "（未写。）" ? " — " + linkIds(esc(i.relation)) : ""}</dd>` : ""}
+      ${i.promoted_to.length ? `<dt>Became</dt><dd>${idl(i.promoted_to)}</dd>` : ""}
       ${i.rejected_because ? `<dt>Rejected because</dt><dd>${esc(i.rejected_because)}</dd>` : ""}</dl>
-    ${n ? `<div class="premises"><div class="flabel">Premises it invented</div><ol>${i.premises.map((p) => `<li><span class="id">${p.id}</span> ${esc(p.text)}${p.status !== "unexamined" ? ` <span class="meta">(${esc(p.status)})</span>` : ""}</li>`).join("")}</ol></div>` : ""}
+    ${n ? `<div class="premises"><div class="flabel">Premises it invented</div><ol>${i.premises.map((p) => `<li><a class="id idlink" href="#/obj/${p.id}">${p.id}</a> ${esc(p.text)}${p.status !== "unexamined" ? ` <span class="meta">(${esc(p.status)})</span>` : ""}</li>`).join("")}</ol></div>` : ""}
     ${compact ? "" : `${(i.grounding || []).map((x) => `<details class="why" ${i.status !== "grounding" ? "open" : ""}><summary>Outside check ${x.id} · ${I_VERDICT[x.verdict] || x.verdict}${x.refs.length ? " · " + esc(x.refs.join(", ")) : ""}</summary><div class="md small">${md(x.note)}</div></details>`).join("")}
     <details class="why"><summary>How it got here</summary><div class="md small">${md(i.reasoning)}</div><div class="meta"><a href="#" data-chain="${esc(i.chain)}">Read the whole chain ${esc(i.chain)} →</a></div></details>`}
     ${triage && !compact ? `<div class="acts"><button class="btn small" data-act="take">Take it…</button>
@@ -1158,7 +1469,7 @@ async function renderReading() {
 function evHtml(e) {
   const p = e.paper || {};
   return `<div class="ev ${e.stance}">
-    <div class="head"><span class="tag ${e.stance}">${STANCE[e.stance] || e.stance}</span><span class="id">${e.id}</span>
+    <div class="head"><span class="tag ${e.stance}">${STANCE[e.stance] || e.stance}</span><a class="id idlink" href="#/obj/${e.id}">${e.id}</a>
       <span>${e.strength}${e.basis === "abstract" ? " · abstract only" : ""}</span>
       <span>· <a href="#/reading/${p.id}">${p.id}</a> ${esc(p.title || "")} ${p.year ? `(${esc(p.year)})` : ""} ${paperRef(p)}</span>
       <span>· ${esc(fmtv(e.locator))}</span>${e.task ? `<span>· by ${e.task}</span>` : ""}</div>
@@ -1319,7 +1630,9 @@ function connect() {
       case "reply_delta": if (d.discussion === S.ds) { S.streaming += d.text; renderStream(); } break;
       case "turn": if (d.discussion === S.ds) S.streaming = ""; soon("ds", () => { refreshDs(); loadDiscussions(); }); break;
       case "task": soon("task", () => { refreshDs(); loadDiscussions(); loadShift(); if (S.page === "system") renderSystem(); if (S.page === "reading") renderReading(); if (S.page === "ideas") renderIdeas(); loadMode(); }); break;
-      case "candidates": case "state": soon("inbox", loadInbox); soon("ov", loadOverview); if (S.page === "ideas") soon("ideas", renderIdeas, 400); break;
+      case "candidates": case "state": soon("inbox", loadInbox); soon("ov", loadOverview); if (S.page === "ideas") soon("ideas", renderIdeas, 400);
+        if (S.page === "obj" && S.objId && !$("#dlg").open) soon("obj", () => renderObject(S.objId), 300);
+        soon("dsl", loadDiscussions, 300); break;
       case "quota": renderQuota(d); break;
       case "mode": renderMode(d); soon("ov", loadOverview); break;
       case "shift": renderShift(d); if (S.page === "system") renderSystem(); break;

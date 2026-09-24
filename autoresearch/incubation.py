@@ -218,7 +218,7 @@ def foundation_body(store):
                                                    or "（暂无。）"))
 
     unc = [f"- **{m['id']}** · {m.get('importance')}：{n(b.strip())}"
-           for m, b in store.list("uncertainty") if m.get("status") != "resolved"]
+           for m, b in store.list("uncertainty") if m.get("status") not in ("resolved", "withdrawn")]
     from . import reviews
     rv = [f"- {r['target']}（由 {r['trigger']} 被推翻而待重新审视）" for r in reviews.list_all(store, "open")]
     parts.append("## 7. 未决不确定性与待重新审视\n\n" + ("\n".join(unc + rv) or "（暂无。）"))

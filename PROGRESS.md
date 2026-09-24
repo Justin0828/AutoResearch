@@ -163,6 +163,34 @@ daemon / runner / briefing / MCP server / 前端的相应扩展。测试 72 个�
 - **Phase 2.6 设计已写入 `DESIGN.md` §5.15（2026-09-24，待实现）**：用户真实使用一轮后提出——对已确认对象发起聚焦讨论、在讨论中原地修订（同级打磨也算进展，id 不变、证据保留）、
   对象详情页（点击跳转 + 折叠区块）、讨论改名 / 分组 / 置顶、对象撤下与撤回确认（§5.15.6）。必须兼容当前真实 State（DS001 一场讨论、C001–C007 均 pending，尚无已确认对象）。
 
+## Phase 2.6 实现（2026-09-24，分支 `phase2.6`，待用户确认）
+
+- **后端**：新模块 `objects.py`——反向索引（`Index`，每次按需扫描 State，不存储）、原地修订（`apply_revision`：一个事务里改写对象
+  revision+1 / revised、写 `Decision kind=revision`（正文含修订前全文与字段）、provenance 追加 `revisions`、候选回填 `promoted_to`）、
+  撤下 / 恢复（写 `Decision kind=curation`，对象记 `withdrawn_by` / `withdrawn_from`，不对账、不触发 Review）、撤回确认（唯一的真删）。
+  `candidates` 支持 `kind: revision`（propose 时 `base_revision` 必须等于当前版本；确认时过时 → `StaleRevision` → HTTP 409 带回当前版本，前端显式 force），
+  普通候选确认时保留 `relates_to`。`record_evidence` 自动记 `revision`。讨论 frontmatter 加 `focus` / `group` / `pinned`，经 `/api/discussions/<ds>/meta`
+  与 `/api/discussion-groups/rename` 写。briefing：聚焦讨论的 discuss / distill 在第 1 章后加 2b（对象全文、修订史、反向索引、其他聚焦讨论的摘要），
+  其他章节对该对象只给指针；撤下的对象不进正文，末尾各列一行。discuss / distill 协议加修订规则与成熟度定义（“不以提升成熟度为目标”）。
+  schema：question.status、uncertainty 的 withdrawn、decision kind=revision、候选 kind=revision / target、通用可选 `relates_to` `withdrawn_by` `revision`；
+  hypothesis 的 abandoned 不再要求 evidence 非空；讨论的 focus 须存在；引用已撤下对象的 pending 候选给警告。自演进基本盘排除 withdrawn 的不确定性
+  （retired / abandoned 本来就不进）；验证批次对它们本来就拒收。
+- **前端**：对象详情页 `#/obj/<id>`（区块折叠 + 计数，默认只展开“待确认的修订”，折叠状态存 localStorage 且全部 try/catch）；Research 页改紧凑行；
+  讨论正文、候选、证据、Ideas 里的对象 id 自动成为链接；修订确认对话框新旧对照、可改文字、question 在此选成熟度、改证伪条件且已有证据时显式警告、
+  过时候选需“Confirm anyway”；Inbox 修订卡与 “Accept & discuss”；讨论列表 置顶 → 分组（可折叠）→ 未分组，聚焦讨论带目标 id 标签；
+  撤下 / 恢复 / 撤回确认按钮，撤回不可用时说明被谁用到（英文，由后端给结构化原因）。
+- **实现中对 §5.15 的补充**（已写回 DESIGN §5.15.3 / §5.15.6）：`base_revision` 在提交时就必须等于当前版本；修订候选只出自讨论；
+  insight 修订候选确认时新 IN 的 provenance 记候选的 origin；被撤回的 id 不复用（Decision 记 `undid`，`next_id` 跳过）；
+  “被用到”= 任何对象 / 候选 / 决策的任何字段引用了它、讨论聚焦它、证据指向它（出处讨论与产生它的候选除外）——所以撤下再恢复过的对象也不能再撤回。
+- **测试 118 个全过**（新增 `tests/test_phase26.py` 22 个；假 claude 加 `distill_revise` 模式，回复里带 `[聚焦:<id>]` 标记）。
+- **兼容验证（真实 State 的 scratch 副本，假 claude，端口 8799，`~/autoresearch` 未动）**：新代码下校验 0 错误 0 警告；DS001 继续对话正常；
+  C001–C007 全部照常确认（C002 / C003 归属 unclear，选定后确认），确认后都带 `relates_to: [Q001]`。
+  在副本上用 jsdom 跑真实 `app.js` 走完：Q002 → Discuss this（DS002，briefing 含 2b）→ 蒸馏出修订候选 C008 → 对话框确认 → Q002 v2，
+  修订史、DS002 / DS001、Q001 关联都在；Q003 撤回确认 → C002 回 pending，再确认得 Q006（不复用 Q003）；Q004（被 DS003 聚焦）撤回被拒并列出原因；
+  Q004 撤下 → Research 折进 Withdrawn → 恢复；讨论改名 / 分组 / 置顶 / 组改名；两条同基版本的修订先确认一条，另一条走“Confirm anyway”→ v3。全程无 JS 错误。
+  没有跑真实 claude：修订候选能否被真实 agent 产出，留给用户在真实使用中观察。
+- **待用户**：浏览器里过一遍（对象页、修订对话框、讨论列表）；后端有改动，需要重启 `./ar serve`。
+
 ## 已知缺口（Phase 2 之后）
 
 - 挂起 → 上传 → 续跑待真实链路验证一次（见验收 3）。

@@ -5,7 +5,7 @@ summary.md 只由 update_discussion_summary 写，covers_through 标明摘要覆
 """
 import re
 
-from . import frontmatter
+from . import frontmatter, schema
 from .store import now, today
 
 _TURN = re.compile(r"^<!-- turn (\d+) (human|ai) (\S+) -->$", re.M)
@@ -20,15 +20,81 @@ def rel_summary(ds):
     return f"discussions/{ds}/summary.md"
 
 
-def create(store, title, actor="human"):
-    with store.tx("discussion: 新建讨论", actor=actor) as tx:
+def focus_title(store, focus):
+    """聚焦讨论的默认标题：<id> · <陈述首行截断>（§5.15.2）。"""
+    meta, body = store.read_obj(focus)
+    first = next((l.strip() for l in (body or "").splitlines()
+                  if l.strip() and not l.startswith("#") and not l.strip().startswith("（")), "")
+    return f"{focus} · {first[:40]}{'…' if len(first) > 40 else ''}"
+
+
+def create(store, title, actor="human", focus=None):
+    focus = (focus or "").strip() or None
+    if focus:
+        k = schema.kind_of_id(focus)
+        if not k or k.type not in schema.FOCUSABLE or not store.exists(focus):
+            raise ValueError(f"{focus} 不存在，或不是可聚焦的对象（问题 / 前提 / 假设 / 不确定性 / 理解）")
+        title = title or focus_title(store, focus)
+    title = title or "未命名讨论"
+    with store.tx("discussion: 新建讨论" + (f"（聚焦 {focus}）" if focus else ""), actor=actor) as tx:
         ds = store.next_id("DS", "discussions")
         tx.write(rel_transcript(ds), frontmatter.dump(
-            {"id": ds, "type": "discussion", "title": title or "未命名讨论",
-             "status": "open", "created": today()},
-            f"# {title or '未命名讨论'}\n"))
+            {"id": ds, "type": "discussion", "title": title, "status": "open",
+             "focus": focus, "created": today()},
+            f"# {title}\n"))
         tx.note = ds
     return ds
+
+
+def _pinned(v):
+    return str(v).lower() == "true"
+
+
+def set_meta(store, ds, title=None, group=None, pinned=None):
+    """改名 / 分组 / 置顶（§5.15.5）：只改 frontmatter，不回改转录正文里的旧标题。"""
+    with store.tx(f"discussion {ds}: 整理", actor="human") as tx:
+        text = store.read(rel_transcript(ds))
+        if text is None:
+            raise KeyError(ds)
+        meta, body = frontmatter.parse(text)
+        if title is not None:
+            if not title.strip():
+                raise ValueError("标题不能为空")
+            meta["title"] = title.strip()
+        if group is not None:
+            g = " ".join(group.split())
+            if g:
+                meta["group"] = g
+            else:
+                meta.pop("group", None)
+        if pinned is not None:
+            if _pinned(pinned) or pinned is True:
+                meta["pinned"] = True
+            else:
+                meta.pop("pinned", None)
+        tx.write(rel_transcript(ds), frontmatter.dump(meta, body))
+        tx.note = "、".join(k for k, v in (("改名", title), ("分组", group), ("置顶", pinned)) if v is not None)
+
+
+def rename_group(store, old, new):
+    """分组只是标签：重命名 = 批量改写；new 为空 = 删除分组（组内讨论回到未分组）。"""
+    old, new = " ".join((old or "").split()), " ".join((new or "").split())
+    if not old:
+        raise ValueError("要改的分组名不能为空")
+    hit = []
+    with store.tx(f"discussion: 分组「{old}」" + (f"改名为「{new}」" if new else "解散"), actor="human") as tx:
+        for p in sorted((store.state / "discussions").glob("DS*/transcript.md")):
+            meta, body = frontmatter.parse(p.read_text(encoding="utf-8"))
+            if (meta or {}).get("group") != old:
+                continue
+            if new:
+                meta["group"] = new
+            else:
+                meta.pop("group", None)
+            tx.write(p.relative_to(store.state), frontmatter.dump(meta, body))
+            hit.append(meta["id"])
+        tx.note = ", ".join(hit)
+    return hit
 
 
 def list_all(store):
@@ -37,7 +103,7 @@ def list_all(store):
     for p in sorted(d.glob("DS*/transcript.md")) if d.is_dir() else []:
         meta, body = frontmatter.parse(p.read_text(encoding="utf-8"))
         ts = parse_turns(body)
-        out.append({**(meta or {}), "turns": len(ts),
+        out.append({**(meta or {}), "turns": len(ts), "pinned": _pinned((meta or {}).get("pinned")),
                     "last_ts": ts[-1]["ts"] if ts else None,
                     "awaiting_reply": bool(ts) and ts[-1]["role"] == "human",
                     "undistilled_human": undistilled_human(store, meta["id"], ts)})

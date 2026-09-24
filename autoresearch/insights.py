@@ -50,8 +50,10 @@ def create(store, statement, firmness, basis=None, basis_note="", informs=None, 
 
 
 def revise(store, iid, statement, firmness, note="", basis=None, basis_note=None,
-           informs=None, change_mind=None):
-    """修订：新建一条取代旧的；旧的根基与影响默认继承，并把旧理解本身也列为根基。"""
+           informs=None, change_mind=None, origin="human", source=None, discussion=None, turns=None):
+    """修订：新建一条取代旧的；旧的根基与影响默认继承，并把旧理解本身也列为根基。
+
+    经修订候选确认时（§5.15.3）origin / source 记候选的，而不是固定 human。"""
     old, obody = store.read_obj(iid)
     if old is None or old.get("type") != "insight":
         raise KeyError(f"{iid} 不存在")
@@ -67,8 +69,11 @@ def revise(store, iid, statement, firmness, note="", basis=None, basis_note=None
         _write(tx, store, new, statement, firmness, basis, basis_note, informs, change_mind,
                f"\n## 由来\n\n修订自 {iid}。{(note or '').strip()}\n")
         prev = store.provenance().get(iid) or {}
-        tx.set_provenance(new, {"origin": "human", "source": iid,
-                                "note": f"修订自 {iid}（原提出者 {prev.get('origin', '未知')}）"})
+        rec = {"origin": origin, "source": source or iid,
+               "note": f"修订自 {iid}（原提出者 {prev.get('origin', '未知')}）"}
+        if discussion:
+            rec.update(discussion=discussion, turns=turns or [])
+        tx.set_provenance(new, rec)
         old.update(status="superseded", superseded_by=new)
         tx.write_obj(iid, old, obody.rstrip() + f"\n\n## 被取代（{today()}）\n\n由 {new} 取代。"
                      f"{(note or '').strip()}\n")

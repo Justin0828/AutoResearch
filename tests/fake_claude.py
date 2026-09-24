@@ -78,6 +78,9 @@ class Mcp:
 
 def main():
     mode = os.environ.get("FAKE_MODE", "reply")
+    override = os.path.join(os.environ.get("AR_ROOT", ""), "run", "fake_mode")
+    if os.environ.get("AR_ROOT") and os.path.exists(override):   # 端到端手测时不重启 serve 就能切模式
+        mode = open(override).read().strip() or mode
     prompt = arg("-p") or ""
     emit({"type": "system", "subtype": "init", "tools": (arg("--tools") or "").split(","),
           "session_id": arg("--session-id")})
@@ -95,7 +98,8 @@ def main():
         reply = ("我接着上次的讨论说。"
                  + (f"[交接:{handoff.group(1)}]" if handoff else "[交接:无]")
                  + (f"[摘要至:{summ.group(1)}:{summ.group(2)[:40]}]" if summ else "[摘要:无]")
-                 + ("[补答]" if "被切断" in prompt else ""))
+                 + ("[补答]" if "被切断" in prompt else "")
+                 + (f"[聚焦:{f.group(1)}]" if (f := re.search(r"## 2b\. 聚焦对象：(\S+?)（", brief)) else ""))
         text(reply[: len(reply) // 2])
         if mode == "sleep":
             time.sleep(120)
@@ -109,6 +113,22 @@ def main():
 
     if mode == "judge" or (mode == "reply" and "证据评判" in (arg("--append-system-prompt") or "")):
         judge(brief, prompt)
+        return
+
+    if mode == "distill_revise":
+        # 聚焦讨论的蒸馏：针对聚焦对象提一条修订候选（同级打磨，成熟度只作建议）
+        m = re.search(r"讨论 (DS\d+) 的第 (\d+)–(\d+) 轮", prompt)
+        ds, lo, hi = m.group(1), int(m.group(2)), int(m.group(3))
+        f = re.search(r"## 2b\. 聚焦对象：(\S+?)（(\w+)，第 (\d+) 版）", brief)
+        mcp = Mcp()
+        if f:
+            mcp.call("propose_candidate", kind="revision", target=f.group(1), base_revision=int(f.group(3)),
+                     statement=os.environ.get("FAKE_REVISION", "打磨后的表述：边界更清楚了。"),
+                     rationale="第 %d 轮把“不研究什么”说清楚了，这一版比上一版边界更明确。" % lo,
+                     origin="human", source=ds, turns=[lo], maturity="vague")
+        mcp.call("update_discussion_summary", discussion_id=ds,
+                 summary=f"打磨 {f.group(1) if f else '?'}。覆盖到第 {hi} 轮。", covers_through=hi)
+        result("提了 1 条修订。")
         return
 
     if mode in ("distill", "distill_sleep"):

@@ -174,6 +174,7 @@ autoresearch/          代码
   briefing.py          Briefing / Handoff 装配器（§5.2）
   library.py           文献库：元数据核实、全文与段落锚点、引文校验（§5.5）
   papers.py            论文 / 证据 / 迁移 / 审视 / 接地 / 全文请求的状态操作（§5.5–5.8）
+  objects.py           对象的持续打磨：反向索引、原地修订、撤下 / 恢复、撤回确认（§5.15）
   incubation.py        想法自演进：入场闸门、基本盘、record_idea 的闸门、推演记录、停止与交卷、分诊（§5.9–5.14）
   modes.py, planner.py 交棒与收回；验证批次与夜间预习的机械规划（§5.7）
   observe.py           M8 观察视图：在读什么、为什么、证据链

@@ -18,6 +18,9 @@ TARGET_FIELDS = {
     "question": ("maturity",),
     "uncertainty": ("importance",),
     "insight": ("firmness", "basis", "basis_note", "informs", "change_mind"),
+    # 修订（§5.15.3）：target / base_revision 另存，这里是按目标类型可改的字段（由 objects.REVISABLE 再筛）
+    "revision": ("maturity", "relied_on_by", "fragile", "falsifier", "validation", "importance",
+                 "firmness", "change_mind"),
 }
 LIST_FIELDS = ("relied_on_by", "basis", "informs")
 
@@ -66,13 +69,38 @@ def as_dict(meta, body):
 
 def list_all(store, status=None):
     out = [as_dict(m, b) for m, b in store.list("candidate")]
-    return [c for c in out if status is None or c.get("status") == status]
+    out = [c for c in out if status is None or c.get("status") == status]
+    revs = {}
+    for c in out:
+        if c.get("kind") == "revision" and c.get("target"):
+            if c["target"] not in revs:
+                tm, _ = store.read_obj(c["target"])
+                revs[c["target"]] = tm
+            tm = revs[c["target"]]
+            c["target_revision"] = schema.revision_of(tm) if tm else None
+            c["target_type"] = (tm or {}).get("type")
+            # 同一目标的另一条修订先被确认 → 这条“基于旧版本”，确认需显式 force（§5.15.3）
+            c["stale"] = bool(tm) and c.get("status") == "pending" and \
+                str(c.get("base_revision")) != str(c["target_revision"])
+    return out
+
+
+def withdrawn_refs(store, ids):
+    """引用了哪些已撤下的对象（只警告，§5.15.6）。"""
+    out = []
+    for r in ids:
+        m, _ = store.read_obj(r) if schema.kind_of_id(r) else (None, None)
+        if m and schema.is_withdrawn(m):
+            out.append(r)
+    return out
 
 
 def validate_proposal(store, kind, statement, rationale, origin, origin_note, source,
-                      turns, fields):
-    if kind not in TARGET_TYPE:
-        raise ValueError(f"kind 必须是 {sorted(TARGET_TYPE)} 之一，收到 '{kind}'。")
+                      turns, fields, target=None, base_revision=None, at_propose=True):
+    if kind not in TARGET_TYPE and kind != "revision":
+        raise ValueError(f"kind 必须是 {sorted(TARGET_TYPE) + ['revision']} 之一，收到 '{kind}'。")
+    if kind == "revision" and schema.TASK_ID.match(source or ""):
+        raise ValueError("修订候选只出自讨论：评判类任务的产出是证据与状态迁移，不提修订。")
     if not statement.strip():
         raise ValueError("statement 不能为空。")
     if not rationale.strip():
@@ -100,6 +128,11 @@ def validate_proposal(store, kind, statement, rationale, origin, origin_note, so
         bad = [t for t in turns if t not in valid]
         if bad:
             raise ValueError(f"turns 中 {bad} 不是 {source} 的轮次（现有 1..{max(valid or [0])}）。")
+    if kind == "revision":
+        from . import objects
+        if at_propose:
+            objects.check_revision(store, target, base_revision, statement, fields, at_propose=True)
+        return
     for f in schema.CANDIDATE_FIELDS[kind]:
         if not fields.get(f):
             raise ValueError(_missing_hint(kind, f))
@@ -139,7 +172,8 @@ def _missing_hint(kind, f):
 
 
 def propose(store, *, kind, statement, rationale, origin, source, turns,
-            origin_note="", relates_to=None, task=None, actor="human", **fields):
+            origin_note="", relates_to=None, task=None, actor="human", target=None,
+            base_revision=None, **fields):
     turns = [int(t) for t in _as_list(turns)]
     fields = {k: v for k, v in fields.items() if v not in (None, "", [])}
     for f in LIST_FIELDS:
@@ -148,8 +182,14 @@ def propose(store, *, kind, statement, rationale, origin, source, turns,
     if kind == "insight" and actor == "agent" and not fields.get("basis"):
         raise ValueError("AI 提出的理解，basis 必须指向 State 里真实存在的对象（讨论、证据、假设、论文……），"
                          "说不出根基的“洞见”不收。")
+    if kind == "revision" and base_revision in (None, ""):
+        base_revision = 1 if not target or not store.exists(target) else \
+            schema.revision_of(store.read_obj(target)[0])
+        if actor == "agent":
+            raise ValueError(f"修订候选必须给 base_revision：起草时 {target} 的版本号"
+                             f"（当前是第 {base_revision} 版）。")
     validate_proposal(store, kind, statement, rationale, origin, origin_note, source,
-                      turns, fields)
+                      turns, fields, target=target, base_revision=base_revision)
     rel = _as_list(relates_to)
     missing = [r for r in rel if not store.exists(r)]
     if missing:
@@ -159,6 +199,8 @@ def propose(store, *, kind, statement, rationale, origin, source, turns,
         meta = {"id": cid, "type": "candidate", "kind": kind, "status": "pending",
                 "origin": origin, "origin_note": origin_note.strip() or None,
                 "source": source, "turns": turns, "relates_to": rel or None}
+        if kind == "revision":
+            meta.update(target=target, base_revision=int(base_revision))
         for f in TARGET_FIELDS[kind]:
             if f in fields:
                 meta[f] = fields[f]
@@ -180,6 +222,9 @@ def update(store, cid, changes, actor="human"):
     s = _sections(body)
     statement = changes.pop("statement", s.get("陈述", ""))
     rationale = changes.pop("rationale", s.get("理由", ""))
+    if "kind" in changes and (changes["kind"] == "revision") != (meta["kind"] == "revision"):
+        if changes["kind"] != meta["kind"]:
+            raise ValueError("修订候选与新建候选不能互相改类别：修订针对已有对象，新建产生新对象。")
     for k, v in changes.items():
         if k in ("kind", "origin", "origin_note", *sum(TARGET_FIELDS.values(), ())):
             meta[k] = _as_list(v) if k in LIST_FIELDS else v
@@ -188,13 +233,17 @@ def update(store, cid, changes, actor="human"):
         tx.write_obj(cid, meta, _body(statement, rationale))
 
 
-def accept(store, cid, origin=None, changes=None, actor="human"):
-    """确认候选 → 正式对象。返回新对象 id。"""
+def accept(store, cid, origin=None, changes=None, actor="human", force=False, maturity=None):
+    """确认候选 → 正式对象。返回新对象 id（修订候选返回被修订的对象 id，§5.15.3）。"""
     if changes:
         update(store, cid, dict(changes), actor=actor)
     meta, body = load(store, cid)
     if meta["status"] != "pending":
         raise ValueError(f"{cid} 已是 {meta['status']}。")
+    if meta["kind"] == "revision":
+        from . import objects
+        return objects.apply_revision(store, cid, origin=origin, force=force, maturity=maturity,
+                                      actor=actor)
     origin = origin or meta.get("origin")
     if origin not in ("human", "ai"):
         raise ValueError("归属不明（unclear）的候选必须由人选定 origin（human / ai）后才能确认。")
@@ -231,6 +280,9 @@ def accept(store, cid, origin=None, changes=None, actor="human"):
                        change_mind=fields.get("change_mind"))
         if ttype == "assumption" and fields.get("derived_from"):
             obj["derived_from"] = fields["derived_from"]
+        rel = [r for r in _as_list(meta.get("relates_to")) if store.exists(r)]
+        if rel:                               # 确认后保留关联（§5.15.4）
+            obj["relates_to"] = rel
         obj["created"] = today()
         # 正式对象只写中性化的陈述；理由（常带“研究者认为 / AI 提议”）留在候选里，
         # 评判类任务读不到候选（§5.6 第 3 层）

@@ -1089,6 +1089,11 @@ v1.4 的缺口：讨论只能**新建**对象（确认一条 question 候选得�
 | insight | 走既有的 supersede 语义（`insights.revise`，产生新 IN 并取代旧的，§M1 已定），不做原地修订 | — |
 
 校验：目标存在且可修订（insight 须 active；assumption 非 invalidated；hypothesis 非 abandoned）；修订后与当前版本不能完全相同。
+实现补充（2026-09-24）：`base_revision` 在**提交**时就必须等于对象当前版本（agent 读的是当前 briefing，对不上说明它看的是旧状态，直接拒绝并告诉它当前版本）；
+“基于旧版本”只会发生在候选等待确认期间别的修订先被确认的情形。修订候选只出自讨论（`source` 为 DS###），评判类任务不提修订——它们的产出是证据与状态迁移。
+insight 的修订候选确认时调用 `insights.revise`，新 IN 的 provenance 记候选的 origin 与出处（而不是固定 human）。
+修订 Decision 的 frontmatter 另记 `candidate` `from_revision` `to_revision`，对象页按它们列修订史；正文的“修订前”一节是重建旧版本的唯一依据，不依赖 git。
+对象正文里“陈述”之后的状态史各节（`## 提升` `## 状态变更` `## 撤下`……）修订时原样保留，只替换陈述部分。
 
 **确认**（只有人能确认）：
 
@@ -1133,7 +1138,7 @@ v1.4 里能让对象离场的只有“它错了”一类操作（assumption 的 
 |---|---|---|
 | question | `status: withdrawn` | 主问题（`project.md` 的 `main_question`）不能撤下；要换主问题先改指向 |
 | assumption | `retired`（既有状态） | 与 Invalidate 区分：retired = 不再依赖它，invalidated = 它不成立 |
-| hypothesis | `abandoned`（既有状态） | 人的这条后端通道是 `transition_hypothesis` 之外唯一允许的状态改动，必须写 Decision |
+| hypothesis | `abandoned`（既有状态） | 人的这条后端通道是 `transition_hypothesis` 之外唯一允许的状态改动，必须写 Decision；校验器对 abandoned 不要求 evidence 非空（放弃是方向决定，不是证据判定） |
 | uncertainty | `withdrawn` | 与 resolved 区分：resolved 是被消除了，withdrawn 是不再关心 |
 | insight | 沿用既有的 Abandon | 行为不变（派生的前提会进 Review，因为它们确实失去了根基） |
 
@@ -1147,6 +1152,8 @@ v1.4 里能让对象离场的只有“它错了”一类操作（assumption 的 
 且没有修订过（`revision` 缺失或为 1）。满足时后端删除对象文件与其 provenance 条目，候选退回 `pending`（清掉 `promoted_to` 与 `decided`），
 写一条 `Decision`（`kind: curation`）记录撤回。条件不满足时按钮不可用，并说明是被谁用到了——这时应该用撤下。
 这是整个系统里**唯一的真删**：没有东西依赖它，删掉不断任何追溯链；删除本身仍经 Decision 和 git 留痕。
+被撤回的 id **不复用**（实现补充）：Decision 的 frontmatter 记 `undid: <id>`，分配新 id 时跳过它——否则讨论原文、摘要、git 历史里提到的旧 id 会指向一个不相干的新对象。
+“被用到”的判定就是反向索引：任何对象 / 候选 / 决策的任何字段引用了它、有讨论聚焦它、有证据指向它；它自己的出处讨论与产生它的那条候选不算。
 
 #### 5.15.7 兼容
 
