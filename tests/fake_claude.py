@@ -6,6 +6,9 @@ sleep          吐一半回复后挂住，等着被 SIGKILL
 exhaust        rate_limit_event status=rejected，随后 is_error 的 result
 distill        真的启动 MCP server，提交一个候选并更新摘要
 distill_sleep  提交一个候选、记一条 checkpoint 后挂住
+distill_resolve 聚焦讨论的蒸馏：提一条 insight 候选，再提一条引用它（C###）结掉聚焦问题的 resolve 候选
+整理任务（协议里有“整理（Tidy up）”时自动进入）：把第 10 章的前两条理解提成合并候选；
+               FAKE_TIDY=blank（或 run/fake_mode 为 tidy_blank）交白卷
 judge          按 briefing 里的任务种类驱动 Phase 2 的 MCP 工具（检索 / 精读 / 评估 / 扫描 / 接地）。
                FAKE_BAD_EDIT=1 时精读任务会越界改论文的 title（应被 runner 回滚）
                对 Idea 的接地（ground_idea）：FAKE_GVERDICT=contradicted 时记一条反驳证据再下结论
@@ -92,6 +95,10 @@ def main():
         return
     rate()
 
+    if "整理（Tidy up）" in (arg("--append-system-prompt") or ""):
+        tidy(brief, blank=mode == "tidy_blank" or os.environ.get("FAKE_TIDY") == "blank")
+        return
+
     if mode in ("reply", "sleep"):
         handoff = re.search(r"## 2\. 上一班交接（(HO\d+)", brief)
         summ = re.search(r"### 第 1–(\d+) 轮摘要\n\n(.+)", brief)
@@ -131,6 +138,23 @@ def main():
         result("提了 1 条修订。")
         return
 
+    if mode == "distill_resolve":
+        m = re.search(r"讨论 (DS\d+) 的第 (\d+)–(\d+) 轮", prompt)
+        ds, lo, hi = m.group(1), int(m.group(2)), int(m.group(3))
+        f = re.search(r"## 2b\. 聚焦对象：(Q\d+)（", brief)
+        mcp = Mcp()
+        out = mcp.call("propose_candidate", kind="insight", statement="CoT 只需几何子目标，不需要语言。",
+                       rationale="第 %d 轮聊透了" % lo, origin="human", source=ds, turns=[lo],
+                       firmness="working", basis=[ds])
+        cid = re.search(r"候选 (C\d+)", out).group(1)
+        mcp.call("propose_candidate", kind="resolve", target=f.group(1), resolution="answered",
+                 answered_by=[cid], statement=f"{f.group(1)} 已被 {cid} 回答。",
+                 rationale="第 %d 轮研究者明确说“这个问题就这样了”" % lo, origin="human", source=ds, turns=[lo])
+        mcp.call("update_discussion_summary", discussion_id=ds, summary=f"聊透了，覆盖到第 {hi} 轮。",
+                 covers_through=hi)
+        result("提了 1 条理解与 1 条结问题。")
+        return
+
     if mode in ("distill", "distill_sleep"):
         m = re.search(r"讨论 (DS\d+) 的第 (\d+)–(\d+) 轮", prompt)
         ds, lo, hi = m.group(1), int(m.group(2)), int(m.group(3))
@@ -146,6 +170,20 @@ def main():
                  summary=f"研究者认为感知不是瓶颈（C001）。覆盖到第 {hi} 轮。", covers_through=hi)
         result("收了 1 条 assumption。")
         return
+
+
+def tidy(brief, blank=False):
+    mcp = Mcp()
+    ch = brief.split("## 10. 待整理的全部内容", 1)[-1]
+    ins = re.findall(r"^#### (IN\d+)", ch, re.M)
+    if blank or len(ins) < 2:
+        result("看过了全部理解与问题，没有值得合并或结掉的。")
+        return
+    mcp.call("propose_candidate", kind="insight", supersedes=ins[:2], firmness="working",
+             statement=f"合并 {ins[0]} 与 {ins[1]}：接口在时间上稀疏、信息上稠密。",
+             rationale="两条在说同一件事的两面")
+    mcp.call("checkpoint", note="提了 1 条合并")
+    result("提了 1 条合并。")
 
 
 def incubate(brief):

@@ -15,14 +15,18 @@ TARGET_TYPE = {"assumption": "assumption", "hypothesis": "hypothesis",
 TARGET_FIELDS = {
     "assumption": ("relied_on_by", "fragile", "derived_from"),
     "hypothesis": ("falsifier", "validation", "confidence", "promoted_from"),
-    "question": ("maturity",),
+    "question": ("maturity", "parent"),
     "uncertainty": ("importance",),
-    "insight": ("firmness", "basis", "basis_note", "informs", "change_mind"),
+    # supersedes：提议把几条 active 的理解合成这一条（§5.16.3）
+    "insight": ("firmness", "basis", "basis_note", "informs", "change_mind", "supersedes"),
     # 修订（§5.15.3）：target / base_revision 另存，这里是按目标类型可改的字段（由 objects.REVISABLE 再筛）
     "revision": ("maturity", "relied_on_by", "fragile", "falsifier", "validation", "importance",
                  "firmness", "change_mind"),
+    # 结一个问题（§5.16.1）：target / resolution 另存；decided 的建议决定写在陈述里
+    "resolve": ("answered_by", "merged_into"),
 }
-LIST_FIELDS = ("relied_on_by", "basis", "informs")
+LIST_FIELDS = ("relied_on_by", "basis", "informs", "supersedes", "answered_by")
+SPECIAL = ("revision", "resolve")        # 针对已有对象，不新建；不能与新建类互改类别
 
 
 def _sections(body):
@@ -82,6 +86,19 @@ def list_all(store, status=None):
             # 同一目标的另一条修订先被确认 → 这条“基于旧版本”，确认需显式 force（§5.15.3）
             c["stale"] = bool(tm) and c.get("status") == "pending" and \
                 str(c.get("base_revision")) != str(c["target_revision"])
+    byid = {m.get("id"): m for m, _ in store.list("candidate")} if any(
+        c.get("kind") == "resolve" for c in out) else {}
+    for c in out:
+        if c.get("kind") != "resolve":
+            continue
+        tm, _ = store.read_obj(c["target"]) if schema.kind_of_id(c.get("target") or "") else (None, None)
+        c["target_status"] = schema.question_status(tm) if tm else None
+        # 目标已不是 open（期间被别的途径结了 / 撤下）：这条已过时，确认会被拒
+        c["stale"] = c.get("status") == "pending" and c["target_status"] != "open"
+        # 引用的同批候选：前端据此给“一并确认”（§5.16.1）
+        c["refs"] = [{"id": r, "status": (byid.get(r) or {}).get("status"), "kind": (byid.get(r) or {}).get("kind"),
+                      "origin": (byid.get(r) or {}).get("origin"), "promoted_to": (byid.get(r) or {}).get("promoted_to")}
+                     for r in _as_list(c.get("answered_by")) if r.startswith("C")]
     return out
 
 
@@ -96,11 +113,18 @@ def withdrawn_refs(store, ids):
 
 
 def validate_proposal(store, kind, statement, rationale, origin, origin_note, source,
-                      turns, fields, target=None, base_revision=None, at_propose=True):
-    if kind not in TARGET_TYPE and kind != "revision":
-        raise ValueError(f"kind 必须是 {sorted(TARGET_TYPE) + ['revision']} 之一，收到 '{kind}'。")
+                      turns, fields, target=None, base_revision=None, at_propose=True, tidy=False,
+                      resolution=None):
+    if kind not in TARGET_TYPE and kind not in SPECIAL:
+        raise ValueError(f"kind 必须是 {sorted(TARGET_TYPE) + list(SPECIAL)} 之一，收到 '{kind}'。")
     if kind == "revision" and schema.TASK_ID.match(source or ""):
         raise ValueError("修订候选只出自讨论：评判类任务的产出是证据与状态迁移，不提修订。")
+    merging = kind == "insight" and bool(fields.get("supersedes"))
+    if tidy and not (kind == "resolve" or merging):
+        raise ValueError("整理任务只提两种候选：合并理解（kind=insight 带 supersedes）与结问题（kind=resolve）。"
+                         "不产新想法。")
+    if schema.TASK_ID.match(source or "") and not tidy and (kind == "resolve" or merging):
+        raise ValueError("结问题与合并理解只出自讨论或整理任务（Tidy up）。")
     if not statement.strip():
         raise ValueError("statement 不能为空。")
     if not rationale.strip():
@@ -113,11 +137,14 @@ def validate_proposal(store, kind, statement, rationale, origin, origin_note, so
         # 验证模式的任务提出的候选（§5.6）：没有讨论轮次，根基必须指向证据或论文
         if origin != "ai":
             raise ValueError("验证任务提出的候选 origin 只能是 ai。")
-        if kind == "insight":
+        if tidy:
+            pass                     # 整理任务：根基就是被合并 / 被引用的对象本身
+        elif kind == "insight":
             raise ValueError("评判类任务不提 insight：理解是研究者与讨论的产物。")
-        basis = fields.get("basis") or []
-        if not basis or any(schema.split_id(b)[0] not in ("E", "P") for b in basis):
-            raise ValueError("basis 必须给出支撑这个候选的证据或论文（E### / P###）。")
+        else:
+            basis = fields.get("basis") or []
+            if not basis or any(schema.split_id(b)[0] not in ("E", "P") for b in basis):
+                raise ValueError("basis 必须给出支撑这个候选的证据或论文（E### / P###）。")
     else:
         if not store.exists(source):
             raise ValueError(f"source 讨论 {source} 不存在。")
@@ -132,6 +159,13 @@ def validate_proposal(store, kind, statement, rationale, origin, origin_note, so
         from . import objects
         if at_propose:
             objects.check_revision(store, target, base_revision, statement, fields, at_propose=True)
+        return
+    if kind == "resolve":
+        from . import questions
+        if resolution == "decided" and tidy:
+            raise ValueError("拍板（decided）只能由研究者在讨论里做：整理任务只提 answered 与 merged。")
+        questions.check_resolve(store, target, resolution, fields.get("answered_by"),
+                                fields.get("merged_into"), allow_candidates=True)
         return
     for f in schema.CANDIDATE_FIELDS[kind]:
         if not fields.get(f):
@@ -149,14 +183,20 @@ def validate_proposal(store, kind, statement, rationale, origin, origin_note, so
     if kind == "insight":
         if fields.get("firmness") not in ("hunch", "working", "settled"):
             raise ValueError("firmness 必须是 hunch（直觉）/ working（工作理解）/ settled（稳固理解）。")
-        if not fields.get("basis") and not (fields.get("basis_note") or "").strip():
+        if not fields.get("basis") and not (fields.get("basis_note") or "").strip() and not merging:
             raise ValueError("理解必须说出根基：basis（State 里的对象 id）或 basis_note。")
+        if merging:
+            from . import insights
+            insights.check_supersedes(store, fields["supersedes"])
     for f in ("basis", "informs"):
         missing = [r for r in fields.get(f) or [] if not store.exists(r)]
         if missing:
             raise ValueError(f"{f} 中 {missing} 不存在；只能引用 State 里真实存在的对象。")
     if fields.get("derived_from") and not store.exists(fields["derived_from"]):
         raise ValueError(f"derived_from {fields['derived_from']} 不存在。")
+    if kind == "question" and fields.get("parent"):
+        from . import questions
+        questions.check_parent(store, None, fields["parent"])
 
 
 def _missing_hint(kind, f):
@@ -173,13 +213,19 @@ def _missing_hint(kind, f):
 
 def propose(store, *, kind, statement, rationale, origin, source, turns,
             origin_note="", relates_to=None, task=None, actor="human", target=None,
-            base_revision=None, **fields):
+            base_revision=None, resolution=None, tidy=False, **fields):
     turns = [int(t) for t in _as_list(turns)]
     fields = {k: v for k, v in fields.items() if v not in (None, "", [])}
     for f in LIST_FIELDS:
         if f in fields:
             fields[f] = _as_list(fields[f])
-    if kind == "insight" and actor == "agent" and not fields.get("basis"):
+    if kind == "question" and not fields.get("parent") and str(source or "").startswith("DS") \
+            and store.exists(source):
+        # 聚焦于某个问题的讨论里产出的问题候选，默认挂在它下面（§5.16.4）
+        focus = (discussion.read(store, source)[0] or {}).get("focus")
+        if schema.split_id(focus or "")[0] == "Q" and store.exists(focus):
+            fields["parent"] = focus
+    if kind == "insight" and actor == "agent" and not fields.get("basis") and not fields.get("supersedes"):
         raise ValueError("AI 提出的理解，basis 必须指向 State 里真实存在的对象（讨论、证据、假设、论文……），"
                          "说不出根基的“洞见”不收。")
     if kind == "revision" and base_revision in (None, ""):
@@ -189,7 +235,8 @@ def propose(store, *, kind, statement, rationale, origin, source, turns,
             raise ValueError(f"修订候选必须给 base_revision：起草时 {target} 的版本号"
                              f"（当前是第 {base_revision} 版）。")
     validate_proposal(store, kind, statement, rationale, origin, origin_note, source,
-                      turns, fields, target=target, base_revision=base_revision)
+                      turns, fields, target=target, base_revision=base_revision, tidy=tidy,
+                      resolution=resolution)
     rel = _as_list(relates_to)
     missing = [r for r in rel if not store.exists(r)]
     if missing:
@@ -201,6 +248,12 @@ def propose(store, *, kind, statement, rationale, origin, source, turns,
                 "source": source, "turns": turns, "relates_to": rel or None}
         if kind == "revision":
             meta.update(target=target, base_revision=int(base_revision))
+        if kind == "resolve":
+            meta.update(target=target, resolution=resolution)
+            if resolution != "answered":
+                fields.pop("answered_by", None)
+            if resolution != "merged":
+                fields.pop("merged_into", None)
         for f in TARGET_FIELDS[kind]:
             if f in fields:
                 meta[f] = fields[f]
@@ -222,18 +275,19 @@ def update(store, cid, changes, actor="human"):
     s = _sections(body)
     statement = changes.pop("statement", s.get("陈述", ""))
     rationale = changes.pop("rationale", s.get("理由", ""))
-    if "kind" in changes and (changes["kind"] == "revision") != (meta["kind"] == "revision"):
-        if changes["kind"] != meta["kind"]:
-            raise ValueError("修订候选与新建候选不能互相改类别：修订针对已有对象，新建产生新对象。")
+    if "kind" in changes and changes["kind"] != meta["kind"] and \
+            (changes["kind"] in SPECIAL or meta["kind"] in SPECIAL):
+        raise ValueError("修订 / 结问题候选与新建候选不能互相改类别：前者针对已有对象，后者产生新对象。")
     for k, v in changes.items():
-        if k in ("kind", "origin", "origin_note", *sum(TARGET_FIELDS.values(), ())):
+        if k in ("kind", "origin", "origin_note", "resolution", *sum(TARGET_FIELDS.values(), ())):
             meta[k] = _as_list(v) if k in LIST_FIELDS else v
     meta = {k: v for k, v in meta.items() if v not in (None, "")}
     with store.tx(f"candidate {cid}: 人修改", actor=actor) as tx:
         tx.write_obj(cid, meta, _body(statement, rationale))
 
 
-def accept(store, cid, origin=None, changes=None, actor="human", force=False, maturity=None):
+def accept(store, cid, origin=None, changes=None, actor="human", force=False, maturity=None,
+           decision=None):
     """确认候选 → 正式对象。返回新对象 id（修订候选返回被修订的对象 id，§5.15.3）。"""
     if changes:
         update(store, cid, dict(changes), actor=actor)
@@ -244,6 +298,9 @@ def accept(store, cid, origin=None, changes=None, actor="human", force=False, ma
         from . import objects
         return objects.apply_revision(store, cid, origin=origin, force=force, maturity=maturity,
                                       actor=actor)
+    if meta["kind"] == "resolve":
+        from . import questions
+        return questions.accept_resolve(store, cid, origin=origin, decision=decision, actor=actor)
     origin = origin or meta.get("origin")
     if origin not in ("human", "ai"):
         raise ValueError("归属不明（unclear）的候选必须由人选定 origin（human / ai）后才能确认。")
@@ -252,8 +309,11 @@ def accept(store, cid, origin=None, changes=None, actor="human", force=False, ma
     fields = {k: meta[k] for k in TARGET_FIELDS[kind] if meta.get(k) not in (None, "", [])}
     if meta.get("basis") and "basis" not in fields:
         fields["basis"] = _as_list(meta["basis"])
+    tidy = schema.TASK_ID.match(meta["source"]) and bool(fields.get("supersedes"))
     validate_proposal(store, kind, s.get("陈述", ""), s.get("理由", "") or "-", origin, "",
-                      meta["source"], [int(t) for t in _as_list(meta.get("turns"))], fields)
+                      meta["source"], [int(t) for t in _as_list(meta.get("turns"))], fields, tidy=tidy)
+    if kind == "insight" and fields.get("supersedes"):
+        return _accept_merge(store, cid, meta, body, s, fields, origin, actor)
 
     with store.tx(f"candidate {cid}: 确认", actor=actor) as tx:
         ttype = TARGET_TYPE[kind]
@@ -269,6 +329,8 @@ def accept(store, cid, origin=None, changes=None, actor="human", force=False, ma
                        evidence=[], promoted_from=fields.get("promoted_from"))
         elif ttype == "question":
             obj.update(maturity=fields["maturity"])
+            if fields.get("parent") and store.exists(fields["parent"]):
+                obj["parent"] = fields["parent"]
         elif ttype == "uncertainty":
             obj.update(status="open", importance=fields["importance"])
         elif ttype == "insight":
@@ -307,6 +369,24 @@ def accept(store, cid, origin=None, changes=None, actor="human", force=False, ma
             meta["origin"] = origin
         tx.write_obj(cid, meta, body)
         tx.note = f"→ {new}"
+    return new
+
+
+def _accept_merge(store, cid, meta, body, s, fields, origin, actor):
+    """合并理解的候选（§5.16.3）：firmness 由人在确认时选定（经 changes 改候选），其余取并集。"""
+    from . import insights
+    src = meta["source"]
+    extra = {"discussion": src, "turns": [int(t) for t in _as_list(meta.get("turns"))]} \
+        if src.startswith("DS") else {}
+    basis = [b for b in _as_list(fields.get("basis")) if b != src] + ([src] if src.startswith("DS") else [])
+    new = insights.consolidate(store, fields["supersedes"], attribution.neutralize(s.get("陈述", "")),
+                               fields["firmness"], basis=basis, basis_note=fields.get("basis_note", ""),
+                               informs=fields.get("informs"), change_mind=fields.get("change_mind", ""),
+                               note=f"经候选 {cid} 合并。", origin=origin, source=cid, actor=actor, **extra)
+    with store.tx(f"candidate {cid}: 确认合并", actor=actor) as tx:
+        meta.update(status="accepted", promoted_to=new, decided=today(), origin=origin)
+        tx.write_obj(cid, meta, body)
+        tx.note = f"{', '.join(fields['supersedes'])} → {new}"
     return new
 
 

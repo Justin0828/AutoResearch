@@ -1,6 +1,6 @@
 # 进度追踪
 
-> 最后更新：2026-09-24 · 当前阶段：**Phase 2.5 完成（用户已确认）；Phase 3 下一步**
+> 最后更新：2026-09-24 · 当前阶段：**Phase 2.7 已实现、待用户确认；Phase 3 下一步**
 
 ## 阶段状态
 
@@ -13,7 +13,7 @@
 | Phase 2 | 文献闭环与交棒（2–3 周） | ✅ 完成（2026-09-23 用户确认） |
 | Phase 2.5 | 想法自演进 M11（1 周） | ✅ 完成（2026-09-24 用户确认） |
 | Phase 2.6 | 对象的持续打磨与讨论组织（§5.15） | ✅ 已合入 main（2026-09-24） |
-| Phase 2.7 | 让研究收敛：问题生命周期、活跃集、理解合并、问题树（§5.16） | ⬜ 设计完成，待实现 |
+| Phase 2.7 | 让研究收敛：问题生命周期、活跃集、理解合并、问题树（§5.16） | 🟡 已实现（分支 `phase2.7`），待用户确认 |
 | **Phase 3** | **实验 + 网络分流（3–4 周）** | ⬜ **下一步** |
 | Phase 4 | 完整自治 + 迁移到公司服务器 | ⬜ |
 
@@ -199,6 +199,34 @@ daemon / runner / briefing / MCP server / 前端的相应扩展。测试 72 个�
 - 设计写入 `DESIGN.md` §5.16：问题 status 增加 answered / decided / merged（resolve 候选提议、人确认、可重开）；`active` 活跃集决定 briefing 里谁给全文；
   insight 候选可带 `supersedes` 合并理解，另有手动触发的 Tidy up 整理任务（只提合并与结问题，不产新想法，可交白卷）；`parent` 建问题树，Research 页以树为主视图。
 - 兼容：全部字段可选；升级后已有非主问题默认不活跃（briefing 从全文变一行，是有意的），前端提示标活跃；Q002–Q005 无 parent，归“未归位”并给一键挂靠建议。
+
+## Phase 2.7 实现（2026-09-24，分支 `phase2.7`，待用户确认）
+
+- **后端**：新模块 `questions.py`——结（answered / decided / merged，写 curation Decision，decided 另写 research Decision，正文追加 `## 结` 一节）、
+  重开（清字段、旧值留在 Decision 与 `## 重开`）、resolve 候选确认（一个事务；引用的 pending 候选 → 409 `pending_refs`）、活跃、母问题（不成环、主问题是根）、问题树。
+  `insights.consolidate`：合并理解（consolidates / superseded_by，basis、informs、basis_note 取并集）；`reviews` 对被合并的条目不传播，合成条目日后被放弃时沿 consolidates 追溯。
+  `candidates`：kind=resolve、insight 的 `supersedes`、question 的 `parent`（聚焦于问题的讨论里默认挂在被聚焦的问题下）、整理任务来源（T#####，只收合并与 answered / merged）。
+  briefing 第 3 章分五层；新 profile / 任务 `tidy`；自演进基本盘加“当前关注 / 已有结论”；夜间预习可选活跃问题。discuss / distill 协议追加 CONVERGE_RULE
+  （被回答 / 被拍板 / 重复时明说，不要为了收敛硬结），另写整理协议。schema：question 的 status / active / parent 与三种结字段、insight 的 consolidates、
+  候选 kind=resolve 与相关字段，全部可选；校验成对字段、成环、主问题不能结。API：`/api/questions/<Q>/{resolve,reopen,active,parent}`、`/api/questions/tree`、`/api/tidy`，overview 带 `tree` 与最近一次整理。
+- **前端**：Research 页问题树（☆/★ 切活跃、已结节点变淡并默认折叠子树、答案 / 决定 / 合并目标直接在节点上、挂着的理解与假设数、“Not placed yet” 一键挂靠、Withdrawn 折叠）；
+  升级提示（点掉或标了活跃即不再出现）、活跃 >3 提示、active 理解 >12 或 open 问题 >8 时的 Tidy up 提示与按钮；问题页 Close… / Reopen / Mark active / Move in tree…、
+  结论横幅、“Place in the tree” 区块（被并入问题的子问题一键改挂）、被并入问题的讨论与关联标 “From Q00x”；理解页 “Merged into”，派生前提页 “已并入” 说明；
+  Inbox 的 Close question 卡（“Accept both & close”）与合并卡（对话框里选 firmness、可改措辞）。
+- **实现补充**（已写回 DESIGN §5.16.1–5.16.4 各节末尾）：结问题清 active；已结的不能撤下（先重开）；正文状态史只写中性表述；整理任务不收 decided；
+  合并不另写 Decision；主问题不能有 parent；预习选题顺序 前提 → 无证据假设 → 活跃问题。**没有偏离 §5.16 的设计意图**。
+- **测试 138 个全过**（新增 `tests/test_phase27.py` 20 个；假 claude 加 `distill_resolve` 模式与整理任务，`run/fake_mode` 写 `tidy_blank` 可切白卷）。
+  `test_phase26` 里一处断言随第 3 章分层改为“一行”。
+- **兼容与验收（真实 State 的 scratch 副本，假 claude，端口 8797，`~/autoresearch` 未动，结束后按 PID 停掉）**：新代码下校验 0 错误 0 警告；Q002–Q005 在 “Not placed yet”，
+  各有 “Put under Q001”；C004–C006（pending insight）照常确认，DS001 继续对话正常。用 jsdom 跑真实 `app.js` 走完 §7 验收 1–5：
+  Q002 → Discuss this（DS002）→ 蒸馏出 C008（insight）+ C009（resolve，answered_by C008）→ “Accept both & close” → Q002 answered by IN002 → Reopen → 用 Close… 对话框再结；
+  Q003 经对话框写决定 → decided（DEC005 kind=research）；Q005 开聚焦讨论 DS003、产出子问题 Q006（默认 parent Q005）后并入 Q004 → Q004 页可见 DS003 与 Q006（标 From Q005）并一键改挂；
+  ★ Q004 后 `./ar brief discuss` 第 3 章：主问题与 Q004 全文、Q006 一行、Q002 / Q003 / Q005 各一行加结论；Tidy up（假 claude）提出合并 IN002+IN003 的 C011 → 确认得 IN006（consolidates，firmness 在对话框选 settled），
+  旧条目 superseded、无 Review；再点 Tidy up 交白卷，重复点被拒；>3 活跃与“太拥挤”横幅均出现。全程无 JS 错误。
+  副本里有一条警告来自修正前的措辞（“研究者已拍板”触发署名线索检查），已改为中性表述并补了测试。
+- **没有跑真实 claude**：resolve / 合并候选能否被真实 agent 恰当地提出（尤其“不要硬结”），留给用户在真实使用中观察。
+- **待用户**：浏览器里过一遍（问题树、Close 对话框、Inbox 两种新卡片）；后端有改动，**需要重启 `./ar serve`**。升级后先在 Research 页把 Q002–Q005 挂到 Q001 下、把正在想的标 ★。
+  Q003（定位选择）可以直接用 Close… → Decided 结掉。
 
 ## 已知缺口（Phase 2 之后）
 

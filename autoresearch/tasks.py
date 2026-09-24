@@ -35,6 +35,15 @@ KINDS = {
     },
 }
 
+# 整理（Tidy up，§5.16.3）：人从前端手动触发，不定时。只提合并理解与结问题两种候选，可交白卷
+KINDS["tidy"] = {
+    "lane": "background", "profile": "tidy", "timeout": 1200,
+    "tools": ["Read", "Grep", "Glob"],
+    "mcp": ["propose_candidate", "checkpoint"],
+    "protocol": protocol.TIDY_PROTOCOL,
+    "expected": "合并理解 / 结问题的候选（没有就交白卷）",
+}
+
 _J = {"lane": "background", "profile": "judge"}
 _JUDGE = {
     "lit_search": {**_J, "timeout": 1200, "tools": ["Read", "Grep", "Glob", "WebSearch"],

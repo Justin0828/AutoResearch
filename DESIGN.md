@@ -1195,6 +1195,15 @@ decided 则在 `陈述` 里写建议的决定；`理由` 写依据哪几轮、�
 - 讨论协议追加：当一个问题在讨论中被回答了、被拍板了、或被发现与另一个问题重复时，明说，蒸馏据此出 resolve 候选。**不要为了收敛而硬结**——没有真的回答就不结。
 - decided 的确认只能由人：前端对话框里人写 / 改决定正文，后端写 `Decision kind=research` 后回填 `decided_by`。
 
+实现补充（2026-09-24）：
+- 人也可以不经候选、在问题页直接结（同一套校验与 Decision）。结的 curation Decision 另记 `resolution` 与 `candidate`，重开的记 `reopened`（原状态）。
+- 结一个问题同时清掉它的 `active`（结了就不再是“正在想的”；重开不恢复）。**已结的问题不能撤下**，要撤下先重开——否则 withdrawn 与 answered_by 并存，恢复时语义不清。
+- 正文状态史里只写“open → answered：由 IN002 回答，见 DEC###”一类中性表述，人写的理由只进 Decision（重开理由进正文时先中性化）：问题文件会被评判类任务直接读（§5.6）。
+- resolve 候选确认在**一个事务**里写 Decision、改问题、回填候选；`answered_by` 里引用的候选若已确认，候选自身的 `answered_by` 也改写为其 `promoted_to`。
+  引用的候选仍 pending 时后端返回 409 与 `pending_refs`，前端先逐条确认它们（归属不明的在同一对话框里选定），再确认 resolve。
+  目标问题在候选等待期间已被别的途径结了 / 撤下时，候选标“已过时”，确认被拒。
+- 校验器：`status` 与 `answered_by` / `decided_by` / `merged_into` 必须成对出现（重开没清干净也报错）；`parent` / `merged_into` 链不得成环；主问题不得处于 answered / decided / merged。
+
 #### 5.16.2 活跃集
 
 - 问题可选 `active: true`，表示“现在在想的”。由人在问题树 / 对象页切换（每次一次提交，actor human），agent 不能改。
@@ -1209,6 +1218,10 @@ decided 则在 `陈述` 里写建议的决定；`理由` 写依据哪几轮、�
 - 自演进基本盘：仍只含主问题全文；活跃问题各给一行作为“当前关注”，已结问题各给一行作为“已有结论”。
 - 夜间预习选题可以从活跃问题里选（以“核查 / 调研 Q00x”为题），理由照常写明。
 
+实现补充（2026-09-24）：briefing 第 3 章对 judge profile 同样分层（中性化照旧）。夜间预习的机械选题顺序是：未检验前提 → 没有证据的假设 → 活跃问题
+（问题不是证据目标，按自由题目检索精读，Decision 的 refs 仍记该问题）。“升级后首次提示”在 Research 页显示，直到研究者点掉或标了任意一个活跃问题为止
+（localStorage，读写均 try/catch，存不了就每次显示）。
+
 #### 5.16.3 理解的合并
 
 - insight 候选可带 `supersedes: [IN###, ...]`（≥2 条，均须 active）：提议把几条相近 / 相互补充的理解合成一条。
@@ -1217,6 +1230,16 @@ decided 则在 `陈述` 里写建议的决定；`理由` 写依据哪几轮、�
 - 提议来源：(a) 蒸馏，讨论中明显出现重叠时；(b) **Tidy up**：前端手动触发的一次整理任务（profile 同 distill，但讨论上下文换成全部 active 理解与全部 open 问题的全文），
   只允许产出 `supersedes` 型 insight 候选与 resolve 候选（合并重复问题、指出已被回答的问题），**不产新想法**。不做自动定时整理（额度，§0.5）；当 active 理解 > 12 或 open 问题 > 8 时，前端在 Research 页提示可以整理一下。
 - 整理任务同样可以交白卷：“没有值得合并的”是合法输出。
+
+实现补充（2026-09-24）：
+- 整理任务 kind `tidy`，briefing profile `tidy`（distill 的章节，第 10 章换成全部 active 理解与 open 问题的全文，不截断）；工具只有 Read/Grep/Glob 与
+  propose_candidate / checkpoint。它的候选 `source` 是任务号 T#####、`origin` 固定 ai、没有 turns——与评判类任务同形，但不要求 basis 指向 E/P
+  （根基就是被合并 / 被引用的对象本身）。MCP 层与 `candidates.propose(tidy=True)` 双重限制：只收 `supersedes` 型 insight 与 answered / merged 的 resolve；
+  **decided 不收**（拍板只能是研究者的决定）。反过来，评判类任务不能提 resolve 与合并。同一时间只有一个整理任务排队或在跑；它不受无人值守份额限制（人点了才跑）。
+- 合并时 `basis_note` 也取并集（用“；”连接）；合并不另写 Decision（与 `insights.revise` 一致，候选本身与 git 提交留痕），新 IN 的 provenance 记候选的 origin，
+  note 里列出各条被合并理解的原提出者。
+- Review 对账：被合并的理解（其 `superseded_by` 的 `consolidates` 列了它）不作为触发者；但**合成的那条**之后若被取代 / 放弃，
+  派生自它所合并的旧条目的前提同样进 Review（沿 `consolidates` 追溯）——那时理解是真的变了。
 
 #### 5.16.4 问题树
 
@@ -1227,6 +1250,9 @@ decided 则在 `陈述` 里写建议的决定；`理由` 写依据哪几轮、�
 - **Research 页以问题树为主视图**：根是主问题；每个节点显示状态、成熟度、活跃标记、挂在它上面的理解与假设数（经 `answered_by`、`relates_to`、`informs` 的反向索引），可展开子问题；
   已结的节点变淡并默认折叠子树，答案 / 决定 / 合并目标作为可点击的链接直接显示在节点上。点节点进对象页（§5.15.4）。
   理解、前提、假设等其他列表保留在树下方（紧凑行，已有），已被合并 / 已结的默认折叠。
+
+实现补充（2026-09-24）：主问题是树根，不能有 `parent`；撤下的问题不进树，单列在折叠的 Withdrawn 区；“挂着的”理解只数 active 的、假设不数撤下的。
+改 `parent` 与标活跃都不写 Decision（一次 `ar-human` 提交即可追溯）。树节点上的 ☆ / ★ 直接切换活跃。
 
 #### 5.16.5 兼容
 

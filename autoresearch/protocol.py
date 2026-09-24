@@ -75,6 +75,24 @@ REVISION_RULE = """
 - briefing 末尾“已撤下”的对象是研究者认为不再相关的方向：不要当作新想法重新提出，也不要修订它们；认为该回来就明说。
 """
 
+CONVERGE_RULE = """
+## 让研究收敛：结问题、合并理解、问题树
+
+研究不只是往里加东西。问题要能结，理解要能越合越少。
+- 当一个问题在讨论中**被回答了**（聊出了一条理解，或落成了可验证的假设）、**被拍板了**（它本质是一个选择，研究者做了决定）、
+  或**被发现与另一个问题重复**时，明说出来（“Q003 其实已经被 IN002 回答了”“Q004 和 Q002 是同一个问题”）。
+  蒸馏据此提 resolve 候选：propose_candidate(kind="resolve", target=<Q###>, resolution=answered / decided / merged, ...)——
+  answered 带 answered_by（回答它的 IN### / H###；也可以是**同一次**提交的 insight / hypothesis 候选 C###），
+  merged 带 merged_into（并入的 open 问题），decided 在 statement 里写建议的决定（选了什么、为什么、什么情况下重议）；
+  rationale 写依据哪几轮、为什么认为可以结了。主问题不能结。
+- **不要为了收敛而硬结**：没有真的回答就不结；“聊了很多”不等于“回答了”。拍板只能是研究者做的决定，不要替研究者拍板。
+- 几条已有理解其实在说同一件事、或相互补充成一个更完整的看法时，可以提合并：propose_candidate(kind="insight", supersedes=[IN###, IN###, ...]，
+  statement 写合成后的完整表述)。至少两条，都须是 active；根基自动取各条的并集。
+- 问题树：新问题若是某个已有问题的子问题，给 parent（母问题 Q###）；relates_to 只表示“相关”，不参与建树。
+  聚焦于某个问题的讨论里产出的新问题，默认挂在被聚焦的问题下。
+- briefing 第 3 章“已有结论的问题”作用同已关闭方向：不要把它们当作开放问题重新提出；认为结得太早就明说，研究者可以重开。
+"""
+
 DISCUSS_PROTOCOL = STATE_PROTOCOL + """
 ## 你在这次任务中的角色：讨论伙伴
 
@@ -96,7 +114,7 @@ DISCUSS_PROTOCOL = STATE_PROTOCOL + """
 - 你的最终回复会**原样**写入讨论记录作为你这一轮的发言。直接对研究者说话，
   用中文，不要描述你调用了哪些工具，不要复述 briefing。
 
-""" + CLASSIFY_RULE + REVISION_RULE
+""" + CLASSIFY_RULE + REVISION_RULE + CONVERGE_RULE
 
 DISTILL_PROTOCOL = STATE_PROTOCOL + """
 ## 你在这次任务中的角色：讨论蒸馏（策展）
@@ -116,8 +134,33 @@ DISTILL_PROTOCOL = STATE_PROTOCOL + """
 - 讨论把 briefing 里某个**已有对象**说得更准了：提 revision 候选（见下），而不是新建近义对象。
   briefing 有“2b. 聚焦对象”一章时，优先针对该对象出修订候选；其他类型的候选照常。
   非聚焦的普通讨论也可以对任何对象提修订。
+- 讨论中明确说了某个问题被回答 / 被拍板 / 与另一个问题重复：提 resolve 候选（见下）；典型情形是聚焦讨论同时产出一条
+  insight 候选和“用它结掉这个问题”的 resolve 候选（answered_by 引用刚提交的 C###）。讨论里没有明确说的，不要替研究者结。
 
-""" + CLASSIFY_RULE + REVISION_RULE
+""" + CLASSIFY_RULE + REVISION_RULE + CONVERGE_RULE
+
+
+TIDY_PROTOCOL = STATE_PROTOCOL + """
+## 你在这次任务中的角色：整理（Tidy up）
+
+研究者觉得 State 越垒越多，请你整理一次。briefing 第 10 章是全部 active 的理解与全部 open 的问题的全文。
+你**只做两件事**，都经 propose_candidate 提交、由研究者确认：
+1. **合并理解**：几条理解其实在说同一件事、或相互补充成一个更完整的看法 →
+   propose_candidate(kind="insight", supersedes=[IN###, IN###, ...], statement=合成后的完整表述, firmness=建议的牢固程度, rationale=为什么能合、合后丢没丢东西)。
+   合成的表述必须保留各条里真正的内容，不要抹平分歧；有实质冲突的不要合。
+2. **结问题**：
+   - 某个问题已经被某条理解或假设回答了 → kind="resolve", resolution="answered", target=Q###, answered_by=[IN### / H###]（也可以是你本次刚提交的合并候选 C###）；
+   - 两个问题其实是同一个 → kind="resolve", resolution="merged", target=要并掉的那个, merged_into=保留的那个（须 open）。
+   statement 用一两句话说明结论，rationale 写依据（引用对象 id）。主问题不能结；拍板（decided）只能由研究者做，你不提。
+**不产新想法**：不提新的问题、前提、假设、不确定性，也不改写任何对象的表述。
+**没有值得合并或结掉的，就一条都不提交**——白卷是合法且常见的结果。不要为了收敛而硬合、硬结：没有真的回答就不结，只是话题相近不算重复。
+每提交一条 checkpoint 一次。结束时用几句话说明你提了什么、考虑过但没提的是什么、为什么。
+"""
+
+
+def tidy_prompt():
+    return ("先读当前目录下的 briefing.md。然后整理：找出可以合并的理解、已经被回答或彼此重复的问题，"
+            "按协议提交候选；没有就交白卷。")
 
 
 def discuss_prompt(ds, n, text):

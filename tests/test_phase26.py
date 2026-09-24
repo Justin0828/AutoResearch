@@ -176,7 +176,7 @@ class FocusBriefingTest(Base):
         # 其他章节不重复全文
         rest = text.split("## 3. 研究问题")[1]
         self.assertNotIn("action model 的 CoT 应该是什么形式", rest)
-        self.assertIn(f"### {q}（成熟度 vague）", rest)
+        self.assertIn(f"- {q} · vague：", rest)          # 不活跃的问题只给一行（§5.16.2）
         self.assertIn("全文见第 2b 章", rest)
         self.assertLess(text.index("## 2b."), text.index("## 3."))
         plain = briefing.Assembler(self.st).briefing("discuss", {"id": "T2", "kind": "discuss_turn",

@@ -255,6 +255,24 @@ def links(store, ident, idx=None):
     decisions = [dict(idx.meta[s], body=idx.body[s].strip()) for s, _ in inc
                  if t(s) == "decision" and idx.meta[s].get("kind") != "revision"]
 
+    # 合并（§5.16.1）：被并入问题的讨论、关联、子问题一并显示在目标问题页，标来源
+    merged_from = sorted(q for q, qm in idx.meta.items()
+                         if qm.get("type") == "question" and qm.get("merged_into") == ident)
+    for q in merged_from:
+        have = {d["id"] for d in discussions}
+        for d in idx.discussions:
+            if d.get("focus") == q and d["id"] not in have:
+                discussions.append(dict(d, relation="merged", via=q))
+        qprov = idx.prov.get(q) or {}
+        if qprov.get("discussion") and qprov["discussion"] not in have | {d["id"] for d in discussions}:
+            d = next((x for x in idx.discussions if x["id"] == qprov["discussion"]), None)
+            if d:
+                discussions.append(dict(d, relation="merged", via=q))
+        for s_, f in idx.incoming.get(q, []):
+            if s_ == ident or t(s_) in ("evidence", "decision", "candidate", "discussion", "review", None):
+                continue
+            related.append(dict(_brief(idx, s_), dir="in", field=f, via=q))
+
     usage = idx.usage(ident)
     rev = schema.revision_of(m)
     undo, undo_code = None, None
@@ -279,7 +297,44 @@ def links(store, ident, idx=None):
         "undo_code": undo_code,
         "can_withdraw": _withdraw_problem(idx, m), "withdraw_code": _withdraw_code(idx, m),
         "is_main_question": ident == idx.main_question,
+        **_convergence(idx, ident, m, merged_from),
     }
+
+
+def _convergence(idx, ident, m, merged_from):
+    """问题的状态 / 活跃 / 树位置，理解的合并关系（§5.16），给对象页用。"""
+    t = m.get("type")
+    out = {}
+    if t == "question":
+        st = schema.question_status(m)
+        problem = None
+        if ident == idx.main_question:
+            problem = "它是项目的主问题：要结它先把主问题改指向别的问题"
+        elif st != "open":
+            problem = f"已是 {st}"
+        out["question"] = {
+            "status": st, "active": schema.is_active(m), "parent": m.get("parent"),
+            "children": sorted(q for q, qm in idx.meta.items() if qm.get("type") == "question"
+                               and qm.get("parent") == ident),
+            "merged_from": merged_from, "can_resolve": problem is None, "resolve_blocked": problem,
+            "answered_by": [_brief(idx, r) for r in _as_list(m.get("answered_by")) if r in idx.meta],
+            "decided_by": m.get("decided_by"), "merged_into": m.get("merged_into"),
+            "decision": _section(idx.body.get(m.get("decided_by") or "", ""), "决定") if m.get("decided_by") else None,
+            "suggest_parent": None,
+        }
+        rel_q = [r for r in _as_list(m.get("relates_to")) if (idx.meta.get(r) or {}).get("type") == "question"
+                 and r != ident]
+        if len(rel_q) == 1 and not m.get("parent") and ident != idx.main_question:
+            out["question"]["suggest_parent"] = rel_q[0]
+    if t == "insight":
+        sup = idx.meta.get(m.get("superseded_by") or "") or {}
+        out["merged_into"] = m.get("superseded_by") if ident in _as_list(sup.get("consolidates")) else None
+    if t == "assumption" and m.get("derived_from"):
+        src = idx.meta.get(m["derived_from"]) or {}
+        new = idx.meta.get(src.get("superseded_by") or "") or {}
+        if m["derived_from"] in _as_list(new.get("consolidates")):
+            out["derived_merged"] = {"from": m["derived_from"], "into": new["id"]}
+    return out
 
 
 def _section(body, title):
@@ -507,6 +562,8 @@ def _withdraw_problem(idx, meta):
         return "已撤下"
     if t == "question" and meta["id"] == idx.main_question:
         return "它是项目的主问题：要撤下先把主问题换成别的"
+    if t == "question" and schema.question_status(meta) in schema.CLOSED_QUESTION:
+        return f"它已结（{meta.get('status')}）：要撤下先重开"
     if t == "assumption" and st in ("retired", "invalidated"):
         return f"已是 {st}"
     if t == "hypothesis" and st == "abandoned":
@@ -520,6 +577,8 @@ def _withdraw_code(idx, meta):
         return None
     if meta.get("type") == "question" and meta.get("id") == idx.main_question:
         return "main_question"
+    if meta.get("type") == "question" and schema.question_status(meta) in schema.CLOSED_QUESTION:
+        return "closed"
     return "not_withdrawable" if meta.get("type") not in schema.WITHDRAWN_STATUS and meta.get("type") != "insight" \
         else "already"
 
