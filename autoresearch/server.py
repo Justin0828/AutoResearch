@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from . import (bootstrap, candidates, discussion, frontmatter, incubation, insights, metrics, objects, observe,
-               papers, reviews, schema)
+               papers, questions, reviews, schema)
 from .library import Library
 
 STATIC = Path(__file__).resolve().parent / "static"
@@ -54,7 +54,11 @@ def make_handler(app):
         def objs(t):
             return [one(m, b) for m, b in st.list(t)]
         errs, warns = schema.validate_repo(st.state)
+        tidy = [t for t in d.ledger.all() if t["kind"] == "tidy"]
         return {"project": dict(pmeta, body=pbody.strip()),
+                "tree": questions.tree(st, idx),
+                "tidy": ({k: tidy[-1].get(k) for k in ("id", "status", "result_brief", "ended", "created")}
+                         if tidy else None),
                 "questions": objs("question"), "insights": objs("insight"),
                 # 推演中新引入、所属想法未被接受的前提不算前提集（§5.10），在 Ideas 里看
                 "assumptions": [one(m, b) for m, b in incubation.real_assumptions(st)],
@@ -111,6 +115,45 @@ def make_handler(app):
         did, cid = objects.undo_accept(st, id, req.json().get("reason", ""))
         app.bus.publish("candidates", {"undone": id, "candidate": cid})
         return {"decision": did, "candidate": cid}
+    # ------------------------------------------------------------ 让研究收敛（§5.16）
+
+    @route("POST", "/api/questions/(?P<qid>Q\\d+)/resolve")
+    def resolve_question(req, q, qid):
+        """人直接结一个问题（不经候选）：answered / decided / merged。"""
+        b = req.json()
+        did, research = questions.resolve(st, qid, b.get("resolution"), reason=b.get("reason", ""),
+                                          answered_by=b.get("answered_by"), merged_into=b.get("merged_into"),
+                                          decision=b.get("decision"))
+        app.bus.publish("state", {"question": qid})
+        return {"decision": did, "research": research}
+
+    @route("POST", "/api/questions/(?P<qid>Q\\d+)/reopen")
+    def reopen_question(req, q, qid):
+        did = questions.reopen(st, qid, req.json().get("reason", ""))
+        app.bus.publish("state", {"question": qid})
+        return {"decision": did}
+
+    @route("POST", "/api/questions/(?P<qid>Q\\d+)/active")
+    def set_active(req, q, qid):
+        changed = questions.set_active(st, qid, req.json().get("active"))
+        app.bus.publish("state", {"question": qid})
+        return {"changed": changed}
+
+    @route("POST", "/api/questions/(?P<qid>Q\\d+)/parent")
+    def set_parent(req, q, qid):
+        changed = questions.set_parent(st, qid, req.json().get("parent"))
+        app.bus.publish("state", {"question": qid})
+        return {"changed": changed}
+
+    @route("GET", "/api/questions/tree")
+    def question_tree(req, q):
+        return questions.tree(st)
+
+    @route("POST", "/api/tidy")
+    def tidy(req, q):
+        t = d.request_tidy()
+        return {"task": t, "note": None if t else "已有一个整理任务在排队或在跑"}
+
     # ------------------------------------------------------------ 讨论
 
     @route("GET", "/api/discussions")
@@ -191,7 +234,11 @@ def make_handler(app):
         body = req.json()
         try:
             new = candidates.accept(st, cid, origin=body.get("origin"), changes=body.get("changes"),
-                                    force=bool(body.get("force")), maturity=body.get("maturity"))
+                                    force=bool(body.get("force")), maturity=body.get("maturity"),
+                                    decision=body.get("decision"))
+        except questions.PendingRefs as e:
+            # resolve 候选引用的同批候选还没确认：前端给“一并确认”（§5.16.1）
+            raise ApiError(409, str(e), pending_refs=e.refs)
         except objects.StaleRevision as e:
             # 基于旧版本起草：带回当前版本，前端对照后可显式 force（§5.15.3）
             raise ApiError(409, str(e), current=e.current, stale=True)

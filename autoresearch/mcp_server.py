@@ -249,8 +249,10 @@ def t_propose_candidate(kind="", statement="", rationale="", origin="", source="
                         validation="", confidence="", maturity="", importance="",
                         relates_to=None, basis=None, firmness="", change_mind="",
                         informs=None, derived_from="", promoted_from="", target="",
-                        base_revision=None, fragile=""):
-    if PROFILE == "judge":        # 评判类任务：候选出自本任务，origin 固定 ai（§5.6）
+                        base_revision=None, fragile="", resolution="", answered_by=None,
+                        merged_into="", supersedes=None, parent=""):
+    tidy = PROFILE == "tidy"
+    if PROFILE in ("judge", "tidy"):  # 评判 / 整理任务：候选出自本任务，origin 固定 ai（§5.6、§5.16.3）
         source, origin, turns, origin_note = TASK, "ai", [], ""
     if kind == "revision" and base_revision in (None, ""):
         base_revision = None          # candidates.propose 会拒绝并告诉当前版本
@@ -261,12 +263,16 @@ def t_propose_candidate(kind="", statement="", rationale="", origin="", source="
         validation=validation, confidence=confidence, maturity=maturity,
         importance=importance, basis=basis, firmness=firmness, change_mind=change_mind,
         informs=informs, derived_from=derived_from, promoted_from=promoted_from,
-        target=target or None, base_revision=base_revision, fragile=fragile)
+        target=target or None, base_revision=base_revision, fragile=fragile,
+        resolution=resolution or None, answered_by=answered_by, merged_into=merged_into,
+        supersedes=supersedes, parent=parent, tidy=tidy)
     log({"tool": "propose_candidate", "ok": True, "id": cid, "kind": kind, "origin": origin,
          "target": target or None})
-    msg = (f"已提交候选 {cid}（{kind}{' ' + target if kind == 'revision' else ''}）。它在人确认前**不是**正式 State 对象；"
+    what = {"revision": f" {target}", "resolve": f" {target} → {resolution}"}.get(kind, "")
+    msg = (f"已提交候选 {cid}（{kind}{what}）。它在人确认前**不是**正式 State 对象；"
            "不要再为同一内容重复提交。")
-    refs = [target] + list(relates_to or []) + list(relied_on_by or []) + list(basis or []) + list(informs or [])
+    refs = [target] + list(relates_to or []) + list(relied_on_by or []) + list(basis or []) + list(informs or []) \
+        + [merged_into, parent] + list(supersedes or [])
     gone = candidates.withdrawn_refs(STORE, [r for r in refs if r])
     if gone:
         msg += f"注意：它引用了已被研究者撤下的 {', '.join(gone)}（不再相关的方向）。若确有理由让它回来，在讨论里明说。"
@@ -388,13 +394,20 @@ TOOLS = [
      "正在被依赖（支撑其他推理或用来剪枝）而未安排验证的 → assumption（必须给 relied_on_by）；"
      "讨论中已安排/约定了验证方式的 → hypothesis（必须给 falsifier 与 validation）。"
      "研究中形成的看法、直觉 → insight（不要求可证伪，但必须给 basis 与 firmness）。"
-     "闲聊、已被否定的猜测、与已有对象重复的内容不要提交。",
-     {"kind": (S, "assumption / hypothesis / question / uncertainty / insight / revision", True),
+     "闲聊、已被否定的猜测、与已有对象重复的内容不要提交。"
+     "一个问题被回答 / 被拍板 / 与另一个问题重复时，用 kind=resolve 提议结它（不要为了收敛硬结）；"
+     "几条理解在说同一件事时，用 kind=insight 带 supersedes 提议合并。",
+     {"kind": (S, "assumption / hypothesis / question / uncertainty / insight / revision / resolve", True),
       "statement": (S, "一句话陈述（可附简短展开）；revision 写修订后的**完整**表述", True),
       "rationale": (S, "为什么这是研究内容、为什么归为这一类、与已有对象的关系；revision 写改了什么、为什么、这一版好在哪", True),
-      "target": (S, "revision 必填：被修订对象的 id（Q/A/H/U/IN）", False),
+      "target": (S, "revision 必填：被修订对象的 id（Q/A/H/U/IN）；resolve 必填：要结的问题 Q###", False),
       "base_revision": (I, "revision 必填：起草时目标对象的版本号（briefing 里的“第 N 版”，没写就是 1）", False),
       "fragile": (S, "revision 修订 assumption 时可选：true / false", False),
+      "resolution": (S, "resolve 必填：answered（被回答了）/ decided（本质是选择，研究者已拍板，statement 写决定）/ merged（与另一个问题重复）", False),
+      "answered_by": (A, "resolve + answered 必填：回答它的 IN### / H###，或同一次提交的 insight / hypothesis 候选 C###", False),
+      "merged_into": (S, "resolve + merged 必填：并入哪个 open 问题 Q###", False),
+      "supersedes": (A, "insight 可选：提议把这些 active 理解（≥2 条 IN###）合成这一条", False),
+      "parent": (S, "question 可选：母问题 Q###（它是哪个问题的子问题；聚焦于某问题的讨论里默认是被聚焦的问题）", False),
       "origin": (S, "human / ai / unclear：按讨论记录里谁先提出。拿不准或与已有记录冲突就写 unclear（验证任务不用填）", False),
       "origin_note": (S, "origin=unclear 时必填：冲突在哪", False),
       "source": (S, "讨论 id，如 DS001（验证任务不用填）", False),
@@ -405,11 +418,11 @@ TOOLS = [
       "confidence": (S, "hypothesis 可选：low / medium / high", False),
       "maturity": (S, "question 必填：vague / scoped / formalized；revision 修订问题时可选，只是建议，由研究者确认时定", False),
       "importance": (S, "uncertainty 必填：low / medium / high", False),
-      "relates_to": (A, "相关的已有对象 id（细化、对立、重叠）", False),
+      "relates_to": (A, "相关的已有正式对象 id（细化、对立、重叠）；不能填候选 C###", False),
       "basis": (A, "insight 必填：这条理解的根基——State 里真实存在的对象 id（DS###、E###、H###、P###……）；验证任务提出的候选必填，指向 E### / P###", False),
       "firmness": (S, "insight 必填：hunch（直觉）/ working（工作理解）/ settled（稳固理解）", False),
       "change_mind": (S, "insight 可选：什么会让这个看法改变", False),
-      "informs": (A, "insight 可选：它影响了哪些对象的判断", False),
+      "informs": (A, "insight 可选：它影响了哪些正式对象的判断；不能填候选 C###", False),
       "derived_from": (S, "assumption 可选：若这条前提来自“凭某条理解排除方向”，写那条理解的 id（IN###）", False),
       "promoted_from": (S, "hypothesis 可选：由哪条前提（A###）提升而来——前提审视发现它可证伪、值得安排验证时", False)}),
     ("update_discussion_summary", t_update_discussion_summary,

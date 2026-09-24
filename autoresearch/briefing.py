@@ -14,6 +14,8 @@ PROFILES = {
     "distill": {"redact": False, "sections": [1, 2, 3, "3b", *range(4, 9), 12, 9, 10, 11]},
     # 评判类看不到理解：评估证据只看证据，理解是解读框架，会带来锚定
     "judge": {"redact": True, "sections": [*range(1, 9), 12, 11]},
+    # 整理（Tidy up，§5.16.3）：同 distill，但讨论上下文换成全部 active 理解与 open 问题的全文
+    "tidy": {"redact": False, "sections": [1, 2, 3, "3b", *range(4, 9), 12, 9, "tidy", 11]},
 }
 
 BUDGET = {  # 每章字符预算；dead-end、任务、交接、问题不截断
@@ -127,17 +129,62 @@ class Assembler:
                 f"结束于 {meta.get('ended')}）\n\n{body.strip()}")
 
     def s_question(self, redact):
+        """第 3 章分层（§5.16.2）：主问题与活跃问题给全文，其余 open 问题一行，已结的一行并指向结论。"""
         pmeta, pbody = self.store.project()
         qid = pmeta.get("main_question")
         qmeta, qbody = self.store.read_obj(qid) if qid else (None, None)
         out = [f"## 3. 研究问题\n\n**项目**：{pmeta.get('title', '')}\n\n{self._body(pbody, redact)}"]
         if qmeta:
-            h = f"### {qid}（成熟度 {qmeta.get('maturity')}{_rev(qmeta)}）"
+            h = f"### {qid}（主问题 · 成熟度 {qmeta.get('maturity')}{_rev(qmeta)}）"
             out.append(self._pointer(h) if qid == self.focus else f"{h}\n\n{self._body(qbody, redact)}")
         others = [(m, b) for m, b in self._live(self.store.list("question")) if m.get("id") != qid]
-        for m, b in others:
-            h = f"### {m['id']}（成熟度 {m.get('maturity')}{_rev(m)}）{_fm_line(m, ['relates_to']) and ' · ' + _fm_line(m, ['relates_to'])}"
-            out.append(self._pointer(h) if m["id"] == self.focus else f"{h}\n\n{self._body(b, redact)}")
+        opened = [(m, b) for m, b in others if schema.question_status(m) == "open"]
+        active = [(m, b) for m, b in opened if schema.is_active(m)]
+        rest = [(m, b) for m, b in opened if not schema.is_active(m)]
+        closed = [(m, b) for m, b in others if schema.question_status(m) in schema.CLOSED_QUESTION]
+        if active:
+            out.append("### 当前在想的问题（研究者标为活跃）")
+            for m, b in active:
+                h = f"#### {m['id']}（成熟度 {m.get('maturity')}{_rev(m)}{_parent(m)}）{_fm_line(m, ['relates_to']) and ' · ' + _fm_line(m, ['relates_to'])}"
+                out.append(self._pointer(h) if m["id"] == self.focus else f"{h}\n\n{self._body(b, redact)}")
+        if rest:
+            out.append("### 其余开着的问题（每条一行；全文见 questions/，需要时自行 Read）\n\n" + "\n".join(
+                f"- {m['id']} · {m.get('maturity')}{_parent(m, ' · ')}："
+                + ("（本场讨论的聚焦对象，全文见第 2b 章。）" if m["id"] == self.focus
+                   else _one(self._body(_stmt(b), redact), 120))
+                for m, b in rest))
+        if closed:
+            out.append("### 已有结论的问题（不要重新提出）\n\n这些问题已经结了，作用同已关闭方向：不要把它们当作开放问题重新提出；"
+                       "若你认为某条结得太早，明确说出来（研究者可以重开）。\n\n" + "\n".join(
+                           f"- {m['id']}（{_CLOSED_LABEL[m['status']]}）：{_one(self._body(_stmt(b), redact), 100)} → "
+                           + self._closed_pointer(m, redact) for m, b in closed))
+        return "\n\n".join(out)
+
+    def _closed_pointer(self, m, redact):
+        st = m.get("status")
+        if st == "answered":
+            return "答案见 " + "、".join(_as_list(m.get("answered_by")))
+        if st == "merged":
+            return f"已并入 {m.get('merged_into')}"
+        _, db = self.store.read_obj(m.get("decided_by") or "") if m.get("decided_by") else (None, "")
+        dec = re.search(r"## 决定\n\n(.*)", db or "", re.S)
+        return f"决定（{m.get('decided_by')}）：{_one(self._body(dec.group(1) if dec else '', redact), 200)}"
+
+    def s_tidy(self):
+        """整理任务（§5.16.3）的上下文：全部 active 理解与全部 open 问题的全文，不截断。"""
+        ins = [(m, b) for m, b in self.store.list("insight") if m.get("status") == "active"]
+        qs = [(m, b) for m, b in self._live(self.store.list("question")) if schema.question_status(m) == "open"]
+        main = self.store.project()[0].get("main_question")
+        out = [f"## 10. 待整理的全部内容（{len(ins)} 条 active 理解、{len(qs)} 个 open 问题）"]
+        out.append("### 理解（active）\n\n" + ("\n\n".join(
+            f"#### {m['id']} · {m.get('firmness')} · {_fm_line(m, ['basis', 'informs'])}\n\n{b.strip()}"
+            + "".join(f"\n- {k}：{m[f]}" for f, k in (("basis_note", "根基说明"), ("change_mind", "什么会让我改观")) if m.get(f))
+            for m, b in ins) or "（没有。）"))
+        out.append("### 问题（open）\n\n" + ("\n\n".join(
+            f"#### {m['id']}{'（主问题，不能结）' if m['id'] == main else ''} · 成熟度 {m.get('maturity')}"
+            f"{_parent(m, ' · ')}{' · 活跃' if schema.is_active(m) else ''}{_rev(m, ' · ')}"
+            f"{' · ' + _fm_line(m, ['relates_to']) if m.get('relates_to') else ''}\n\n{b.strip()}"
+            for m, b in qs) or "（没有。）"))
         return "\n\n".join(out)
 
     def s_insights(self, redact):
@@ -254,9 +301,17 @@ class Assembler:
             return "## 9. 候选区\n\n（空。）"
         parts = []
         for c in pending:
-            kind = c["kind"] if c["kind"] != "revision" else \
-                f"修订 {c.get('target')}（基于第 {c.get('base_revision')} 版）"
-            head = f"- **{c['id']}**（待确认 · {kind} · 来自 {c['source']} 第 {_v(c.get('turns'))} 轮）"
+            kind = c["kind"]
+            if kind == "revision":
+                kind = f"修订 {c.get('target')}（基于第 {c.get('base_revision')} 版）"
+            elif kind == "resolve":
+                kind = f"结 {c.get('target')} 为 {c.get('resolution')}" + (
+                    f"，答案 {_v(c.get('answered_by'))}" if c.get("answered_by") else "") + (
+                    f"，并入 {c.get('merged_into')}" if c.get("merged_into") else "")
+            elif c.get("supersedes"):
+                kind = f"insight，合并 {_v(c.get('supersedes'))}"
+            src = f"来自 {c['source']} 第 {_v(c.get('turns'))} 轮" if c.get("turns") else f"来自任务 {c['source']}"
+            head = f"- **{c['id']}**（待确认 · {kind} · {src}）"
             parts.append((f"{head}：{c['statement']}", head))
         for c in rejected:
             head = f"- **{c['id']}**（已丢弃 · {c['kind']}{' ' + c['target'] if c.get('target') else ''}）"
@@ -325,7 +380,7 @@ class Assembler:
         info = objects.links(self.store, fid, idx)
         m = info["meta"]
         rev = info["revision"]
-        keys = {"question": ["maturity", "status"], "assumption": ["status", "relied_on_by", "fragile"],
+        keys = {"question": ["maturity", "status", "parent", "active", "answered_by", "decided_by", "merged_into"], "assumption": ["status", "relied_on_by", "fragile"],
                 "hypothesis": ["status", "confidence", "evidence"], "uncertainty": ["status", "importance"],
                 "insight": ["status", "firmness", "basis", "informs"]}.get(m.get("type"), [])
         out = [f"## 2b. 聚焦对象：{fid}（{m.get('type')}，第 {rev} 版）",
@@ -454,6 +509,7 @@ class Assembler:
             8: lambda: self.s_uncertainties(redact),
             9: self.s_candidates,
             10: lambda: self.s_discussion(ds, disc_budget),
+            "tidy": self.s_tidy,
             11: self.s_reviews,
             12: lambda: self.s_papers(task),
         }
@@ -519,6 +575,23 @@ class Assembler:
             waiting.append(f"- 候选区有 {len(pend)} 条待确认：" + "、".join(c["id"] for c in pend[:20]))
         out.append("## 待处理\n\n" + ("\n".join(waiting) or "（无）"))
         return "\n\n".join(out) + "\n"
+
+
+_CLOSED_LABEL = {"answered": "已回答", "decided": "已拍板", "merged": "已合并"}
+
+
+def _as_list(v):
+    return v if isinstance(v, list) else ([] if v in (None, "") else [v])
+
+
+def _parent(m, sep="，"):
+    return f"{sep}母问题 {m['parent']}" if m.get("parent") else ""
+
+
+def _stmt(body):
+    """对象正文去掉标题、来由注记与状态史各节（## 结 / ## 撤下 ……），只留陈述。"""
+    from .objects import statement_of
+    return statement_of(body)
 
 
 def _rev(meta, sep="，"):

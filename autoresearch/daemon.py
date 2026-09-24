@@ -253,6 +253,18 @@ class Daemon:
         with self.lock:
             return self._enqueue_distill(ds, manual)
 
+    def request_tidy(self):
+        """整理（Tidy up，§5.16.3）：人从前端手动触发，不定时。已有一个在排队或在跑就不重复建。"""
+        with self.lock:
+            if bootstrap.needs_setup(self.store):
+                raise ValueError("还没有项目：先建立项目与主问题")
+            if self._active("tidy", None):
+                return None
+            t = self.ledger.create("tidy", "整理：找出可以合并的理解、已被回答或彼此重复的问题，提交候选（可以交白卷）",
+                                   priority=4)
+            self.bus.publish("task", t)
+            return t
+
     # ------------------------------------------------------------ 入队
 
     def _active(self, kind, ds):
@@ -392,6 +404,8 @@ class Daemon:
     def _prompt(self, task):
         if task["kind"] == "incubate":
             return protocol.incubate_prompt(task)
+        if task["kind"] == "tidy":
+            return protocol.tidy_prompt()
         if task["kind"] in JUDGE_KINDS:
             return protocol.judge_prompt(task)
         ds = task.get("discussion")
@@ -420,6 +434,17 @@ class Daemon:
         raise ValueError(task["kind"])
 
     def _finish(self, task, out):
+        if task["kind"] == "tidy":
+            made = [c["id"] for c in planner.tool_calls(self.ledger, task["id"], "propose_candidate",
+                                                        since=task.get("tools_from"))]
+            task["result"] = (out.result or "")[:4000]
+            task["result_brief"] = (f"提交了 {len(made)} 条候选：{', '.join(made)}" if made else
+                                    "交白卷：没有值得合并或结掉的")
+            self.bus.publish("candidates", {"tidy": task["id"]})
+            self.bus.notify("info", f"Tidy up finished: " + (f"{len(made)} proposal(s) in the Inbox."
+                                                          if made else "nothing worth merging or closing."),
+                            task=task["id"])
+            return
         if task["kind"] == "incubate":
             task["result"] = (out.result or "")[:4000]
             task["result_brief"] = " ".join((out.result or "").split())[:160]
@@ -676,11 +701,17 @@ class Daemon:
         else:
             target, why = planner.pick_prep_target(self.store)
             topic = f"核查 {target}" if target else None
+            if target and target.startswith("Q"):
+                # 活跃问题（§5.16.2）：不是证据目标，按自由题目检索精读，决定里仍引用它
+                topic = f"调研 {target}：{planner.question_line(self.store, target)}"
+        refs = [target] if target else []
+        if target and target.startswith("Q"):
+            target = None
         if not topic:
             self.st["prep"] = {"after": last, "skipped": "没有与你相关、值得预习的题目"}
             self._save_state()
             return
-        did = modes.record_prep(self.store, topic, why, [target] if target else [])
+        did = modes.record_prep(self.store, topic, why, refs)
         self.st["prep"] = {"active": True, "decision": did, "target": target, "topic": topic,
                            "why": why, "after": last, "started": now()}
         self._save_state()

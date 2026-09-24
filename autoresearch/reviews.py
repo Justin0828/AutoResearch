@@ -24,8 +24,9 @@ def overturned(store):
     hyps, asms, _, ins = _index(store)
     out = [(h, "hypothesis_refuted") for h, m in hyps.items() if m.get("status") == "refuted"]
     out += [(a, "assumption_invalidated") for a, m in asms.items() if m.get("status") == "invalidated"]
+    # 被合并的理解没有被撤回，只是换了一种说法：不传播（§5.16.3）
     out += [(i, "insight_withdrawn") for i, m in ins.items()
-            if m.get("status") in ("superseded", "abandoned")]
+            if m.get("status") in ("superseded", "abandoned") and not schema.is_consolidation_source(ins, m)]
     return out
 
 
@@ -59,8 +60,15 @@ def affected(store, trigger, event, idx=None):
 
     if event == "insight_withdrawn":
         # 理解被取代或放弃 → 由它派生的前提失去来由（“凭感觉排除了 X”要重新看）
+        # 合成的理解被取代 / 放弃时，派生自它所合并的旧条目的前提同样失去来由
+        lineage, todo = {trigger}, [trigger]
+        while todo:
+            for c in _as_list((ins.get(todo.pop()) or {}).get("consolidates")):
+                if c not in lineage:
+                    lineage.add(c)
+                    todo.append(c)
         for aid, a in asms.items():
-            if a.get("derived_from") == trigger and a.get("status") != "invalidated":
+            if a.get("derived_from") in lineage and a.get("status") != "invalidated":
                 add(aid, 1, [trigger, aid], f"它派生自理解 {trigger}，而这条理解已被"
                     + ("取代" if (ins.get(trigger) or {}).get("status") == "superseded" else "放弃"))
     elif event == "assumption_invalidated":

@@ -170,6 +170,11 @@ def _rejected_block(store):
     return out
 
 
+def _stmt(body):
+    from .objects import statement_of
+    return statement_of(body)
+
+
 def foundation_body(store):
     """首版基本盘的正文：只由 State 机械装配，不含 origin、论文全文 / 笔记 / 标题、讨论、候选、决策。"""
     n = attribution.neutralize
@@ -177,6 +182,16 @@ def foundation_body(store):
     qid = pm.get("main_question")
     qm, qb = store.read_obj(qid)
     parts = [f"## 1. 研究问题\n\n**{qid}** · maturity={qm.get('maturity')}\n\n{n(qb.strip())}"]
+    # 活跃问题各一行作“当前关注”，已结问题各一行作“已有结论”（§5.16.2）；其余问题不进基本盘
+    qs = [(m, b) for m, b in store.list("question") if m.get("id") != qid and not schema.is_withdrawn(m)]
+    focus = [f"- **{m['id']}**：{n(_first(_stmt(b), 160))}" for m, b in qs
+             if schema.question_status(m) == "open" and schema.is_active(m)]
+    done = [f"- **{m['id']}**（{m['status']}）：{n(_first(_stmt(b), 120))}" for m, b in qs
+            if schema.question_status(m) in schema.CLOSED_QUESTION]
+    if focus:
+        parts[0] += "\n\n### 当前关注（研究者正在想的子问题）\n\n" + "\n".join(focus)
+    if done:
+        parts[0] += "\n\n### 已有结论（这些问题已经结了，不要当作开放问题重新推演）\n\n" + "\n".join(done)
 
     ins = [(m, b) for m, b in store.list("insight") if m.get("status") == "active"]
     order = {"settled": 0, "working": 1, "hunch": 2}

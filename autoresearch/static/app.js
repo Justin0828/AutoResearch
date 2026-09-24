@@ -35,10 +35,12 @@ function toast(msg, level = "info", ms = 4200) {
 const fail = (err) => toast(err.message || String(err), "error", 7000);
 
 // ---------------------------------------------------------------- labels
-const KIND = { assumption: "Assumption", hypothesis: "Hypothesis", question: "Question", uncertainty: "Uncertainty", insight: "Insight", revision: "Revision" };
+const KIND = { assumption: "Assumption", hypothesis: "Hypothesis", question: "Question", uncertainty: "Uncertainty", insight: "Insight", revision: "Revision", resolve: "Close question" };
 const TYPE = { question: "Question", assumption: "Assumption", hypothesis: "Hypothesis", uncertainty: "Uncertainty", insight: "Insight", evidence: "Evidence", "dead-end": "Dead end", decision: "Decision", candidate: "Candidate", review: "Re-examination", paper: "Paper", idea: "Idea", grounding: "Ground check", discussion: "Discussion" };
 const U_STATUS = { open: "Open", reduced: "Reduced", resolved: "Resolved", withdrawn: "Withdrawn" };
-const Q_STATUS = { open: "Open", withdrawn: "Withdrawn" };
+const Q_STATUS = { open: "Open", answered: "Answered", decided: "Decided", merged: "Merged", withdrawn: "Withdrawn" };
+const Q_CLOSED = ["answered", "decided", "merged"];
+const RESOLUTION = { answered: "Answered — something we have now answers it", decided: "Decided — it was a choice, and you've made it", merged: "Merged — it's the same question as another one" };
 const MATURITY = { vague: "Vague", scoped: "Scoped", formalized: "Formalized" };
 const FOCUSABLE = ["question", "assumption", "hypothesis", "uncertainty", "insight"];
 const FIRM = { hunch: "Hunch", working: "Working", settled: "Settled" };
@@ -411,7 +413,8 @@ const KIND_SPEC = {
   },
   question: {
     hint: "Something still to be clarified.",
-    fields: [{ k: "maturity", label: "Maturity", type: "choice", req: true }],
+    fields: [{ k: "maturity", label: "Maturity", type: "choice", req: true },
+      { k: "parent", label: "Sub-question of", type: "id", help: "Its parent question in the tree" }],
   },
   uncertainty: {
     hint: "An unknown that discounts our conclusions and can't be removed for now.",
@@ -425,6 +428,7 @@ const KIND_SPEC = {
       { k: "basis_note", label: "Grounding note", type: "text", help: "Or a source outside the state" },
       { k: "informs", label: "Informs", type: "ids" },
       { k: "change_mind", label: "Would change if", type: "text" },
+      { k: "supersedes", label: "Merges", type: "ids", help: "Two or more active insights this one replaces" },
     ],
   },
 };
@@ -467,7 +471,7 @@ function editForm(c, draft) {
   const insightReq = draft.kind === "insight" ? `<div class="fnote">Needs “Grounded in” or a grounding note — at least one.</div>` : "";
   return `<div class="card editing" data-id="${c.id}">
     <div class="card-top"><span class="id">${c.id}</span><span>editing · from ${c.source} · turn ${fmtv(c.turns)}</span></div>
-    <div class="kinds">${Object.entries(KIND).filter(([k]) => k !== "revision").map(([k, n]) => `<button type="button" data-kind="${k}" class="tag ${k} ${k === draft.kind ? "on" : ""}">${n}</button>`).join("")}</div>
+    <div class="kinds">${Object.entries(KIND).filter(([k]) => !["revision", "resolve"].includes(k)).map(([k, n]) => `<button type="button" data-kind="${k}" class="tag ${k} ${k === draft.kind ? "on" : ""}">${n}</button>`).join("")}</div>
     <div class="khint">${spec.hint}</div>
     <textarea class="stmt" data-k="statement" rows="2" placeholder="Statement">${esc(draft.statement || "")}</textarea>
     <div class="form">
@@ -523,13 +527,14 @@ function candCard(c) {
   if (ed && ed.mode === "accept") return acceptForm(c);
   const pending = c.status === "pending";
   if (c.kind === "revision") return revisionCard(c);
-  const fields = (FIELDS[c.kind] || []).filter(([k]) => c[k] && fmtv(c[k]))
+  if (c.kind === "resolve") return resolveCard(c);
+  const fields = [...(FIELDS[c.kind] || []), ["parent", "Sub-question of"], ["supersedes", "Merges"]].filter(([k]) => c[k] && fmtv(c[k]))
     .map(([k, n]) => `<dt>${n}</dt><dd>${k === "firmness" ? esc(FIRM[c[k]] || c[k]) : idl(c[k])}</dd>`).join("");
   const state = c.status === "accepted" ? `<span class="tag plain">Accepted → ${idl(c.promoted_to)}</span>`
     : c.status === "rejected" ? `<span class="tag plain">Rejected</span>` : "";
   return `<div class="card ${pending ? "" : "dim"} ${c.origin === "unclear" && pending ? "flagged" : ""}" data-id="${c.id}">
-    <div class="card-top"><span class="tag ${c.kind}">${KIND[c.kind]}</span><span class="id">${c.id}</span>
-      <span>from ${idl(c.source)} · turn ${fmtv(c.turns)} · proposed by ${ORIGIN[c.origin] || c.origin}</span>
+    <div class="card-top"><span class="tag ${c.kind}">${KIND[c.kind]}</span>${c.supersedes ? `<span class="tag plain" title="Accepting replaces ${esc(fmtv(c.supersedes))} with this one">Merge</span>` : ""}<span class="id">${c.id}</span>
+      <span>${srcLine(c)} · proposed by ${ORIGIN[c.origin] || c.origin}</span>
       ${c.origin === "unclear" && pending ? `<span class="tag warn">Origin needs your call</span>` : ""}${state}</div>
     <div class="statement md">${md(c.statement)}</div>
     ${fields || c.relates_to || c.origin_note ? `<dl>${fields}
@@ -542,6 +547,83 @@ function candCard(c) {
       <button class="btn ghost small" data-act="edit">Edit</button>
       <button class="btn ghost small danger" data-act="reject">Reject</button></div>` : ""}
   </div>`;
+}
+
+const srcLine = (c) => /^T\d/.test(c.source || "") ? `from tidy-up ${esc(c.source)}` : `from ${idl(c.source)} · turn ${fmtv(c.turns)}`;
+
+// Closing a question (§5.16.1): answered / decided / merged. Nothing is deleted; it can be reopened.
+function resolveCard(c) {
+  const pending = c.status === "pending";
+  const state = c.status === "accepted" ? `<span class="tag plain">Accepted → ${idl(c.promoted_to)} ${esc(c.resolution)}</span>`
+    : c.status === "rejected" ? `<span class="tag plain">Rejected</span>` : "";
+  const refs = (c.refs || []).filter((r) => r.status === "pending");
+  const how = c.resolution === "answered" ? `<dt>Answered by</dt><dd>${idl(c.answered_by)}${refs.length ? ` <span class="meta">(${refs.map((r) => r.id).join(", ")} still pending — accepted together)</span>` : ""}</dd>`
+    : c.resolution === "merged" ? `<dt>Merge into</dt><dd>${idl(c.merged_into)}</dd>` : `<dt>Suggested decision</dt><dd>You write the final wording when confirming</dd>`;
+  return `<div class="card ${pending ? "" : "dim"} ${c.stale && pending ? "flagged" : ""}" data-id="${c.id}">
+    <div class="card-top"><span class="tag hypothesis">${KIND.resolve}</span><span class="id">${c.id}</span>
+      <span>closes ${idl(c.target)} as <b>${esc(c.resolution)}</b> · ${srcLine(c)} · proposed by ${ORIGIN[c.origin] || c.origin}</span>
+      ${c.stale && pending ? `<span class="tag warn">${esc(c.target)} is already ${esc(c.target_status || "gone")}</span>` : ""}${state}</div>
+    <div class="statement md">${md(c.statement)}</div>
+    <dl>${how}</dl>
+    <details class="why"><summary>Why it can be closed</summary><div class="md">${md(c.rationale)}</div></details>
+    ${c.decision_note ? `<details class="why" open><summary>Your note</summary><div class="md">${md(c.decision_note)}</div></details>` : ""}
+    ${pending ? `<div class="acts"><button class="btn small" data-act="close-q" ${c.stale ? "disabled" : ""}>Review & close…</button>
+      <a class="btn ghost small" href="#/obj/${c.target}">Open ${c.target}</a>
+      <button class="btn ghost small danger" data-act="reject">Reject</button></div>` : ""}
+  </div>`;
+}
+
+async function acceptResolve(c) {
+  const refs = (c.refs || []).filter((r) => r.status === "pending");
+  const refCands = refs.map((r) => S.cands.find((x) => x.id === r.id) || r);
+  let tq = {};
+  try { tq = await api("GET", `/api/objects/${c.target}/links`); } catch (err) { /* shown below */ }
+  const html = `<div class="flabel">${c.target}${tq.statement ? "" : " (not found)"}</div><div class="md small cur">${md(tq.statement || "")}</div>` +
+    `<p>Close as <b>${esc(c.resolution)}</b>. Nothing is deleted; ${c.target} fades in the tree and the AI sees it as one line with this conclusion. You can reopen it.</p>` +
+    (c.resolution === "merged" ? `<p>Merge into ${idl(c.merged_into)} — its discussions and links will show up there.</p>` : "") +
+    (c.resolution === "answered" && refCands.length ? `<div class="banner info"><strong>Accepted together.</strong> The answer is still a pending candidate; confirming accepts it first, then closes ${c.target} with the object it becomes.` +
+      refCands.map((r) => `<div class="card" style="margin-top:8px"><div class="card-top"><span class="tag ${r.kind}">${KIND[r.kind] || r.kind}</span><span class="id">${r.id}</span></div><div class="md small">${md(r.statement || "")}</div>
+        ${r.origin === "unclear" ? select(`Who raised ${r.id} first?`, "origin_" + r.id, { human: "Me", ai: "The AI" }, "human") : ""}</div>`).join("") + `</div>` : "") +
+    (c.resolution === "decided" ? field("The decision", "decision", c.statement, "what you chose, why, and what would make you revisit it — recorded as a research decision", 6) : "") +
+    (c.origin === "unclear" ? select("Who proposed closing it?", "origin", { human: "Me", ai: "The AI" }, "human") : "") +
+    `<details class="why"><summary>Why it can be closed</summary><div class="md small">${md(c.rationale)}</div></details>`;
+  const r = await ask(`Close ${c.target} — ${c.id}`, html, refCands.length ? "Accept both & close" : "Close question", { wide: true });
+  if (!r) return;
+  try {
+    for (const ref of refCands) {
+      const x = await api("POST", `/api/candidates/${ref.id}/accept`, r["origin_" + ref.id] ? { origin: r["origin_" + ref.id] } : {});
+      toast(`Accepted ${ref.id} as ${x.id}.`);
+    }
+    const body = {};
+    if (r.decision !== undefined) body.decision = r.decision;
+    if (r.origin) body.origin = r.origin;
+    await api("POST", `/api/candidates/${c.id}/accept`, body);
+    toast(`${c.target} closed as ${c.resolution}.`);
+  } catch (err) { fail(err); }
+  after();
+}
+
+// Merging insights (§5.16.3): you pick the firmness; grounding and "informs" are the union of the merged ones.
+async function acceptMerge(c) {
+  if (!S.overview) await loadOverview();
+  const olds = (c.supersedes || []).map((id) => (S.overview.insights || []).find((i) => i.id === id) || { id, body: "", firmness: "" });
+  const html = `<p>Accepting creates one new insight and marks ${esc(fmtv(c.supersedes))} as merged into it. Nothing is withdrawn — assumptions derived from them still stand.</p>` +
+    olds.map((i) => `<div class="card"><div class="card-top"><span class="id">${i.id}</span>${i.firmness ? `<span class="tag insight">${FIRM[i.firmness] || i.firmness}</span>` : ""}</div><div class="md small">${md(mainText(i.body).replace(/（来由见候选 C\d+。?）/g, ""))}</div></div>`).join("") +
+    `<div class="flabel" style="margin-top:12px">Merged</div><textarea name="statement" rows="5">${esc(c.statement)}</textarea>` +
+    firmSel(c.firmness || "hunch") +
+    (c.origin === "unclear" ? select("Who raised it first?", "origin", { human: "Me", ai: "The AI" }, "human") : "") +
+    `<details class="why"><summary>Why merge</summary><div class="md small">${md(c.rationale)}</div></details>`;
+  const r = await ask(`Merge ${fmtv(c.supersedes)} — ${c.id}`, html, "Merge", { wide: true });
+  if (!r) return;
+  const changes = { firmness: r.firmness };
+  if ((r.statement || "").trim() !== (c.statement || "").trim()) changes.statement = r.statement;
+  try {
+    const x = await api("POST", `/api/candidates/${c.id}/accept`, { changes, ...(r.origin ? { origin: r.origin } : {}) });
+    toast(`Merged into ${x.id}.`);
+    after();
+    return x.id;
+  } catch (err) { fail(err); }
+  after();
 }
 
 // A revision changes an existing object in place: same id, version +1, old wording kept (§5.15.3)
@@ -668,8 +750,8 @@ function renderInbox(force) {
 function openEditor(c, mode) {
   const draft = mode === "edit"
     ? Object.fromEntries(["kind", "statement", "rationale", "origin", "origin_note", "relied_on_by", "derived_from",
-      "falsifier", "validation", "confidence", "maturity", "importance", "firmness", "basis", "basis_note", "informs", "change_mind"]
-      .map((k) => [k, c[k] ?? (["relied_on_by", "basis", "informs"].includes(k) ? [] : "")]))
+      "falsifier", "validation", "confidence", "maturity", "parent", "importance", "firmness", "basis", "basis_note", "informs", "change_mind", "supersedes"]
+      .map((k) => [k, c[k] ?? (["relied_on_by", "basis", "informs", "supersedes"].includes(k) ? [] : "")]))
     : { reason: "" };
   S.editing = { id: c.id, mode, draft };
   renderInbox(true);
@@ -702,7 +784,7 @@ function validateDraft(d) {
   const spec = KIND_SPEC[d.kind];
   const miss = spec.fields.filter((f) => f.req && !(Array.isArray(d[f.k]) ? d[f.k].length : String(d[f.k] || "").trim())).map((f) => f.label);
   if (!String(d.statement || "").trim()) miss.unshift("Statement");
-  if (d.kind === "insight" && !(d.basis || []).length && !String(d.basis_note || "").trim()) miss.push("Grounded in or a grounding note");
+  if (d.kind === "insight" && !(d.basis || []).length && !String(d.basis_note || "").trim() && !(d.supersedes || []).length) miss.push("Grounded in or a grounding note");
   if (d.origin === "unclear" && !String(d.origin_note || "").trim()) miss.push("Origin note");
   return miss.length ? `Still needed: ${miss.join(", ")}.` : "";
 }
@@ -776,6 +858,12 @@ async function candAct(act, c) {
   if (act === "edit") return openEditor(c, "edit");
   if (act === "reject") return openEditor(c, "reject");
   if (act === "revise") { await reviewRevision(c.id); return loadInbox(); }
+  if (act === "close-q") return acceptResolve(c);
+  if ((act === "accept" || act === "accept-discuss") && c.supersedes && c.supersedes.length) {
+    const id = await acceptMerge(c);
+    if (id && act === "accept-discuss") await discussThis(id);
+    return;
+  }
   if (act === "accept-discuss") {
     if (c.origin === "unclear") { toast("Pick who raised it first (Accept), then discuss it from its page.", "warn"); return openEditor(c, "accept"); }
     try {
@@ -835,7 +923,9 @@ const bindFolds = (root) => $$("details[data-fold]", root).forEach((d) => d.onto
 
 function statusTag(x) {
   const t = x.type;
-  if (t === "question") return `<span class="tag question">${MATURITY[x.maturity] || x.maturity}</span>`;
+  if (t === "question") return `<span class="tag question">${MATURITY[x.maturity] || x.maturity}</span>` +
+    (x.status && x.status !== "open" && x.status !== "withdrawn" ? `<span class="tag ${x.status === "merged" ? "plain" : "hypothesis"}">${Q_STATUS[x.status] || esc(x.status)}</span>` : "") +
+    (x.active === "true" || x.active === true ? `<span class="tag insight" title="You marked it as something you're thinking about now">Active</span>` : "");
   if (t === "assumption") return `<span class="tag assumption">${A_STATUS[x.status] || x.status}</span>${x.fragile === "true" || x.fragile === true ? `<span class="tag warn">Fragile</span>` : ""}`;
   if (t === "hypothesis") return `<span class="tag hypothesis">${H_STATUS[x.status] || x.status}</span>`;
   if (t === "uncertainty") return `<span class="tag uncertainty">${esc(x.importance)} importance</span>${x.status !== "open" ? `<span class="tag plain">${U_STATUS[x.status] || x.status}</span>` : ""}`;
@@ -865,10 +955,8 @@ function renderResearch() {
   const openReviews = (o.reviews || []).length;
   const top = (o.validation.errors.length ? `<div class="banner"><strong>The research state has ${o.validation.errors.length} validation error(s).</strong><br>${o.validation.errors.map(esc).join("<br>")}</div>` : "") +
     (openReviews ? `<div class="banner warn"><strong>${openReviews} object(s) need re-examination</strong> because something they are linked to was overturned. <a href="#/inbox" id="to-reviews">Open the Inbox →</a></div>` : "");
-  const main = o.project.main_question;
-  const qs = o.questions.slice().sort((a, b) => (a.id !== main) - (b.id !== main));
-  const q = listWithFolded("q", qs.filter((x) => !x.withdrawn), qs.filter((x) => x.withdrawn), "No questions yet.", "Withdrawn",
-    (x) => x.id === main ? `<span class="tag insight">Main</span>` : "");
+  const tree = o.tree || { nodes: {}, unplaced: [], withdrawn: [], active: [], open: [] };
+  const q = treeHtml(tree);
 
   const ord = { settled: 0, working: 1, hunch: 2 };
   const insAll = o.insights || [];
@@ -889,8 +977,9 @@ function renderResearch() {
     ${o.bias.map((b) => `<tr><td>${b.origin === "disputed" ? "Disputed origin (not counted)" : ORIGIN[b.origin] || b.origin}</td><td>${b.total}</td><td>${b.resolved}</td><td>${b.refuted}</td><td>${b.refute_rate == null ? "—" : Math.round(b.refute_rate * 100) + "%"}</td></tr>`).join("")}</table></div>`
     : `<div class="empty">No hypotheses yet.</div>`;
 
-  $("#research-body").innerHTML = top +
-    section("sec-question", "Research questions", qs.filter((x) => !x.withdrawn).length, "Click any row to see its history, discussions and links — and to discuss it.", q) +
+  $("#research-body").innerHTML = top + convergeBanners(tree, ins.length, o.tidy) +
+    section("sec-question", "Research questions", tree.open.length, "The question tree. Closed questions fade and fold away with their answer on the node. ★ marks what you're thinking about now — the AI sees those in full and the rest as one line each.", q,
+      `<button class="btn ghost small" data-act="tidy" title="Ask the AI to propose merging overlapping insights and closing answered or duplicate questions">Tidy up</button>`) +
     section("sec-insights", "Understanding", ins.length, "What we've come to think so far. Understanding, not evidence — it can be a feel, but it must say where it comes from.", insHtml,
       `<button class="btn small" data-act="new-insight">Add insight</button>`) +
     section("sec-assumptions", "Assumptions", as.filter((x) => !x.withdrawn).length, "Premises the research relies on. Unexamined ones come first — they're the dangerous ones.", asHtml) +
@@ -904,7 +993,102 @@ function renderResearch() {
   bindFolds($("#research-body"));
   const nb = $('[data-act="new-insight"]', $("#research-body"));
   if (nb) nb.onclick = newInsight;
+  bindTree($("#research-body"));
   spyChips();
+}
+
+// ---------------------------------------------------------------- question tree (DESIGN §5.16)
+// Remembered per browser; storage may throw (private mode), so every access is guarded.
+const hint = {
+  seen: (k) => { try { return localStorage.getItem("ar.hint." + k) === "1"; } catch { return false; } },
+  done: (k) => { try { localStorage.setItem("ar.hint." + k, "1"); } catch { /* private mode */ } },
+};
+
+function answerLinks(n) {
+  if (n.status === "answered") return `answered by ${(n.answered_by || []).map((i) => linkIds(esc(i))).join(", ")}`;
+  if (n.status === "decided") return `decided in ${linkIds(esc(n.decided_by))}`;
+  if (n.status === "merged") return `merged into ${linkIds(esc(n.merged_into))}`;
+  return "";
+}
+
+function qnode(t, id, depth = 0) {
+  const n = t.nodes[id];
+  if (!n) return "";
+  const closed = Q_CLOSED.includes(n.status);
+  const kids = n.children.filter((k) => t.nodes[k] && !t.nodes[k].withdrawn);
+  const open = fold.get("tree." + id, !closed);
+  const hang = [n.insights.length ? `${n.insights.length} insight${n.insights.length === 1 ? "" : "s"}` : "",
+    n.hypotheses.length ? `${n.hypotheses.length} hypothes${n.hypotheses.length === 1 ? "is" : "es"}` : "",
+    n.merged_from.length ? `absorbed ${n.merged_from.join(", ")}` : ""].filter(Boolean).join(" · ");
+  const star = n.main ? `<span class="star main" title="The main question">◆</span>`
+    : n.status === "open" ? `<button class="star ${n.active ? "on" : ""}" data-star="${id}" data-on="${n.active ? 1 : 0}" title="${n.active ? "Active — click to unmark" : "Mark as something you're thinking about now"}">${n.active ? "★" : "☆"}</button>`
+      : `<span class="star"></span>`;
+  return `<div class="qnode ${closed ? "closed" : ""}" style="--d:${depth}">
+    <div class="qrow">
+      ${kids.length ? `<button class="caret-b" data-tree="${id}" aria-label="${open ? "Collapse" : "Expand"}">${open ? "▾" : "▸"}</button>` : `<span class="caret-b"></span>`}
+      ${star}
+      <a class="qmain" href="#/obj/${id}"><span class="id">${id}</span>
+        <span class="tags"><span class="tag question">${MATURITY[n.maturity] || esc(n.maturity)}</span>${closed ? `<span class="tag ${n.status === "merged" ? "plain" : "hypothesis"}">${Q_STATUS[n.status]}</span>` : ""}${inBatch(id)}</span>
+        <span class="t">${esc(n.text)}</span></a>
+      <span class="cnt">${closed ? `<span class="ans">${answerLinks(n)}</span>${hang ? " · " : ""}` : ""}${hang}${kids.length && !open ? ` · ${kids.length} sub-question${kids.length === 1 ? "" : "s"}` : ""}</span>
+    </div>
+    ${kids.length && open ? `<div class="qkids">${kids.map((k) => qnode(t, k, depth + 1)).join("")}</div>` : ""}
+  </div>`;
+}
+
+function treeHtml(t) {
+  const root = t.main ? `<div class="qtree">${qnode(t, t.main)}</div>` : `<div class="empty">No main question.</div>`;
+  const loose = t.unplaced.map((id) => {
+    const n = t.nodes[id];
+    return `<div class="qtree unplaced-row">${qnode(t, id)}
+      ${n.suggest_parent ? `<div class="suggest"><span class="meta">Its only related question is ${linkIds(esc(n.suggest_parent))}.</span>
+        <button class="btn ghost small" data-adopt="${id}" data-parent="${esc(n.suggest_parent)}">Put under ${esc(n.suggest_parent)}</button></div>` : ""}</div>`;
+  }).join("");
+  const unplaced = t.unplaced.length ? `<h3 class="sub">Not placed yet <span class="count">${t.unplaced.length}</span></h3>
+    <p class="meta">These have no parent question. Put each under the question it belongs to — nothing is moved automatically.</p>${loose}` : "";
+  const wd = t.withdrawn.length ? `<details class="history" data-fold="research.qwd" ${fold.get("research.qwd", false) ? "open" : ""}><summary>Withdrawn · ${t.withdrawn.length}</summary>
+    <div class="olist">${t.withdrawn.map((id) => `<a class="orow dim" href="#/obj/${id}"><span class="id">${id}</span><span class="tags"><span class="tag plain">Withdrawn</span></span><span class="t">${esc(t.nodes[id].text)}</span><span class="cnt"></span></a>`).join("")}</div></details>` : "";
+  return root + unplaced + wd;
+}
+
+function convergeBanners(t, activeInsights, tidy) {
+  const out = [];
+  const others = t.open.filter((id) => id !== t.main);
+  if (others.length && !t.active.length && !hint.seen("active")) out.push(`<div class="banner info" data-hint="active"><strong>Mark what you're thinking about now.</strong>
+    Since this update, only the main question and questions you mark active (☆ → ★) reach the AI in full; the others appear as one line each, so each discussion stays focused.
+    <div class="acts"><button class="btn ghost small" data-dismiss="active">Got it</button></div></div>`);
+  if (t.active.length > 3) out.push(`<div class="banner warn"><strong>${t.active.length} questions are active.</strong> When everything is active, nothing is — consider unmarking the ones you aren't working on this week.</div>`);
+  if (activeInsights > 12 || t.open.length > 8) out.push(`<div class="banner info"><strong>It's getting crowded</strong> — ${activeInsights} active insights, ${t.open.length} open questions.
+    Tidy up asks the AI to propose merging overlapping insights and closing questions that are already answered or duplicated. It doesn't add anything new, and every proposal waits for you in the Inbox.
+    <div class="acts"><button class="btn small" data-act="tidy">Tidy up</button></div></div>`);
+  if (tidy && ["queued", "running"].includes(tidy.status)) out.push(`<div class="banner info"><span class="thinking">Tidying up (${tidy.id})</span> — proposals will land in the Inbox.</div>`);
+  else if (tidy && tidy.status === "done" && tidy.result_brief) out.push(`<div class="meta tidy-last">Last tidy-up ${esc(tidy.id)} · ${fmtTs(tidy.ended)}: ${linkIds(esc(tidy.result_brief))}</div>`);
+  return out.join("");
+}
+
+function bindTree(root) {
+  $$("[data-tree]", root).forEach((b) => b.onclick = () => { fold.set("tree." + b.dataset.tree, b.textContent !== "▾"); renderResearch(); });
+  $$("[data-star]", root).forEach((b) => b.onclick = async () => {
+    try { await api("POST", `/api/questions/${b.dataset.star}/active`, { active: b.dataset.on !== "1" }); hint.done("active"); } catch (err) { fail(err); }
+    loadOverview();
+  });
+  $$("[data-adopt]", root).forEach((b) => b.onclick = async () => {
+    try { await api("POST", `/api/questions/${b.dataset.adopt}/parent`, { parent: b.dataset.parent }); toast(`${b.dataset.adopt} is now under ${b.dataset.parent}.`); } catch (err) { fail(err); }
+    loadOverview();
+  });
+  $$("[data-dismiss]", root).forEach((b) => b.onclick = () => { hint.done(b.dataset.dismiss); renderResearch(); });
+  $$('[data-act="tidy"]', root).forEach((b) => b.onclick = tidyUp);
+}
+
+async function tidyUp() {
+  const r = await ask("Tidy up?", `<p>A separate task reads every active insight and every open question in full, and proposes only two things: <b>merging</b> insights that say the same thing, and <b>closing</b> questions that are already answered or duplicate another. It adds nothing new, and it's fine for it to find nothing.</p>
+    <p class="meta">Every proposal waits in the Inbox for you. Costs about one distill.</p>`, "Tidy up");
+  if (!r) return;
+  try {
+    const x = await api("POST", "/api/tidy", {});
+    toast(x.task ? `Tidy-up queued (${x.task.id}).` : "A tidy-up is already queued or running.");
+  } catch (err) { fail(err); }
+  loadOverview();
 }
 
 // ---------------------------------------------------------------- object actions (used by the object page)
@@ -991,6 +1175,69 @@ async function discussThis(id) {
   } catch (err) { fail(err); }
 }
 
+// ---------------------------------------------------------------- closing questions (DESIGN §5.16.1)
+function closedBanner(x) {
+  const q = x.question;
+  const out = [];
+  if (q && Q_CLOSED.includes(q.status)) {
+    const what = q.status === "answered" ? `Answered by ${q.answered_by.map((a) => `${linkIds(esc(a.id))} — ${esc(a.text)}`).join("; ")}`
+      : q.status === "decided" ? `Decided (${linkIds(esc(q.decided_by))}): ${esc(q.decision || "")}`
+        : `Merged into ${linkIds(esc(q.merged_into))} — its discussions and links show up there.`;
+    out.push(`<div class="banner ok"><strong>${Q_STATUS[q.status]}.</strong> ${what}<br><span class="meta">Nothing was deleted. The AI now sees it as one line with this conclusion, so it won't raise it again. Reopen it if it turns out not to be settled.</span></div>`);
+  }
+  if (x.merged_into) out.push(`<div class="banner info"><strong>Merged into ${linkIds(esc(x.merged_into))}.</strong> Not withdrawn — the same understanding, said together with others. Anything derived from it still stands.</div>`);
+  if (x.derived_merged) out.push(`<div class="banner info">Derived from ${linkIds(esc(x.derived_merged.from))}, which has been merged into ${linkIds(esc(x.derived_merged.into))}. The link isn't rewritten; nothing needs re-examining.</div>`);
+  return out.join("");
+}
+
+function questionOptions(exclude) {
+  const t = (S.overview || {}).tree || { nodes: {} };
+  return Object.values(t.nodes).filter((n) => !exclude.includes(n.id) && !n.withdrawn)
+    .map((n) => [n.id, `${n.id} · ${n.text.slice(0, 70)}${n.status !== "open" ? ` (${Q_STATUS[n.status]})` : ""}`]);
+}
+
+async function moveQuestion(x) {
+  if (!S.overview) await loadOverview();
+  const q = x.question;
+  const opts = Object.fromEntries([["", "— Not placed (no parent) —"], ...questionOptions([x.id])]);
+  const r = await ask(`Move ${x.id} in the tree`, `<p>Pick the question ${x.id} is a sub-question of. <i>Related</i> links stay as they are — only the tree changes.</p>` +
+    select("Parent question", "parent", opts, q.parent || q.suggest_parent || ""), "Move");
+  if (!r) return;
+  try { await api("POST", `/api/questions/${x.id}/parent`, { parent: r.parent }); toast(r.parent ? `${x.id} is now under ${r.parent}.` : `${x.id} is no longer placed.`); } catch (err) { fail(err); }
+  after();
+}
+
+async function resolveQuestion(x) {
+  if (!S.overview) await loadOverview();
+  const o = S.overview;
+  const answers = [...(o.insights || []).filter((i) => i.status === "active"), ...(o.hypotheses || []).filter((h) => !h.withdrawn && h.status !== "abandoned")]
+    .map((a) => `<label><input type="checkbox" name="answered_by" value="${a.id}"><span><span class="id">${a.id}</span> ${esc(firstLine(mainText(a.body)).slice(0, 140))}</span></label>`).join("");
+  const targets = Object.fromEntries(questionOptions([x.id]).filter(([id]) => (o.tree.nodes[id] || {}).status === "open"));
+  const r = await ask(`Close ${x.id}`, `<p>Closing deletes nothing: ${x.id} fades in the tree, and the AI sees it as one line with its conclusion so it won't raise it again. You can reopen it any time.</p>` +
+    select("How is it settled?", "resolution", RESOLUTION, "answered") +
+    `<div class="res-part" data-res="answered"><label>Answered by <span class="hint">— the insights or hypotheses that answer it</span></label><div class="checks">${answers || `<div class="meta">No active insights or hypotheses yet. Record the answer as an insight first.</div>`}</div></div>` +
+    `<div class="res-part" data-res="decided" hidden>${field("The decision", "decision", "", "what you chose, why, and what would make you revisit it — recorded as a research decision", 5)}</div>` +
+    `<div class="res-part" data-res="merged" hidden>${select("Merge into", "merged_into", targets, Object.keys(targets)[0])}<p class="meta">Its discussions and links will show up on that question's page.</p></div>` +
+    field("Why can it be closed now?", "reason", "", "required", 3), "Close question", { wide: true });
+  if (!r) return;
+  const body = { resolution: r.resolution, reason: r.reason, answered_by: r.answered_by || [], merged_into: r.merged_into, decision: r.decision };
+  try { const d = await api("POST", `/api/questions/${x.id}/resolve`, body); toast(`${x.id} closed as ${r.resolution} (${d.decision}).`); } catch (err) { fail(err); }
+  after();
+}
+// Show only the part of the close dialog that matches the chosen resolution.
+document.addEventListener("change", (e) => {
+  if (e.target.name !== "resolution" || !e.target.closest("#dlg-body")) return;
+  $$(".res-part", $("#dlg-body")).forEach((p) => { p.hidden = p.dataset.res !== e.target.value; });
+});
+
+async function reopenQuestion(x) {
+  const r = await ask(`Reopen ${x.id}`, `<p>It goes back to open. The earlier conclusion stays in its history and in the decision log.</p>` +
+    field("Why reopen it?", "reason", "", "required", 3), "Reopen");
+  if (!r) return;
+  try { await api("POST", `/api/questions/${x.id}/reopen`, r); toast(`${x.id} reopened.`); } catch (err) { fail(err); }
+  after();
+}
+
 // ---------------------------------------------------------------- revision review (DESIGN §5.15.3)
 async function reviewRevision(cid) {
   let pv;
@@ -1039,7 +1286,7 @@ function undoWhy(x) {
     : `${USE[u.type] ? USE[u.type] + " " : ""}${linkIds(esc(u.id))}${["discussion", "evidence"].includes(u.type) ? "" : ` (${esc(u.field)})`}`);
   return `it's already in use — ${us.join(", ")}`;
 }
-const WITHDRAW_WHY = { main_question: "It's the main question — point the project at another question first.", already: "Already withdrawn or closed.", not_withdrawable: "This kind of object can't be withdrawn." };
+const WITHDRAW_WHY = { main_question: "It's the main question — point the project at another question first.", already: "Already withdrawn or closed.", not_withdrawable: "This kind of object can't be withdrawn.", closed: "It's closed — reopen it first." };
 function block(key, title, count, content, defOpen = false) {
   const open = fold.get("obj." + key, defOpen);
   return `<details class="blk" data-fold="obj.${key}" ${open ? "open" : ""}><summary><span>${title}</span><b class="cnt">${count}</b></summary><div class="blk-body">${content}</div></details>`;
@@ -1048,13 +1295,13 @@ function block(key, title, count, content, defOpen = false) {
 function objFields(m) {
   const t = m.type;
   const rows = {
-    question: [["Maturity", MATURITY[m.maturity] || m.maturity]],
+    question: [["Maturity", MATURITY[m.maturity] || m.maturity], ["Sub-question of", m.parent]],
     assumption: [["Supports", m.relied_on_by], ["Fragile", m.fragile], ["Derived from", m.derived_from], ["Promoted to", m.promoted_to], ["Invalidated by", m.invalidated_by]],
     hypothesis: [["Refuted if", m.falsifier], ["Tested by", m.validation], ["Confidence", m.confidence], ["From assumption", m.promoted_from]],
     uncertainty: [["Importance", m.importance]],
-    insight: [["Grounded in", m.basis], ["Grounding note", m.basis_note], ["Informs", m.informs], ["Would change if", m.change_mind], ["Superseded by", m.superseded_by]],
+    insight: [["Grounded in", m.basis], ["Grounding note", m.basis_note], ["Informs", m.informs], ["Would change if", m.change_mind], ["Merges", m.consolidates], ["Superseded by", m.superseded_by]],
     evidence: [["About", m.target], ["Stance", m.stance], ["Strength", m.strength], ["Source", m.source], ["Quote", m.quote]],
-    candidate: [["Kind", m.kind], ["Status", m.status], ["Target", m.target], ["Became", m.promoted_to], ["From", m.source]],
+    candidate: [["Kind", m.kind], ["Status", m.status], ["Target", m.target], ["Resolution", m.resolution], ["Answered by", m.answered_by], ["Merge into", m.merged_into], ["Merges", m.supersedes], ["Parent", m.parent], ["Became", m.promoted_to], ["From", m.source]],
     review: [["Target", m.target], ["Because of", m.trigger], ["Status", m.status]],
     decision: [["Kind", m.kind], ["Refs", m.refs]],
   }[t] || [];
@@ -1080,6 +1327,13 @@ async function renderObject(id) {
   const acts = [];
   if (focusable) acts.push(`<button class="btn small" data-act="discuss">Discuss this</button>`);
   if (t === "question" && !x.withdrawn) acts.push(`<button class="btn ghost small" data-act="maturity">Set maturity</button>`);
+  const qx = x.question;
+  if (qx && !x.withdrawn) {
+    if (qx.status === "open" && !x.is_main_question) acts.push(`<button class="btn ghost small" data-act="active">${qx.active ? "★ Active — unmark" : "☆ Mark active"}</button>`);
+    if (!x.is_main_question) acts.push(`<button class="btn ghost small" data-act="move">Move in tree…</button>`);
+    if (qx.status === "open") acts.push(`<button class="btn ghost small" data-act="resolve" ${qx.can_resolve ? "" : `disabled title="${esc(x.is_main_question ? "The main question can't be closed — point the project at another question first." : qx.resolve_blocked || "")}"`}>Close…</button>`);
+    else acts.push(`<button class="btn ghost small" data-act="reopen">Reopen</button>`);
+  }
   if (["assumption", "hypothesis"].includes(t)) acts.push(`<a class="btn ghost small" href="#/reading/${id}">Evidence chain</a>`);
   if (["assumption", "hypothesis"].includes(t) && !x.withdrawn && m.status !== "invalidated") acts.push(`<button class="btn ghost small" data-act="ground">Ground check</button>`);
   if (t === "assumption" && !["invalidated", "retired"].includes(m.status)) acts.push(`<button class="btn ghost small danger" data-act="invalidate">Invalidate</button>`);
@@ -1103,7 +1357,7 @@ async function renderObject(id) {
     + (x.decisions.length ? `<h4>Other decisions</h4>` + x.decisions.map((d) => `<details class="rev"><summary>${idl(d.id)} · ${esc(d.kind)} · ${esc(d.created)}</summary><div class="md small">${md(d.body)}</div></details>`).join("") : "");
 
   const dsHtml = x.discussions.map((d) => `<a class="orow" href="#/chat/${d.id}"><span class="id">${d.id}</span>
-      <span class="tags">${d.relation === "focus" ? `<span class="tag insight">Focused on it</span>` : `<span class="tag plain">Where it came from</span>`}${d.status === "closed" ? `<span class="tag plain">Ended</span>` : ""}</span>
+      <span class="tags">${d.relation === "focus" ? `<span class="tag insight">Focused on it</span>` : d.relation === "merged" ? `<span class="tag plain" title="${esc(d.via)} was merged into ${id}">From ${esc(d.via)}</span>` : `<span class="tag plain">Where it came from</span>`}${d.status === "closed" ? `<span class="tag plain">Ended</span>` : ""}</span>
       <span class="t">${esc(d.title)}</span><span class="cnt">${d.turns} turn${d.turns === 1 ? "" : "s"}${d.last_ts ? " · " + fmtTs(d.last_ts) : ""}</span></a>`).join("");
   const dsBlock = (dsHtml ? `<div class="olist">${dsHtml}</div>` : `<div class="empty">No discussions yet.</div>`) +
     (focusable ? `<div class="acts" style="margin-top:10px"><button class="btn ghost small" data-act="discuss">New discussion about ${id}</button></div>` : "");
@@ -1120,8 +1374,13 @@ async function renderObject(id) {
 
   const DIR = { in: "→ it", out: "it →" };
   const relHtml = x.related.length ? `<div class="olist">${x.related.map((r) => `<a class="orow ${r.withdrawn ? "dim" : ""}" href="${idHref(r.id)}"><span class="id">${r.id}</span>
-      <span class="tags"><span class="tag ${FOCUSABLE.includes(r.type) ? r.type : "plain"}">${TYPE[r.type] || esc(r.type)}</span>${r.withdrawn ? `<span class="tag plain">Withdrawn</span>` : ""}</span>
+      <span class="tags"><span class="tag ${FOCUSABLE.includes(r.type) ? r.type : "plain"}">${TYPE[r.type] || esc(r.type)}</span>${r.withdrawn ? `<span class="tag plain">Withdrawn</span>` : ""}${r.via ? `<span class="tag plain" title="Linked to ${esc(r.via)}, which was merged into ${id}">From ${esc(r.via)}</span>` : ""}</span>
       <span class="t">${esc(r.text)}</span><span class="cnt">${r.dir === "in" ? `its ${esc(r.field)} ${DIR.in}` : `${DIR.out} via ${esc(r.field)}`}</span></a>`).join("")}</div>` : `<div class="empty">Nothing linked.</div>`;
+  // Sub-questions of a merged question keep their parent; offer to move them here in one click (§5.16.1)
+  const strays = x.related.filter((r) => r.via && r.field === "parent" && r.dir === "in");
+  const treeHtmlObj = qx ? `${dl([["Parent", qx.parent], ["Sub-questions", qx.children], ["Absorbed", qx.merged_from]]) || `<div class="empty">Not placed in the tree yet.</div>`}
+    ${qx.suggest_parent ? `<div class="suggest"><span class="meta">Its only related question is ${linkIds(esc(qx.suggest_parent))}.</span> <button class="btn ghost small" data-adopt="${id}" data-parent="${esc(qx.suggest_parent)}">Put under ${esc(qx.suggest_parent)}</button></div>` : ""}
+    ${strays.map((r) => `<div class="suggest"><span class="meta">${linkIds(esc(r.id))} still sits under ${linkIds(esc(r.via))}, which was merged into ${id}.</span> <button class="btn ghost small" data-adopt="${esc(r.id)}" data-parent="${id}">Move it under ${id}</button></div>`).join("")}` : "";
   const rvHtml = x.reviews.length ? x.reviews.map(reviewCard).join("") : `<div class="empty">Nothing to re-examine.</div>`;
   const cHtml = others.length ? `<div class="olist">${others.map((c) => `<a class="orow ${c.status !== "pending" ? "dim" : ""}" href="#/obj/${c.id}"><span class="id">${c.id}</span>
       <span class="tags"><span class="tag ${c.kind === "revision" ? "plain" : c.kind}">${KIND[c.kind] || c.kind}</span><span class="tag plain">${esc(c.status)}</span>${c.own ? `<span class="tag plain">Created it</span>` : ""}</span>
@@ -1134,11 +1393,13 @@ async function renderObject(id) {
       <div class="obj-statement md">${md(x.statement || x.body)}</div>
       ${objFields(m)}
       <div class="meta obj-src">${src}</div>
+      ${closedBanner(x)}
       ${x.withdrawn ? `<div class="banner warn"><strong>Withdrawn</strong> ${esc(x.withdrawn.date || "")} (${idl(x.withdrawn.decision)}, was <i>${esc(x.withdrawn.from)}</i>): ${esc(x.withdrawn.reason)}. Every link to it is kept; nothing was sent for re-examination.</div>` : ""}
       <div class="acts">${acts.join("")}</div>
       ${focusable && !x.can_undo ? `<div class="meta undo-why">Undo accept isn't available: ${undoWhy(x)}.${x.withdrawn || x.withdraw_code ? "" : " Withdraw it instead if it's no longer relevant."}</div>` : ""}
     </header>
     ${focusable ? block("pending", "Revisions waiting", pend.length, pendHtml, true) : ""}
+    ${qx ? block("tree", "Place in the tree", qx.children.length + qx.merged_from.length + (qx.parent ? 1 : 0), treeHtmlObj, !!(qx.suggest_parent || strays.length)) : ""}
     ${block("history", "Revision history", x.revisions.length + x.decisions.length, hist)}
     ${block("discussions", "Discussions", x.discussions.length, dsBlock)}
     ${block("evidence", "Evidence", x.evidence.length, evHtmlAll)}
@@ -1155,6 +1416,14 @@ async function renderObject(id) {
   on("withdraw", () => withdrawObj(x));
   on("restore", () => restoreObj(x));
   on("undo", () => undoAccept(x));
+  on("active", async () => { try { await api("POST", `/api/questions/${id}/active`, { active: !qx.active }); hint.done("active"); } catch (err) { fail(err); } after(); });
+  on("move", () => moveQuestion(x));
+  on("resolve", () => resolveQuestion(x));
+  on("reopen", () => reopenQuestion(x));
+  $$("[data-adopt]", body).forEach((b) => b.onclick = async () => {
+    try { await api("POST", `/api/questions/${b.dataset.adopt}/parent`, { parent: b.dataset.parent }); toast(`${b.dataset.adopt} is now under ${b.dataset.parent}.`); } catch (err) { fail(err); }
+    after();
+  });
   $$("[data-cand] [data-act=review]", body).forEach((b) => b.onclick = () => reviewRevision(b.closest(".card").dataset.cand));
   $$("[data-cand] [data-act=reject-cand]", body).forEach((b) => b.onclick = async () => {
     const cid = b.closest(".card").dataset.cand;

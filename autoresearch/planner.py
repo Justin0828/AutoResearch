@@ -148,8 +148,22 @@ def pick_prep_target(store):
     if hyp:
         h = hyp[0]
         return h["id"], f"{h['id']} 还没有任何证据"
+    # 活跃问题（§5.16.2）：研究者标为“正在想的”，以“调研 Q00x”为题
+    from . import schema
+    act = [m for m, _ in store.list("question") if schema.is_active(m)
+           and schema.question_status(m) == "open" and not schema.is_withdrawn(m)]
+    if act:
+        q = act[0]
+        return q["id"], f"{q['id']} 是你标为活跃的问题（正在想的），先替你调研相关文献"
     # 不确定性不是 H/A，做不成证据目标；Phase 2 不自动挑，等人在“今晚查什么”里点名
     return None, None
+
+
+def question_line(store, qid, n=80):
+    from .objects import statement_of
+    _, b = store.read_obj(qid)
+    t = " ".join(statement_of(b).split())
+    return t[:n] + ("…" if len(t) > n else "")
 
 
 def batch_saturated(store, ledger, cfg, tasks):

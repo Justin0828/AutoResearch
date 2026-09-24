@@ -29,9 +29,13 @@ RELATES = ("Q", "A", "H", "U", "IN", "I", "D", "E", "P", "X", "DS")
 COMMON_REFS = {"relates_to": RELATES, "withdrawn_by": ("DEC",)}
 
 KINDS = {k.type: k for k in [
+    # 问题的生命周期、活跃集、问题树（§5.16）：全部可选，缺省 open / 不活跃 / 未归位
     Kind("question", "questions", "Q", ("maturity",),
-         {"maturity": {"vague", "scoped", "formalized"}, "status": {"open", "withdrawn"}},
-         refs=COMMON_REFS),
+         {"maturity": {"vague", "scoped", "formalized"},
+          "status": {"open", "answered", "decided", "merged", "withdrawn"},
+          "active": {"true", "false"}},
+         refs={"answered_by": ("IN", "H"), "decided_by": ("DEC",), "merged_into": ("Q",),
+               "parent": ("Q",), **COMMON_REFS}),
     Kind("assumption", "assumptions", "A", ("status", "relied_on_by"),
          {"status": {"unexamined", "examined", "promoted", "retired", "invalidated"},
           "fragile": {"true", "false"}},
@@ -66,7 +70,8 @@ KINDS = {k.type: k for k in [
          {"status": {"active", "superseded", "abandoned"},
           "firmness": {"hunch", "working", "settled"}},
          refs={"basis": ("Q", "A", "H", "E", "P", "X", "U", "IN", "DS", "D", "I"),
-               "informs": ("Q", "A", "H", "U", "IN"), "superseded_by": ("IN",), **COMMON_REFS}),
+               "informs": ("Q", "A", "H", "U", "IN"), "superseded_by": ("IN",),
+               "consolidates": ("IN",), **COMMON_REFS}),
     Kind("uncertainty", "uncertainties", "U", ("status", "importance"),
          {"status": {"open", "reduced", "resolved", "withdrawn"},
           "importance": {"low", "medium", "high"}}, refs=COMMON_REFS),
@@ -74,11 +79,16 @@ KINDS = {k.type: k for k in [
          {"kind": {"research", "curation", "mode", "handoff", "revision"}}, tool_only=True),
     # source：讨论 DS###（带 turns），或验证模式的任务号 T#####（带 basis，origin 固定 ai，§5.6）
     Kind("candidate", "candidates", "C", ("kind", "status", "origin", "source"),
-         {"kind": {"assumption", "hypothesis", "question", "uncertainty", "insight", "revision"},
+         {"kind": {"assumption", "hypothesis", "question", "uncertainty", "insight", "revision",
+                   "resolve"},
           "status": {"pending", "accepted", "rejected", "superseded"},
-          "origin": {"human", "ai", "unclear"}},
+          "origin": {"human", "ai", "unclear"},
+          "resolution": {"answered", "decided", "merged"}},
          refs={"basis": ("Q", "A", "H", "E", "P", "X", "U", "IN", "DS", "D"),
-               "target": ("Q", "A", "H", "U", "IN")}, tool_only=True),
+               "target": ("Q", "A", "H", "U", "IN"),
+               # resolve 候选的 answered_by 可引用同批 pending 候选 C###（§5.16.1）
+               "answered_by": ("IN", "H", "C"), "merged_into": ("Q",), "supersedes": ("IN",),
+               "parent": ("Q",)}, tool_only=True),
     Kind("handoff", "handoffs", "HO", ("shift", "reason", "started", "ended"),
          {"reason": {"normal", "quota_5h", "quota_7d", "cutoff", "crash", "manual"}},
          tool_only=True),
@@ -123,7 +133,26 @@ CANDIDATE_FIELDS = {
     "uncertainty": ("importance",),
     "insight": ("firmness",),          # basis / basis_note 至少其一，单独检查
     "revision": ("target", "base_revision"),   # 修订已有对象（§5.15.3）
+    "resolve": ("target", "resolution"),       # 提议结一个问题（§5.16.1）
 }
+
+# 问题的状态（§5.16.1）：结了的问题带各自的必带字段
+CLOSED_QUESTION = {"answered": "answered_by", "decided": "decided_by", "merged": "merged_into"}
+
+
+def question_status(meta):
+    """问题的状态；缺失即 open（§5.16.5）。"""
+    return (meta or {}).get("status") or "open"
+
+
+def is_active(meta):
+    return str((meta or {}).get("active", "")).lower() == "true"
+
+
+def is_consolidation_source(ins, meta):
+    """这条理解是被合并掉的（换了一种说法，不是撤回）：取代它的那条在 consolidates 里列了它（§5.16.3）。"""
+    new = ins.get((meta or {}).get("superseded_by") or "")
+    return bool(new) and meta.get("id") in _as_list(new.get("consolidates"))
 
 # 可撤下的对象类型 → 撤下后的状态（§5.15.6）；insight 沿用既有的 Abandon
 WITHDRAWN_STATUS = {"question": "withdrawn", "assumption": "retired", "hypothesis": "abandoned",
@@ -229,7 +258,8 @@ def check_object(meta, kind, ids, rel):
             and not _as_list(meta.get("invalidated_by")):
         errs.append(f"{rel}: status=invalidated 但没有 invalidated_by（证据或人的推翻决定）")
     if kind.type == "insight" or (kind.type == "candidate" and meta.get("kind") == "insight"):
-        if not _as_list(meta.get("basis")) and not str(meta.get("basis_note") or "").strip():
+        if not _as_list(meta.get("basis")) and not str(meta.get("basis_note") or "").strip() \
+                and not _as_list(meta.get("supersedes")):
             errs.append(f"{rel}: 理解必须说出根基（basis 或 basis_note 至少其一）")
     if kind.type == "insight" and meta.get("status") == "superseded" and not meta.get("superseded_by"):
         errs.append(f"{rel}: status=superseded 但没有 superseded_by")
@@ -241,6 +271,18 @@ def check_object(meta, kind, ids, rel):
             errs.append(f"{rel}: 有 withdrawn_by 但 status 不是 {WITHDRAWN_STATUS[kind.type]}")
         if kind.enums.get("status") and meta.get("withdrawn_from") not in kind.enums["status"]:
             errs.append(f"{rel}: withdrawn_from='{meta.get('withdrawn_from')}' 不是合法状态，无法恢复")
+    if kind.type == "question":
+        st = meta.get("status") or "open"
+        for s_, f in CLOSED_QUESTION.items():
+            if st == s_ and not _as_list(meta.get(f)):
+                errs.append(f"{rel}: status={st} 但没有 {f}")
+            if st != s_ and meta.get(f):
+                errs.append(f"{rel}: 有 {f} 但 status 是 {st}（重开时应清掉）")
+        for f in ("merged_into", "parent"):
+            if meta.get(f) and meta.get(f) == meta.get("id"):
+                errs.append(f"{rel}: {f} 不能指向自己")
+    if kind.type == "insight" and meta.get("consolidates") and len(_as_list(meta["consolidates"])) < 2:
+        errs.append(f"{rel}: consolidates 至少要有两条被合并的理解")
     if kind.type == "hypothesis":
         # abandoned 是人的方向决定（§5.15.6），不要求证据
         if meta.get("status") not in (None, "proposed", "abandoned") and not _as_list(meta.get("evidence")):
@@ -264,7 +306,9 @@ def check_object(meta, kind, ids, rel):
             if not _as_list(meta.get("turns")):
                 errs.append(f"{rel}: 出自讨论的候选必须带 turns")
         elif TASK_ID.match(src):
-            if not _as_list(meta.get("basis")):
+            # 整理任务（Tidy up，§5.16.3）的候选只有合并与结问题两种，根基是被合并 / 被引用的对象本身
+            tidy = meta.get("kind") == "resolve" or bool(_as_list(meta.get("supersedes")))
+            if not tidy and not _as_list(meta.get("basis")):
                 errs.append(f"{rel}: 出自验证任务的候选必须带 basis（E### / P###）")
             if meta.get("origin") != "ai":
                 errs.append(f"{rel}: 出自验证任务的候选 origin 只能是 ai")
@@ -279,6 +323,16 @@ def check_object(meta, kind, ids, rel):
             errs.append(f"{rel}: accepted 的候选缺 promoted_to")
         if meta.get("kind") == "revision" and not str(meta.get("base_revision", "")).isdigit():
             errs.append(f"{rel}: 修订候选的 base_revision 应为正整数")
+        if meta.get("kind") == "resolve":
+            res = meta.get("resolution")
+            if res == "answered" and not _as_list(meta.get("answered_by")):
+                errs.append(f"{rel}: resolution=answered 的候选必须带 answered_by")
+            if res == "merged" and not meta.get("merged_into"):
+                errs.append(f"{rel}: resolution=merged 的候选必须带 merged_into")
+            if str(meta.get("target") or "")[:1] != "Q":
+                errs.append(f"{rel}: resolve 候选的 target 必须是问题 Q###")
+        if meta.get("supersedes") and len(_as_list(meta["supersedes"])) < 2:
+            errs.append(f"{rel}: supersedes 至少要列两条理解（合并）")
     return errs
 
 
@@ -289,10 +343,12 @@ def validate_repo(state):
     ids = all_ids(state)
 
     pj = state / "project.md"
+    pmeta = None
     if not pj.exists():
         errs.append("project.md 缺失")
     else:
         meta, _ = _safe_parse(pj, errs, state)
+        pmeta = meta
         if meta is not None:
             for f in COMMON + ("title", "mode", "main_question"):
                 if f not in meta:
@@ -335,6 +391,27 @@ def validate_repo(state):
             errs.append(f"discussions/{d.name}/transcript.md: focus 引用了不存在的 {meta['focus']}")
         if meta and str(meta.get("pinned", "false")).lower() not in ("true", "false"):
             errs.append(f"discussions/{d.name}/transcript.md: pinned 应为 true / false")
+
+    # 问题树与合并不得成环；主问题不能结（§5.16）
+    qs = {}
+    for p in sorted((state / "questions").glob("Q*.md")) if (state / "questions").is_dir() else []:
+        try:
+            m, _ = frontmatter.parse(p.read_text(encoding="utf-8"))
+        except frontmatter.FrontmatterError:
+            continue
+        qs[p.stem] = m or {}
+    for f in ("parent", "merged_into"):
+        for q in qs:
+            seen, cur = {q}, qs[q].get(f)
+            while cur in qs:
+                if cur in seen:
+                    errs.append(f"questions/{q}.md: {f} 成环（{q} → … → {cur}）")
+                    break
+                seen.add(cur)
+                cur = qs[cur].get(f)
+    main_q = (pmeta or {}).get("main_question")
+    if main_q in qs and question_status(qs[main_q]) in CLOSED_QUESTION:
+        errs.append(f"questions/{main_q}.md: 主问题不能结（status={qs[main_q]['status']}）；要结它先把主问题改指向别的问题")
 
     # 新候选引用已撤下的对象：只警告（§5.15.6）
     withdrawn = set()
