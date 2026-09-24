@@ -11,8 +11,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import (bootstrap, candidates, discussion, frontmatter, incubation, insights, metrics, observe, papers,
-               reviews, schema)
+from . import (bootstrap, candidates, discussion, frontmatter, incubation, insights, metrics, objects, observe,
+               papers, reviews, schema)
 from .library import Library
 
 STATIC = Path(__file__).resolve().parent / "static"
@@ -21,9 +21,10 @@ MIME = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=ut
 
 
 class ApiError(Exception):
-    def __init__(self, status, msg):
+    def __init__(self, status, msg, **extra):
         super().__init__(msg)
         self.status = status
+        self.extra = extra
 
 
 def make_handler(app):
@@ -43,16 +44,20 @@ def make_handler(app):
     def overview(req, q):
         pmeta, pbody = st.project()
         prov = st.provenance()
+        idx = objects.Index(st)
+
+        def one(m, b):
+            # counts：紧凑行上的各类关联计数；withdrawn：折进 Withdrawn 区（§5.15.4 / §5.15.6）
+            return dict(m, body=b.strip(), provenance=prov.get(m.get("id")),
+                        counts=idx.counts(m.get("id")), withdrawn=schema.is_withdrawn(m))
 
         def objs(t):
-            return [dict(m, body=b.strip(), provenance=prov.get(m.get("id")))
-                    for m, b in st.list(t)]
+            return [one(m, b) for m, b in st.list(t)]
         errs, warns = schema.validate_repo(st.state)
         return {"project": dict(pmeta, body=pbody.strip()),
                 "questions": objs("question"), "insights": objs("insight"),
                 # 推演中新引入、所属想法未被接受的前提不算前提集（§5.10），在 Ideas 里看
-                "assumptions": [dict(m, body=b.strip(), provenance=prov.get(m.get("id")))
-                                for m, b in incubation.real_assumptions(st)],
+                "assumptions": [one(m, b) for m, b in incubation.real_assumptions(st)],
                 "hypotheses": objs("hypothesis"), "uncertainties": objs("uncertainty"),
                 "dead_ends": objs("dead-end"), "evidence": objs("evidence"),
                 "papers": objs("paper"), "groundings": objs("grounding"),
@@ -79,6 +84,33 @@ def make_handler(app):
             raise ApiError(404, f"{id} 不存在")
         return {"meta": meta, "body": body, "provenance": st.provenance().get(id)}
 
+    # ------------------------------------------------------------ 对象详情与打磨（§5.15）
+
+    @route("GET", "/api/objects/(?P<id>[A-Z]+\\d+)/links")
+    def object_links(req, q, id):
+        """对象详情页：当前表述、修订史、讨论、证据、关联、Review、相关候选、能否撤回 / 撤下。"""
+        try:
+            return objects.links(st, id)
+        except KeyError:
+            raise ApiError(404, f"{id} 不存在")
+
+    @route("POST", "/api/objects/(?P<id>[A-Z]+\\d+)/withdraw")
+    def withdraw(req, q, id):
+        did = objects.withdraw(st, id, req.json().get("reason", ""))
+        app.bus.publish("state", {"withdrawn": id})
+        return {"decision": did}
+
+    @route("POST", "/api/objects/(?P<id>[A-Z]+\\d+)/restore")
+    def restore(req, q, id):
+        did = objects.restore(st, id, req.json().get("reason", ""))
+        app.bus.publish("state", {"restored": id})
+        return {"decision": did}
+
+    @route("POST", "/api/objects/(?P<id>[A-Z]+\\d+)/undo-accept")
+    def undo_accept(req, q, id):
+        did, cid = objects.undo_accept(st, id, req.json().get("reason", ""))
+        app.bus.publish("candidates", {"undone": id, "candidate": cid})
+        return {"decision": did, "candidate": cid}
     # ------------------------------------------------------------ 讨论
 
     @route("GET", "/api/discussions")
@@ -89,7 +121,28 @@ def make_handler(app):
     def new_discussion(req, q):
         if bootstrap.needs_setup(st):
             raise ApiError(409, "还没有项目：先建立项目与主问题")
-        return {"id": discussion.create(st, (req.json().get("title") or "").strip())}
+        b = req.json()
+        ds = discussion.create(st, (b.get("title") or "").strip(), focus=b.get("focus"))
+        app.bus.publish("state", {"discussion": ds})
+        return {"id": ds}
+
+    @route("POST", "/api/discussions/(?P<ds>DS\\d+)/meta")
+    def discussion_meta(req, q, ds):
+        """改名 / 分组 / 置顶（§5.15.5）。discussions/ 是受保护路径，只经这里写。"""
+        b = req.json()
+        try:
+            discussion.set_meta(st, ds, title=b.get("title"), group=b.get("group"), pinned=b.get("pinned"))
+        except KeyError:
+            raise ApiError(404, f"{ds} 不存在")
+        app.bus.publish("state", {"discussion": ds})
+        return {"ok": True}
+
+    @route("POST", "/api/discussion-groups/rename")
+    def rename_group(req, q):
+        b = req.json()
+        hit = discussion.rename_group(st, b.get("from", ""), b.get("to", ""))
+        app.bus.publish("state", {"discussions": hit})
+        return {"discussions": hit}
 
     @route("GET", "/api/discussions/(?P<ds>DS\\d+)")
     def get_discussion(req, q, ds):
@@ -136,9 +189,18 @@ def make_handler(app):
     @route("POST", "/api/candidates/(?P<cid>C\\d+)/accept")
     def accept(req, q, cid):
         body = req.json()
-        new = candidates.accept(st, cid, origin=body.get("origin"), changes=body.get("changes"))
+        try:
+            new = candidates.accept(st, cid, origin=body.get("origin"), changes=body.get("changes"),
+                                    force=bool(body.get("force")), maturity=body.get("maturity"))
+        except objects.StaleRevision as e:
+            # 基于旧版本起草：带回当前版本，前端对照后可显式 force（§5.15.3）
+            raise ApiError(409, str(e), current=e.current, stale=True)
         app.bus.publish("candidates", {"accepted": cid, "as": new})
         return {"id": new}
+
+    @route("GET", "/api/candidates/(?P<cid>C\\d+)/revision")
+    def revision_preview(req, q, cid):
+        return objects.preview(st, cid)
 
     @route("POST", "/api/candidates/(?P<cid>C\\d+)/reject")
     def reject(req, q, cid):
@@ -459,7 +521,7 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     return self._send(200, fn(self, parse_qs(u.query), **mt.groupdict()))
                 except ApiError as e:
-                    return self._send(e.status, {"error": str(e)})
+                    return self._send(e.status, {"error": str(e), **e.extra})
                 except (ValueError, KeyError) as e:
                     return self._send(400, {"error": str(e).strip("'\"")})
                 except Exception:

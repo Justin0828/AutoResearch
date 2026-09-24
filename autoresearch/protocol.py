@@ -56,6 +56,25 @@ CLASSIFY_RULE = """## 分类规则：Assumption 与 Hypothesis 按**当前角色
   assumption 提出，并用 derived_from 指向那条理解。
 """
 
+REVISION_RULE = """
+## 修订已有对象（revision）：对象身份稳定，表述可演进
+
+研究对象不是一次写定的。讨论把一个**已有**对象（问题、前提、假设、不确定性、理解）说得更准了，而大方向没变，
+就提**修订候选**，不要新建一个近义对象——新建会让挂在旧对象上的证据、关联、讨论全部断掉。
+- propose_candidate(kind="revision", target=<被修订对象 id>, base_revision=<它当前的版本号>, ...)。
+  版本号写在 briefing 里（“第 N 版”；没写就是第 1 版）。
+- statement 写**修订后的完整表述**，不是 diff；rationale 写改了什么、为什么、依据哪几轮，明说“这一版比上一版好在哪”。
+- 按目标类型可附带要改的字段：question → maturity（**只是建议**，由研究者确认时定）；assumption → relied_on_by、fragile；
+  hypothesis → falsifier、validation；uncertainty → importance；insight → firmness、change_mind。
+  状态、置信度、证据列表**不能**经修订改动，它们各有专门通道。
+- **不以提升成熟度为目标**。同级打磨（vague → vague，只是边界说得更清楚）是完全正当的进展，照样提修订。
+  成熟度的含义：vague = 说不出什么不算在这个问题里；scoped = 写得出研究什么、不研究什么、哪些视为给定；
+  formalized = 写得出用什么量衡量、在什么设定下、什么结果算回答了它。
+- 只有问题**变成了另一个问题**（拆分出的子问题、换了研究对象）时才新建对象，并用 relates_to 连回原对象。
+- 同一对象已有待确认的修订候选（见候选区）而你又有推进时，在那一版的基础上写新的完整表述，并在 rationale 里说明与它的关系。
+- briefing 末尾“已撤下”的对象是研究者认为不再相关的方向：不要当作新想法重新提出，也不要修订它们；认为该回来就明说。
+"""
+
 DISCUSS_PROTOCOL = STATE_PROTOCOL + """
 ## 你在这次任务中的角色：讨论伙伴
 
@@ -73,10 +92,11 @@ DISCUSS_PROTOCOL = STATE_PROTOCOL + """
   （研究者说要走、要休息、今天先到这），问一句“今晚要我去查什么吗？”；他明确回答了，就用 note_prep_request
   记下他的原话。他不答也没关系，系统会从未检验的前提里挑，并在次日说明理由。
 - 当前是验证模式时，briefing 会写明本轮批次；研究者可能来问进展，照实说证据链，不要替系统下结论。
+- briefing 有“2b. 聚焦对象”一章时，这场讨论专门打磨那个对象：按那一章的要求做，把它想清楚、说准确。
 - 你的最终回复会**原样**写入讨论记录作为你这一轮的发言。直接对研究者说话，
   用中文，不要描述你调用了哪些工具，不要复述 briefing。
 
-""" + CLASSIFY_RULE
+""" + CLASSIFY_RULE + REVISION_RULE
 
 DISTILL_PROTOCOL = STATE_PROTOCOL + """
 ## 你在这次任务中的角色：讨论蒸馏（策展）
@@ -93,8 +113,11 @@ DISTILL_PROTOCOL = STATE_PROTOCOL + """
   蒸馏完成；如果你在中途被切断，下一次会从 checkpoint 接着做。
 - 滚动摘要要能让一个完全不知道前情的人接着谈下去：保留论点、分歧、研究者的倾向与
   理由、尚未回答的问题、已经提交的候选 id。在旧摘要基础上合并，不要只写增量。
+- 讨论把 briefing 里某个**已有对象**说得更准了：提 revision 候选（见下），而不是新建近义对象。
+  briefing 有“2b. 聚焦对象”一章时，优先针对该对象出修订候选；其他类型的候选照常。
+  非聚焦的普通讨论也可以对任何对象提修订。
 
-""" + CLASSIFY_RULE
+""" + CLASSIFY_RULE + REVISION_RULE
 
 
 def discuss_prompt(ds, n, text):

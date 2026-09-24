@@ -145,12 +145,23 @@ class Store:
         return out
 
     def next_id(self, prefix, sub):
-        """必须在锁内调用。"""
+        """必须在锁内调用。被撤回确认删掉的 id 不复用（§5.15.6）。"""
         d = self.state / sub
         d.mkdir(parents=True, exist_ok=True)
         n = [int(m.group(1)) for f in os.listdir(d)
              if (m := re.match(rf"^{prefix}(\d+)(?:\.md)?$", f))]
+        n += [int(i[len(prefix):]) for i in self.undone_ids() if schema.split_id(i)[0] == prefix]
         return f"{prefix}{(max(n) + 1) if n else 1:03d}"
+
+    def undone_ids(self):
+        """撤回确认时删掉的对象 id：记在 Decision 的 undid 字段里。"""
+        d = self.state / "decisions"
+        out = []
+        for p in d.glob("DEC*.md") if d.is_dir() else []:
+            m = re.search(r"^undid: (\S+)$", p.read_text(encoding="utf-8").split("\n---", 1)[0], re.M)
+            if m:
+                out.append(m.group(1))
+        return out
 
     def provenance(self):
         t = self.read("provenance.json")
@@ -188,6 +199,18 @@ class Tx:
     def new_id(self, type_):
         k = schema.KINDS[type_]
         return self.store.next_id(k.prefix, k.dir)
+
+    def remove(self, rel):
+        p = self.store.state / rel
+        if p.exists():
+            p.unlink()
+        self.paths.add(str(rel))
+
+    def del_provenance(self, ident):
+        prov = self.store.provenance()
+        prov.pop(ident, None)
+        self.write("provenance.json",
+                   json.dumps(dict(sorted(prov.items())), ensure_ascii=False, indent=1) + "\n")
 
     def set_provenance(self, ident, record):
         prov = self.store.provenance()

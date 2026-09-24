@@ -62,6 +62,14 @@ def _v(x):
 class Assembler:
     def __init__(self, store):
         self.store = store
+        self.focus = None          # 聚焦讨论的对象：其他章节不重复它的全文（§5.15.2）
+
+    def _live(self, items):
+        """撤下的对象不进 briefing 正文（§5.15.6），只在末尾列一行。"""
+        return [(m, b) for m, b in items if not schema.is_withdrawn(m)]
+
+    def _pointer(self, head):
+        return f"{head}\n\n（本场讨论的聚焦对象，全文见第 2b 章。）"
 
     def _body(self, text, redact):
         text = (text or "").strip()
@@ -124,10 +132,12 @@ class Assembler:
         qmeta, qbody = self.store.read_obj(qid) if qid else (None, None)
         out = [f"## 3. 研究问题\n\n**项目**：{pmeta.get('title', '')}\n\n{self._body(pbody, redact)}"]
         if qmeta:
-            out.append(f"### {qid}（成熟度 {qmeta.get('maturity')}）\n\n{self._body(qbody, redact)}")
-        others = [(m, b) for m, b in self.store.list("question") if m.get("id") != qid]
+            h = f"### {qid}（成熟度 {qmeta.get('maturity')}{_rev(qmeta)}）"
+            out.append(self._pointer(h) if qid == self.focus else f"{h}\n\n{self._body(qbody, redact)}")
+        others = [(m, b) for m, b in self._live(self.store.list("question")) if m.get("id") != qid]
         for m, b in others:
-            out.append(f"### {m['id']}（成熟度 {m.get('maturity')}）\n\n{self._body(b, redact)}")
+            h = f"### {m['id']}（成熟度 {m.get('maturity')}{_rev(m)}）{_fm_line(m, ['relates_to']) and ' · ' + _fm_line(m, ['relates_to'])}"
+            out.append(self._pointer(h) if m["id"] == self.focus else f"{h}\n\n{self._body(b, redact)}")
         return "\n\n".join(out)
 
     def s_insights(self, redact):
@@ -147,31 +157,40 @@ class Assembler:
             body = self._body(b, redact)
             extra = "".join(f"\n- {k}：{m[f]}" for f, k in
                             (("basis_note", "根基说明"), ("change_mind", "什么会让我改观")) if m.get(f))
+            if m["id"] == self.focus:
+                parts.append((self._pointer(h), h))
+                continue
             parts.append((f"{h}\n\n{body}{extra}", f"{h} — {body.splitlines()[0] if body else ''}"))
         return head + "\n\n" + _clip(parts, BUDGET["3b"], "insights/")
 
     def s_assumptions(self, redact):
         # 推演中新引入、所属想法未被接受的前提不进这里（§5.10），否则会淹没真正的前提集
-        items = incubation.real_assumptions(self.store)
+        items = self._live(incubation.real_assumptions(self.store))
         items.sort(key=lambda x: (x[0].get("status") != "unexamined", x[0]["id"]))
         if not items:
             return "## 4. 前提（Assumption）\n\n（暂无。）"
         parts = []
         for m, b in items:
-            head = (f"### {m['id']} · {_fm_line(m, ['status', 'relied_on_by', 'fragile', 'promoted_to'])}"
-                    f"{self._origin(m['id'], redact)}")
+            head = (f"### {m['id']} · {_fm_line(m, ['status', 'relied_on_by', 'fragile', 'promoted_to', 'relates_to'])}"
+                    f"{_rev(m, ' · ')}{self._origin(m['id'], redact)}")
             body = self._body(b, redact)
+            if m["id"] == self.focus:
+                parts.append((self._pointer(head), head))
+                continue
             parts.append((f"{head}\n\n{body}", f"{head} — {body.splitlines()[0] if body else ''}"))
         return "## 4. 前提（Assumption）\n\n" + _clip(parts, BUDGET[4], "assumptions/")
 
     def s_hypotheses(self, redact):
-        items = self.store.list("hypothesis")
+        items = self._live(self.store.list("hypothesis"))
         if not items:
             return "## 5. 假设（Hypothesis）\n\n（暂无。）"
         parts = []
         for m, b in items:
-            head = (f"### {m['id']} · {_fm_line(m, ['status', 'confidence', 'evidence', 'promoted_from', 'group'])}"
-                    f"{self._origin(m['id'], redact)}")
+            head = (f"### {m['id']} · {_fm_line(m, ['status', 'confidence', 'evidence', 'promoted_from', 'group', 'relates_to'])}"
+                    f"{_rev(m, ' · ')}{self._origin(m['id'], redact)}")
+            if m["id"] == self.focus:
+                parts.append((self._pointer(head), head))
+                continue
             fal, val = m.get("falsifier", ""), m.get("validation", "")
             if redact:
                 fal, val = neutralize(fal), neutralize(val)
@@ -189,6 +208,7 @@ class Assembler:
         parts = []
         for m, b in items:
             loc = f" {_v(m.get('locator'))}" if m.get("locator") else ""
+            loc += f" · 判定时目标为第 {m['revision']} 版" if str(m.get("revision", "1")) not in ("1", "None") else ""
             head = (f"- **{m['id']}** → {m.get('target', m.get('hypothesis'))} · {m.get('stance')} · "
                     f"{m.get('strength')} · 出处 {m.get('source')}{loc}"
                     + (" · 仅摘要" if m.get("basis") == "abstract" else ""))
@@ -211,15 +231,18 @@ class Assembler:
         return "\n\n".join(out)
 
     def s_uncertainties(self, redact):
-        items = [(m, b) for m, b in self.store.list("uncertainty") if m.get("status") != "resolved"]
+        items = [(m, b) for m, b in self._live(self.store.list("uncertainty")) if m.get("status") != "resolved"]
         if not items:
             return "## 8. 未决不确定性\n\n（暂无。）"
         order = {"high": 0, "medium": 1, "low": 2}
         items.sort(key=lambda x: order.get(x[0].get("importance"), 3))
         parts = []
         for m, b in items:
-            head = f"### {m['id']} · {_fm_line(m, ['status', 'importance'])}{self._origin(m['id'], redact)}"
+            head = f"### {m['id']} · {_fm_line(m, ['status', 'importance', 'relates_to'])}{_rev(m, ' · ')}{self._origin(m['id'], redact)}"
             body = self._body(b, redact)
+            if m["id"] == self.focus:
+                parts.append((self._pointer(head), head))
+                continue
             parts.append((f"{head}\n\n{body}", f"{head} — {body.splitlines()[0] if body else ''}"))
         return "## 8. 未决不确定性\n\n" + _clip(parts, BUDGET[8], "uncertainties/")
 
@@ -231,10 +254,12 @@ class Assembler:
             return "## 9. 候选区\n\n（空。）"
         parts = []
         for c in pending:
-            head = f"- **{c['id']}**（待确认 · {c['kind']} · 来自 {c['source']} 第 {_v(c.get('turns'))} 轮）"
+            kind = c["kind"] if c["kind"] != "revision" else \
+                f"修订 {c.get('target')}（基于第 {c.get('base_revision')} 版）"
+            head = f"- **{c['id']}**（待确认 · {kind} · 来自 {c['source']} 第 {_v(c.get('turns'))} 轮）"
             parts.append((f"{head}：{c['statement']}", head))
         for c in rejected:
-            head = f"- **{c['id']}**（已丢弃 · {c['kind']}）"
+            head = f"- **{c['id']}**（已丢弃 · {c['kind']}{' ' + c['target'] if c.get('target') else ''}）"
             parts.append((f"{head}：{c['statement']} —— {c['decision_note']}", head))
         return ("## 9. 候选区\n\n用于去重：待确认的不要重复提交；已丢弃的附有研究者的理由，"
                 "不要换个说法再提。\n\n" + _clip(parts, BUDGET[9], "candidates/"))
@@ -292,6 +317,84 @@ class Assembler:
                        + r["body"].replace("\n\n", " "))
         return "\n".join(out)
 
+    def s_focus(self, ds, redact):
+        """第 2b 章：聚焦对象的全文、修订史、与它相关的一切、其他聚焦于它的讨论（§5.15.2）。"""
+        from . import objects
+        fid = self.focus
+        idx = objects.Index(self.store)
+        info = objects.links(self.store, fid, idx)
+        m = info["meta"]
+        rev = info["revision"]
+        keys = {"question": ["maturity", "status"], "assumption": ["status", "relied_on_by", "fragile"],
+                "hypothesis": ["status", "confidence", "evidence"], "uncertainty": ["status", "importance"],
+                "insight": ["status", "firmness", "basis", "informs"]}.get(m.get("type"), [])
+        out = [f"## 2b. 聚焦对象：{fid}（{m.get('type')}，第 {rev} 版）",
+               f"本场讨论（{ds}）专门打磨 {fid}。目标是把它想清楚、说准确：可以挑战它本身——包括认为它该拆分、"
+               "该合并、该放弃；**不以提升成熟度为目标**，同级打磨（vague → vague，只是说得更准）是完全正当的进展。"
+               "当表述确有推进时，明说“这一版比上一版好在哪”；蒸馏会据此提出修订候选"
+               f"（kind=revision，target={fid}，base_revision={rev}）。只有问题变成了另一个问题时，才应新建对象并用 relates_to 连回来。"]
+        if info["withdrawn"]:
+            out.append(f"**注意：{fid} 已被研究者撤下**（{info['withdrawn']['reason']}）。")
+        out.append(f"### 当前全文（第 {rev} 版）\n\n{_fm_line(m, keys)}{_rev(m, ' · ')}")
+        if m.get("type") == "hypothesis":
+            out.append(f"- 证伪条件：{m.get('falsifier', '')}\n- 验证安排：{m.get('validation', '')}")
+        if m.get("type") == "insight":
+            out.append("".join(f"- {k}：{m[f]}\n" for f, k in (("basis_note", "根基说明"),
+                                                                ("change_mind", "什么会让我改观")) if m.get(f)).strip())
+        out.append(self._body(info["body"], redact))
+        hist = info["revisions"]
+        if hist:
+            lines = []
+            for h in hist[:6]:
+                why = re.search(r"## 为什么\n\n(.*)", h["body"], re.S)
+                before = re.search(r"## 修订前（第 \d+ 版）\n\n(.*?)\n\n字段", h["body"], re.S)
+                lines.append(f"- 第 {h['from']} → {h['to']} 版（{h['created']}，{h['id']}，候选 {h.get('candidate')}）："
+                             f"{_one(why.group(1) if why else '', 300)}\n  修订前：{_one(before.group(1) if before else '', 300)}")
+            out.append("### 修订史（最近在前）\n\n" + "\n".join(lines))
+        else:
+            out.append("### 修订史\n\n（还没有修订过。）")
+        rel = []
+        for e in info["evidence"]:
+            tag = f" · 判定时为第 {e['revision']} 版" if e.get("revision") and e["revision"] != rev else ""
+            rel.append(f"- 证据 {e['id']} · {e['stance']} · {e['strength']} · 出处 {e['source']}{tag}"
+                       + (f"（{e['via']}）" if e.get("via") else "") + f"：{_one(e['note'], 200)}")
+        for r in info["related"]:
+            arrow = f"{r['id']} 的 {r['field']} 指向它" if r["dir"] == "in" else f"它的 {r['field']} 指向 {r['id']}"
+            rel.append(f"- {r['id']}（{r['type']}{'，已撤下' if r['withdrawn'] else ''}）· {arrow}：{r['text']}")
+        for r in info["reviews"]:
+            if r.get("status") == "open":
+                rel.append(f"- 待重新审视 {r['id']}：{r['target']}（因 {r['trigger']}）")
+        for c in info["candidates"]:
+            if c.get("status") == "pending":
+                what = f"修订（基于第 {c.get('base_revision')} 版）" if c.get("kind") == "revision" else c.get("kind")
+                rel.append(f"- 待确认候选 {c['id']}（{what}）：{_one(c['statement'], 200)}")
+        out.append("### 与它相关的一切\n\n" + ("\n".join(rel) or "（暂无。）"))
+        others = [d for d in info["discussions"] if d["id"] != ds and d.get("relation") == "focus"]
+        if others:
+            parts = []
+            for d in others:
+                smeta, sbody = discussion.summary(self.store, d["id"])
+                parts.append(f"#### {d['id']}「{d.get('title')}」（{d.get('status')}，{d.get('turns')} 轮）\n\n"
+                             + (sbody.strip() or f"（尚无摘要；原文见 {discussion.rel_transcript(d['id'])}。）"))
+            out.append("### 此前其他聚焦于它的讨论\n\n" + "\n\n".join(parts))
+        return "\n\n".join(x for x in out if x)
+
+    def s_withdrawn(self, redact):
+        """撤下的对象在末尾各列一行，防止被当成新想法重新提出（§5.15.6）。"""
+        lines = []
+        for t in schema.WITHDRAWN_STATUS:
+            for m, b in self.store.list(t):
+                if not schema.is_withdrawn(m):
+                    continue
+                _, db = self.store.read_obj(m["withdrawn_by"])
+                why = re.search(r"## 为什么\n\n(.*)", db or "", re.S)
+                lines.append(f"- {m['id']}：{_one(self._body(b, redact), 120)} —— 撤下理由："
+                             f"{_one(self._body(why.group(1) if why else '', redact), 200)}")
+        if not lines:
+            return ""
+        return ("## 已撤下（不再相关，不是被推翻）\n\n研究者认为这些不再是关心的方向。不要把它们当作新想法重新提出；"
+                "若你认为某条应当回来，明确说出来。\n\n" + "\n".join(lines))
+
     # ---------------------------------------------------------------- 装配
 
     def s_idea(self, iid):
@@ -333,6 +436,11 @@ class Assembler:
         p = PROFILES[profile]
         redact = p["redact"]
         ds = task.get("discussion")
+        self.focus = None
+        if ds and profile in ("discuss", "distill"):
+            dm = (discussion.read(self.store, ds)[0] or {}) if self.store.exists(ds) else {}
+            if dm.get("focus") and self.store.exists(dm["focus"]):
+                self.focus = dm["focus"]
         disc_budget = DISTILL_DISCUSSION_BUDGET if profile == "distill" else BUDGET[10]
         builders = {
             1: lambda: self.s_task(task),
@@ -355,7 +463,10 @@ class Assembler:
         secs = [builders[i]() for i in p["sections"]]
         if str(task.get("target") or "").startswith("I") and self.store.exists(task["target"]):
             secs.insert(1, self.s_idea(task["target"]))
-        return "\n\n".join([head] + secs) + "\n"
+        if self.focus:
+            secs.insert(p["sections"].index(2) + 1, self.s_focus(ds, redact))
+        secs.append(self.s_withdrawn(redact))
+        return "\n\n".join([head] + [s for s in secs if s]) + "\n"
 
     def handoff(self, shift, tasks, queue):
         """交接记录正文（§5.2 handoff profile）。纯机械，不依赖 agent。"""
@@ -408,6 +519,16 @@ class Assembler:
             waiting.append(f"- 候选区有 {len(pend)} 条待确认：" + "、".join(c["id"] for c in pend[:20]))
         out.append("## 待处理\n\n" + ("\n".join(waiting) or "（无）"))
         return "\n\n".join(out) + "\n"
+
+
+def _rev(meta, sep="，"):
+    r = schema.revision_of(meta)
+    return f"{sep}第 {r} 版" if r > 1 else ""
+
+
+def _one(text, n):
+    s = " ".join((text or "").split())
+    return s[:n] + ("…" if len(s) > n else "")
 
 
 def _pct(x):

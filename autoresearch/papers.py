@@ -232,11 +232,13 @@ def record_evidence(store, lib, target, stance, source, note, quote="", locator=
 
     with store.tx("evidence: 记录证据", actor=actor, task=task) as tx:
         eid = tx.new_id("evidence")
+        tmeta, tbody = store.read_obj(target)
+        # 记录时目标处于第几版（§5.15.3）：修订后，旧版本下判定的证据在对象页带标记
+        rev = schema.revision_of(tmeta) if tkind in ("H", "A") else None
         tx.write_obj(eid, {"id": eid, "type": "evidence", "target": target, "stance": stance,
                            "strength": strength, "source": source, "locator": locator or None,
                            "basis": basis, "quote": " ".join((quote or "").split()) or None,
-                           "created": today()}, note.strip() + "\n")
-        tmeta, tbody = store.read_obj(target)
+                           "revision": rev, "created": today()}, note.strip() + "\n")
         ev = _as_list(tmeta.get("evidence"))
         if eid not in ev:
             ev.append(eid)

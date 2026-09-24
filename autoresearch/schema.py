@@ -24,23 +24,28 @@ class Kind:
     tool_only: bool = False       # agent 不得用 Write/Edit 直接改
 
 
+# 正式对象都可带的可选关联（§5.15）：候选确认时保留的 relates_to、撤下它的决定
+RELATES = ("Q", "A", "H", "U", "IN", "I", "D", "E", "P", "X", "DS")
+COMMON_REFS = {"relates_to": RELATES, "withdrawn_by": ("DEC",)}
+
 KINDS = {k.type: k for k in [
     Kind("question", "questions", "Q", ("maturity",),
-         {"maturity": {"vague", "scoped", "formalized"}}),
+         {"maturity": {"vague", "scoped", "formalized"}, "status": {"open", "withdrawn"}},
+         refs=COMMON_REFS),
     Kind("assumption", "assumptions", "A", ("status", "relied_on_by"),
          {"status": {"unexamined", "examined", "promoted", "retired", "invalidated"},
           "fragile": {"true", "false"}},
          nonempty=("relied_on_by",),
          refs={"relied_on_by": ("Q", "A", "H", "I", "U", "IN"), "promoted_to": ("H",),
                "invalidated_by": ("E", "DEC"), "derived_from": ("IN",), "evidence": ("E",),
-               "idea": ("I",)}),
+               "idea": ("I",), **COMMON_REFS}),
     Kind("hypothesis", "hypotheses", "H",
          ("status", "confidence", "falsifier", "validation", "evidence"),
          {"status": {"proposed", "investigating", "supported", "refuted",
                      "inconclusive", "abandoned"},
           "confidence": {"low", "medium", "high"}},
          nonempty=("falsifier", "validation"),
-         refs={"evidence": ("E",), "promoted_from": ("A",), "idea": ("I",)}),
+         refs={"evidence": ("E",), "promoted_from": ("A",), "idea": ("I",), **COMMON_REFS}),
     # 证据追到段落（§5.5）：target 可以是假设或前提；locator + quote 由工具对照全文校验
     Kind("evidence", "evidence", "E", ("target", "stance", "strength", "source", "basis"),
          {"stance": {"support", "contradict", "neutral"},
@@ -61,18 +66,19 @@ KINDS = {k.type: k for k in [
          {"status": {"active", "superseded", "abandoned"},
           "firmness": {"hunch", "working", "settled"}},
          refs={"basis": ("Q", "A", "H", "E", "P", "X", "U", "IN", "DS", "D", "I"),
-               "informs": ("Q", "A", "H", "U", "IN"), "superseded_by": ("IN",)}),
+               "informs": ("Q", "A", "H", "U", "IN"), "superseded_by": ("IN",), **COMMON_REFS}),
     Kind("uncertainty", "uncertainties", "U", ("status", "importance"),
-         {"status": {"open", "reduced", "resolved"},
-          "importance": {"low", "medium", "high"}}),
+         {"status": {"open", "reduced", "resolved", "withdrawn"},
+          "importance": {"low", "medium", "high"}}, refs=COMMON_REFS),
     Kind("decision", "decisions", "DEC", ("kind", "refs"),
-         {"kind": {"research", "curation", "mode", "handoff"}}, tool_only=True),
+         {"kind": {"research", "curation", "mode", "handoff", "revision"}}, tool_only=True),
     # source：讨论 DS###（带 turns），或验证模式的任务号 T#####（带 basis，origin 固定 ai，§5.6）
     Kind("candidate", "candidates", "C", ("kind", "status", "origin", "source"),
-         {"kind": {"assumption", "hypothesis", "question", "uncertainty", "insight"},
+         {"kind": {"assumption", "hypothesis", "question", "uncertainty", "insight", "revision"},
           "status": {"pending", "accepted", "rejected", "superseded"},
           "origin": {"human", "ai", "unclear"}},
-         refs={"basis": ("Q", "A", "H", "E", "P", "X", "U", "IN", "DS", "D")}, tool_only=True),
+         refs={"basis": ("Q", "A", "H", "E", "P", "X", "U", "IN", "DS", "D"),
+               "target": ("Q", "A", "H", "U", "IN")}, tool_only=True),
     Kind("handoff", "handoffs", "HO", ("shift", "reason", "started", "ended"),
          {"reason": {"normal", "quota_5h", "quota_7d", "cutoff", "crash", "manual"}},
          tool_only=True),
@@ -116,7 +122,28 @@ CANDIDATE_FIELDS = {
     "question": ("maturity",),
     "uncertainty": ("importance",),
     "insight": ("firmness",),          # basis / basis_note 至少其一，单独检查
+    "revision": ("target", "base_revision"),   # 修订已有对象（§5.15.3）
 }
+
+# 可撤下的对象类型 → 撤下后的状态（§5.15.6）；insight 沿用既有的 Abandon
+WITHDRAWN_STATUS = {"question": "withdrawn", "assumption": "retired", "hypothesis": "abandoned",
+                    "uncertainty": "withdrawn"}
+FOCUSABLE = ("question", "assumption", "hypothesis", "uncertainty", "insight")
+
+
+def is_withdrawn(meta):
+    """人以“不再相关”撤下的对象。只看 withdrawn_by：推演前提被否决时的 retired 不算撤下。"""
+    meta = meta or {}
+    return bool(meta.get("withdrawn_by")) and \
+        meta.get("status") == WITHDRAWN_STATUS.get(meta.get("type"))
+
+
+def revision_of(meta):
+    """对象的版本号；缺失即第 1 版（§5.15.7）。"""
+    try:
+        return max(1, int((meta or {}).get("revision") or 1))
+    except (TypeError, ValueError):
+        return 1
 
 PROJECT_MODES = {"discussion", "incubation", "validation"}
 ORIGINS = {"human", "ai"}
@@ -206,8 +233,17 @@ def check_object(meta, kind, ids, rel):
             errs.append(f"{rel}: 理解必须说出根基（basis 或 basis_note 至少其一）")
     if kind.type == "insight" and meta.get("status") == "superseded" and not meta.get("superseded_by"):
         errs.append(f"{rel}: status=superseded 但没有 superseded_by")
+    if "revision" in meta and kind.type != "decision":
+        if not str(meta["revision"]).isdigit() or int(meta["revision"]) < 1:
+            errs.append(f"{rel}: revision='{meta['revision']}' 应为正整数")
+    if meta.get("withdrawn_by") and kind.type in WITHDRAWN_STATUS:
+        if meta.get("status") != WITHDRAWN_STATUS[kind.type]:
+            errs.append(f"{rel}: 有 withdrawn_by 但 status 不是 {WITHDRAWN_STATUS[kind.type]}")
+        if kind.enums.get("status") and meta.get("withdrawn_from") not in kind.enums["status"]:
+            errs.append(f"{rel}: withdrawn_from='{meta.get('withdrawn_from')}' 不是合法状态，无法恢复")
     if kind.type == "hypothesis":
-        if meta.get("status") not in (None, "proposed") and not _as_list(meta.get("evidence")):
+        # abandoned 是人的方向决定（§5.15.6），不要求证据
+        if meta.get("status") not in (None, "proposed", "abandoned") and not _as_list(meta.get("evidence")):
             errs.append(f"{rel}: status={meta['status']} 但没有任何 evidence")
     if kind.type == "idea" and str(meta.get("falsifier") or "").strip() == "":
         errs.append(f"{rel}: Idea 必须说得出何时是错的（falsifier）")
@@ -241,6 +277,8 @@ def check_object(meta, kind, ids, rel):
             errs.append(f"{rel}: origin=unclear 时必须写 origin_note 说明冲突")
         if meta.get("status") == "accepted" and not meta.get("promoted_to"):
             errs.append(f"{rel}: accepted 的候选缺 promoted_to")
+        if meta.get("kind") == "revision" and not str(meta.get("base_revision", "")).isdigit():
+            errs.append(f"{rel}: 修订候选的 base_revision 应为正整数")
     return errs
 
 
@@ -293,6 +331,34 @@ def validate_repo(state):
         meta, _ = _safe_parse(t, errs, state)
         if meta and meta.get("status") not in ("open", "closed"):
             errs.append(f"discussions/{d.name}/transcript.md: status 非 open/closed")
+        if meta and meta.get("focus") and meta["focus"] not in ids:
+            errs.append(f"discussions/{d.name}/transcript.md: focus 引用了不存在的 {meta['focus']}")
+        if meta and str(meta.get("pinned", "false")).lower() not in ("true", "false"):
+            errs.append(f"discussions/{d.name}/transcript.md: pinned 应为 true / false")
+
+    # 新候选引用已撤下的对象：只警告（§5.15.6）
+    withdrawn = set()
+    for kind in KINDS.values():
+        if kind.type in WITHDRAWN_STATUS and (state / kind.dir).is_dir():
+            for p in (state / kind.dir).glob("*.md"):
+                try:
+                    m, _ = frontmatter.parse(p.read_text(encoding="utf-8"))
+                except frontmatter.FrontmatterError:
+                    continue
+                if is_withdrawn(m):
+                    withdrawn.add(p.stem)
+    cdir = state / "candidates"
+    for p in sorted(cdir.glob("C*.md")) if withdrawn and cdir.is_dir() else []:
+        try:
+            m, _ = frontmatter.parse(p.read_text(encoding="utf-8"))
+        except frontmatter.FrontmatterError:
+            continue
+        if (m or {}).get("status") != "pending":
+            continue
+        hit = sorted({r for f in ("target", "relates_to", "relied_on_by", "basis", "informs")
+                      for r in _as_list(m.get(f)) if r in withdrawn})
+        if hit:
+            warns.append(f"candidates/{p.name}: 引用了已撤下的 {hit}")
 
     prov_path = state / "provenance.json"
     if prov_path.exists():
