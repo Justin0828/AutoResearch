@@ -455,6 +455,9 @@ Claude Code Max 5x 的 5 小时滚动窗口会强制结束 session。**系统不
 12. **通知中心**：额度耗尽暂停、待取文献、待审批、重大结论变化。
 13. **“为什么”入口**：任何结论、任何当前任务旁可直接追问理由。
 14. **实时性**：事件流推送，而非刷新。
+15. **对象详情页与聚焦讨论**：任何对象可点进独立页面，看修订史、讨论、证据、关联；可从对象发起专门打磨它的讨论（§5.15）。
+16. **讨论列表的组织**：改名、分组、置顶（§5.15.5）。
+17. **撤下与撤回确认**：对象可因“不再相关”撤下（可恢复），刚确认且未被用到的可撤回（§5.15.6）。
 
 ---
 
@@ -612,17 +615,17 @@ State 首次建立时**是空的**：只有 git 仓库、`README.md`、`.gitigno
 | type | 必填字段（除通用三项） | 枚举 / 约束 |
 |---|---|---|
 | `project` | `title` `mode` `main_question` | `mode`: discussion / incubation / validation |
-| `question` | `maturity` | vague / scoped / formalized |
+| `question` | `maturity` | vague / scoped / formalized（定义见 §5.15.1）；可选 `revision` `revised` `relates_to`（§5.15）；可选 `status`: open（缺省）/ withdrawn（§5.15.6） |
 | `assumption` | `status` `relied_on_by` | `status`: unexamined / examined / promoted / retired / invalidated；`relied_on_by` 非空，元素须是已存在 id；可选 `fragile`（true/false）、`promoted_to`、`derived_from`（IN###，由某条理解派生）、`idea`（I###：推演中新引入的前提，§5.10）；invalidated 时须有 `invalidated_by`（E### 或 DEC###：证据，或人的推翻决定） |
 | `hypothesis` | `status` `confidence` `falsifier` `validation` `evidence` | `status`: proposed / investigating / supported / refuted / inconclusive / abandoned；`confidence`: low / medium / high；`falsifier` `validation` 非空；`evidence` 元素须存在；status≠proposed 时 evidence 非空；可选 `promoted_from`、`group`、`idea`（由哪条 Idea 拆出，§5.14） |
-| `evidence` | `hypothesis` `stance` `strength` `source` | `stance`: support / contradict / neutral；`strength`: weak / moderate / strong；`source` 必须是已存在的 `P###` 或 `X###`（**不得是 dead-end**） |
+| `evidence` | `hypothesis` `stance` `strength` `source` | `stance`: support / contradict / neutral；`strength`: weak / moderate / strong；`source` 必须是已存在的 `P###` 或 `X###`（**不得是 dead-end**）；可选 `revision`：记录时假设处于第几版（§5.15.3，由工具自动填） |
 | `paper` | `title` | 可选 `url` `venue` `year` `read` |
 | `dead-end` | `status` `closed_by` | `status`: closed / reopened；`closed_by` 非空，元素是 `E###` / `X###` |
 | `insight` | `status` `firmness`，以及 `basis` 或 `basis_note` 至少其一 | `status`: active / superseded / abandoned；`firmness`: hunch / working / settled；`basis` 元素须是已存在 id；可选 `informs`、`change_mind`、`superseded_by` |
-| `uncertainty` | `status` `importance` | `status`: open / reduced / resolved；`importance`: low / medium / high |
-| `decision` | `kind` `refs` | `kind`: research / curation / mode / handoff |
+| `uncertainty` | `status` `importance` | `status`: open / reduced / resolved / withdrawn（§5.15.6）；`importance`: low / medium / high |
+| `decision` | `kind` `refs` | `kind`: research / curation / mode / handoff / revision（§5.15.3） |
 | `candidate` | `kind` `status` `origin` `source` `turns` | 见下 |
-| `discussion` | `title` `status` | open / closed |
+| `discussion` | `title` `status` | open / closed；可选 `focus`（聚焦对象 id，§5.15.2）、`group`（分组名）、`pinned`（true/false）（§5.15.5） |
 | `discussion_summary` | `discussion` `covers_through` | 摘要覆盖到第几轮 |
 | `handoff` | `shift` `reason` `started` `ended` | `reason`: normal / quota_5h / quota_7d / cutoff / crash / manual |
 | `review` | `trigger` `event` `target` `status` `depth` | `event`: hypothesis_refuted / assumption_invalidated / insight_withdrawn；`status`: open / resolved / dismissed；`depth` 为传递距离（1 = 直接相关） |
@@ -635,7 +638,7 @@ State 首次建立时**是空的**：只有 git 仓库、`README.md`、`.gitigno
 1. **`origin` 不进对象文件**，统一存在 `provenance.json`（`{ "H001": {"origin": "human", "source": "C003", "discussion": "DS001", "turns": [4, 6]} }`）。理由：origin 要在评判时对 agent **不可见**（M1），而 agent 有 Read 权限——只在 briefing 里删掉是假屏蔽，它会自己去读 `hypotheses/H001.md`。放进单独文件后，评判类任务可以用 `--disallowedTools "Read(provenance.json)"` 从路径上挡住（Phase 1 实测：`Read(path)` 拒绝规则同时让 Grep 搜不到该文件）。对象文件 frontmatter 里出现 `origin` 视为**校验错误**（泄漏）。
 2. **Assumption / Hypothesis 按当前角色区分**：被**依赖**（用来剪枝或支撑其他推理）而**未安排验证** → Assumption；**已安排验证** → Hypothesis。这条落在结构上而不只是提示词里：Assumption 必须填 `relied_on_by`（它支撑着谁），Hypothesis 必须填 `validation`（验证怎么安排的）。说不出“怎么验证”就还不是 Hypothesis。
 3. **DeadEnd 不内嵌实验结果**，只用 `closed_by` 引用关闭它的 Evidence / Experiment；`closed_by` 为空是校验错误。正文只写“关了什么、为什么、什么条件下重开”。
-4. **候选对象**（M1.10）：`kind` ∈ assumption / hypothesis / question / uncertainty / insight；`status` ∈ pending / accepted / rejected / superseded；`origin` ∈ human / ai / unclear（**归属冲突写 `unclear` 加 `origin_note`，不自动裁定**，人在确认时必须选定）；`source` 为 `DS###`，`turns` 为依据的轮次。按 kind 附带目标对象所需字段（assumption → `relied_on_by`；hypothesis → `falsifier` `validation`；question → `maturity`；uncertainty → `importance`）。确认后由后端建正式对象、写 provenance、回填 `promoted_to`；被拒的保留并写明理由，供后续去重。
+4. **候选对象**（M1.10）：`kind` ∈ assumption / hypothesis / question / uncertainty / insight；`status` ∈ pending / accepted / rejected / superseded；`origin` ∈ human / ai / unclear（**归属冲突写 `unclear` 加 `origin_note`，不自动裁定**，人在确认时必须选定）；`source` 为 `DS###`，`turns` 为依据的轮次。按 kind 附带目标对象所需字段（assumption → `relied_on_by`；hypothesis → `falsifier` `validation`；question → `maturity`；uncertainty → `importance`）。确认后由后端建正式对象、写 provenance、回填 `promoted_to`；被拒的保留并写明理由，供后续去重。另有 `kind: revision`：修订一个已存在的对象，而不是新建（§5.15.3）。候选的 `relates_to` 在确认后**保留到正式对象上**（§5.15.4）。
 5. **讨论记录**以 `<!-- turn N human|ai ISO时间 -->` 注释行分隔轮次（而非 markdown 标题），正文里出现任何标题都不会切错。
 
 ### 5.2 Briefing / Handoff 契约
@@ -650,6 +653,7 @@ State 首次建立时**是空的**：只有 git 仓库、`README.md`、`.gitigno
 |---|---|---|---|
 | 1 | 本次任务 | 目标、预期产出、当前模式及其禁止事项 | 不截断 |
 | 2 | 上一班交接 | 最新 handoff 的正文 | 不截断 |
+| 2b | 聚焦对象 | 仅聚焦讨论（`focus`）的 discuss / distill：对象全文、版本、修订史、反向索引、其他聚焦讨论的摘要（§5.15.2） | 不截断 |
 | 3 | 研究问题 | project + main question 正文与成熟度 | 不截断 |
 | 3b | 当前理解 | active 的 Insight，按牢固程度排序，标明“是理解，不是证据” | 超预算列摘要行 |
 | 4 | 前提 | 全部 assumption，unexamined 在前 | 超预算列摘要行 |
@@ -1039,6 +1043,116 @@ maturity 由人改（前端问题卡片上的编辑，或在编辑器里改）�
     每个基本盘都全文列出它与理由，不截断。（不写成 D###：dead-end 必须由证据关闭，“我不要这个想法”是人的判断。）
 - 自评新颖性不算过关，最终价值只有人能判断。
 
+
+### 5.15 对象的持续打磨：聚焦讨论、原地修订、对象详情、讨论组织（Phase 2.6，v1.5，2026-09-24 用户提出）
+
+**动机**。研究对象不是一次写定的。一个问题从提出到可测量，往往要经过多次重述，其中很多次并不跨越成熟度等级（vague → vague，只是说得更准了）。
+v1.4 的缺口：讨论只能**新建**对象（确认一条 question 候选得到的是 Q002，不会更新 Q001），改正文只能到服务器上手改文件；
+而对象积累的讨论、证据、关联全部平铺在列表卡片下，越来越长。本节补上“围绕一个对象持续打磨”的闭环。
+
+**总原则：对象身份稳定，表述可演进**。大方向不变时，重述不应换 id——换了 id，挂在它上面的证据、关联、讨论就全断了。
+所以修订是**原地**的：id 不变，版本号 +1，旧版本完整留档，所有链接照旧。只有问题“变成了另一个问题”时，才应该新建对象（并用 `relates_to` 连回去）。
+
+#### 5.15.1 问题成熟度的定义
+
+| 级别 | 定义 | 判据 |
+|---|---|---|
+| `vague` | 有方向，但边界不清 | 说不出“什么不算在这个问题里” |
+| `scoped` | 边界清楚 | 写得出研究什么、不研究什么、哪些视为给定 |
+| `formalized` | 有可测量定义 | 写得出用什么量衡量、在什么设定下、什么结果算回答了它；自演进的入场闸门（§5.13） |
+
+成熟度**只由人改**（确认修订时选定，或在对象页直接改）。agent 可以在修订候选里**建议**成熟度，但不得把“提升成熟度”当作讨论目标——同级打磨（vague → vague）是完全正当的进展。
+
+#### 5.15.2 聚焦讨论（focus discussion）
+
+- 讨论可选带 `focus: <id>`，表示“这场讨论专门打磨这个对象”。从对象页的 **Discuss this** 按钮发起（候选区确认时也可选 **Accept & discuss**，确认后立即开一场）；
+  默认标题 `<id> · <陈述首行截断>`，可改。同一对象可以有多场聚焦讨论，前端在对象页列出。
+- 可聚焦的对象：question / assumption / hypothesis / uncertainty / insight。
+- **briefing 增加一章“聚焦对象”**（放在第 1 章之后，不截断）：对象当前全文与版本号、修订史（最近几版的修订说明）、
+  与它相关的一切（§5.15.4 的反向索引：证据、关联对象、子问题、Review、指向它的 pending 候选），以及此前**其他**聚焦于它的讨论的摘要。
+  其余章节照常，但同一对象在其他章节中不重复全文。
+- 讨论协议追加：本场讨论的目标是把这个对象想清楚、说准确；可以挑战它本身（包括认为它该拆分、该合并、该放弃）；
+  不以提升成熟度为目标；当表述确有推进时，明说“这一版比上一版好在哪”，蒸馏会据此出修订候选。
+- 蒸馏在聚焦讨论里优先产出针对该对象的 `revision` 候选；其他类型候选照常。非聚焦的普通讨论**也可以**产出任何对象的 revision 候选——聚焦只决定讨论的目的，不是修订的唯一来源。
+
+#### 5.15.3 修订（revision）候选与原地修订
+
+**候选**：`kind: revision`，必填 `target`（被修订对象 id）、`base_revision`（起草时对象的版本号），`陈述` 写**修订后的完整表述**（不是 diff），
+`理由` 写改了什么、为什么、依据哪几轮。按目标类型可附带要改的字段：
+
+| 目标类型 | 可修订的字段 | 不可经修订改动（有各自的专门通道） |
+|---|---|---|
+| question | 正文；`maturity`（仅作建议，人确认时定） | — |
+| assumption | 正文、`relied_on_by`、`fragile` | `status`（审视 / 推翻有专门流程） |
+| hypothesis | 正文、`falsifier`、`validation` | `status` `confidence` `evidence`（只经评判类任务与 `transition_hypothesis`） |
+| uncertainty | 正文、`importance` | `status` |
+| insight | 走既有的 supersede 语义（`insights.revise`，产生新 IN 并取代旧的，§M1 已定），不做原地修订 | — |
+
+校验：目标存在且可修订（insight 须 active；assumption 非 invalidated；hypothesis 非 abandoned）；修订后与当前版本不能完全相同。
+
+**确认**（只有人能确认）：
+
+1. 若 `base_revision` ≠ 当前版本（期间别的修订已被确认），后端拒绝并返回当前版本；前端展示“基于旧版本起草”，给出当前版本与候选的对照，人可**仍然确认**（显式 force）或拒绝。不自动合并。
+2. 人在确认对话框里看到**新旧对照**，可以改文字；question 的成熟度在这里选定（预填候选建议值，默认保持不变）。
+3. 后端在一个事务里：对象原地改写，`revision` +1、`revised` 记日期（字段缺失视为第 1 版，兼容已有对象）；
+   写一条 `Decision`（`kind: revision`，`refs: [目标, 候选]`），正文完整记录**修订前的表述与字段**、修订后的、变化说明与理由——修订史不依赖 git 也能完整重建；
+   provenance 中该对象条目追加 `revisions` 列表（`{rev, origin, source: C###, discussion, turns}`），对象本身的 `origin` 仍是最初提出者；
+   候选标 accepted、回填 `promoted_to: <目标>`。同一目标的其他 pending 修订候选保持 pending，但前端标“已过时”。
+4. **证据与链接全部保留**。理由：大方向不变时，证据仍然是关于这个对象的。但为了可追溯：
+   - `record_evidence` 自动在 Evidence 上记 `revision`（记录时假设的版本号）；对象页按版本分组显示证据，“在旧版本下判定”的证据带标记。
+   - **修订 hypothesis 的 `falsifier` 且它已有证据时**，确认对话框显式警告“N 条证据是按旧证伪条件判定的”，Decision 里写明。这是“挪球门”风险的主要防线：允许，但必须看见、必须留档。
+   - 修订**不**触发 Review（它不是推翻）；assumption 被修订后，依赖它的对象不受影响。
+5. 修订 main question 时 `project.md` 不变（仍指向同一个 id）。自演进进行中确认修订不影响本轮（F### 是冻结快照），下一次入场时生效。
+
+#### 5.15.4 关联与对象详情页
+
+- 候选的 `relates_to` 确认后保留在正式对象上（可选字段，元素须是已存在 id）。由 question 候选确认出的子问题因此能连回母问题。
+- **反向索引不存储**，由后端按需计算（State 是唯一真相来源，存反链会产生两处真相）：给定对象 X，找出
+  以 X 为 `focus` 的讨论、provenance 中来源于某讨论的（X 的出处讨论）、`relates_to` / `relied_on_by` / `derived_from` / `basis` / `informs` / `promoted_from` / `promoted_to` 指向 X 或被 X 指向的对象、
+  X 的证据（hypothesis 的 `evidence`；assumption 经 `promoted_to` 与 `invalidated_by` 间接得到）、指向 X 的 Review、`target` 为 X 或 `relates_to` 含 X 的候选、X 的修订 Decision。
+- **前端对象详情页**（`#/obj/<id>`）：顶部是当前表述、类型字段、版本号、出处与操作（Discuss this、改成熟度、既有的推翻 / 修订 / 放弃等）；
+  下面按区块折叠：待确认的修订、修订史、讨论、证据、关联对象、Review、相关候选。每个区块标题带计数，默认只展开“待确认的修订”；折叠状态按浏览器记忆。
+- Research 页的列表改为**紧凑行**：id、类型标签、陈述首行、各类关联计数，点击进详情页。列表本身不再内嵌证据与讨论。
+- 前端所有出现对象 id 的地方（讨论、候选、证据、Ideas）都可点击跳到详情页。
+
+#### 5.15.5 讨论的组织：改名、分组、置顶
+
+- 讨论 frontmatter 增加可选 `group`（自由字符串）与 `pinned`（true/false）；`title` 可改。三者只由后端经前端操作写（`discussions/` 是受保护路径），每次改动一次提交（actor human）。
+  改名只改 frontmatter，不回改转录正文与历史摘要里的旧标题（历史照实保留）。
+- 分组就是一个标签，**没有独立的分组对象**：不存在空分组；删除分组 = 把组内讨论的 `group` 清空；重命名分组 = 批量改写组内讨论的 `group`。
+- 列表顺序：置顶区 → 各分组（可折叠，折叠状态按浏览器记忆）→ 未分组；组内按最近活动时间倒序。聚焦讨论显示目标 id 的小标签。
+
+#### 5.15.6 撤下与撤回确认（2026-09-24 用户同意）
+
+v1.4 里能让对象离场的只有“它错了”一类操作（assumption 的 Invalidate、insight 的 Abandon、hypothesis 被判 refuted），
+缺两种常见情形：**不再相关**（没错，只是不再是关心的方向），和**确认错了**（手滑接受）。
+
+**撤下（Withdraw）**：所有可聚焦类型通用，人经前端操作，必须写理由。
+
+| 类型 | 撤下后的状态 | 备注 |
+|---|---|---|
+| question | `status: withdrawn` | 主问题（`project.md` 的 `main_question`）不能撤下；要换主问题先改指向 |
+| assumption | `retired`（既有状态） | 与 Invalidate 区分：retired = 不再依赖它，invalidated = 它不成立 |
+| hypothesis | `abandoned`（既有状态） | 人的这条后端通道是 `transition_hypothesis` 之外唯一允许的状态改动，必须写 Decision |
+| uncertainty | `withdrawn` | 与 resolved 区分：resolved 是被消除了，withdrawn 是不再关心 |
+| insight | 沿用既有的 Abandon | 行为不变（派生的前提会进 Review，因为它们确实失去了根基） |
+
+- 后端写 `Decision`（`kind: curation`，`refs: [对象]`，正文为理由），对象记 `withdrawn_by: DEC###` 与 `withdrawn_from`（撤下前的状态，用于恢复）。
+- **引用它的链接全部保留，不触发 Review**：撤下不是推翻，依赖它的推理没有因此变错。
+- 撤下的对象不进 briefing 正文（只在末尾列一行“已撤下：id + 一句话 + 理由”，防止 agent 把它当新想法重新提出），不进验证批次与自演进基本盘，
+  前端在各列表与对象页折叠进“Withdrawn”区。新候选引用已撤下对象时校验只给警告。
+- **可恢复（Restore）**：回到 `withdrawn_from` 记录的状态，同样写一条 Decision。
+
+**撤回确认（Undo accept）**：只对“确认后还没有被任何东西用到”的对象开放——§5.15.4 的反向索引为空（没有讨论聚焦它、没有对象或候选引用它、没有证据），
+且没有修订过（`revision` 缺失或为 1）。满足时后端删除对象文件与其 provenance 条目，候选退回 `pending`（清掉 `promoted_to` 与 `decided`），
+写一条 `Decision`（`kind: curation`）记录撤回。条件不满足时按钮不可用，并说明是被谁用到了——这时应该用撤下。
+这是整个系统里**唯一的真删**：没有东西依赖它，删掉不断任何追溯链；删除本身仍经 Decision 和 git 留痕。
+
+#### 5.15.7 兼容
+
+所有新字段都是可选的，缺失即默认（`revision` 视为 1，`group` 为空，`pinned` 为 false，无 `focus`）。已有 State（包括已有讨论、pending 候选）**不需要迁移脚本**，校验器必须对它报 0 错误。
+既有 pending 的 question / insight 候选照常可确认；确认后多带上 `relates_to`。
+
 ---
 
 ## 6. 主要风险与待决问题
@@ -1099,6 +1213,20 @@ M11。依赖 Phase 1 的讨论模式（形成基本盘）与 Phase 2 的 M4（�
 4. 基本盘只在链之间被外部证据更新，`git log -p foundations/` 能看出每轮起点变了什么、因为哪条证据；
 5. 没东西可说时交白卷，不硬凑；30% 预算或 3 条过关先到先停；
 6. 前端能看到每条 Idea 的证伪条件、它自己发明的 N 条前提、接地结论，并能确认 / 拒绝（拒绝写理由，与 dead-end 同等对待）。
+
+### Phase 2.6 — 对象的持续打磨与讨论组织（数天）
+
+§5.15。用户开始真实使用后提出：问题需要在讨论里一版一版打磨（常常是同级打磨），对象积累的内容需要独立页面，讨论需要改名、分组、置顶。
+
+**验收标准**：
+
+1. 对一个已确认的问题点 **Discuss this**，开出的讨论 briefing 里有该对象的全文与关联；聊几轮后蒸馏出针对它的修订候选；确认后 id 不变、版本 +1、旧版本在修订史里可见，挂在它上面的讨论与证据都还在。
+2. vague → vague 的修订可以确认；成熟度只在人确认时改变。
+3. 两条基于同一版本的修订，先确认一条后，另一条被标“基于旧版本”，确认需显式 force。
+4. Research 页是紧凑列表，点进对象详情页，各区块可折叠并带计数。
+5. 讨论可改名、分组、置顶，刷新后保持。
+6. 用户当前的真实 State（副本）在新代码下校验 0 错误，已有讨论与 pending 候选照常可用。
+7. 任一类型对象可撤下（写理由、链接保留、不触发 Review、可恢复）；主问题不可撤下；刚确认且未被用到的对象可撤回确认，候选回到 pending；被用到的对象撤回按钮不可用并说明原因。
 
 ### Phase 3 — 实验（3–4 周）
 
