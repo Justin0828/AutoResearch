@@ -19,7 +19,7 @@ def mk_discussion(st):
 class DiscussionTest(unittest.TestCase):
     def setUp(self):
         self.cfg = temp_cfg(self)
-        self.st, _ = bootstrap.init(self.cfg)
+        self.st, _ = bootstrap.init(self.cfg, seed=True)
 
     def test_turns_roundtrip(self):
         ds = mk_discussion(self.st)
@@ -48,7 +48,7 @@ class DiscussionTest(unittest.TestCase):
 class CandidateTest(unittest.TestCase):
     def setUp(self):
         self.cfg = temp_cfg(self)
-        self.st, _ = bootstrap.init(self.cfg)
+        self.st, _ = bootstrap.init(self.cfg, seed=True)
         self.ds = mk_discussion(self.st)
 
     def propose(self, **kw):
@@ -103,7 +103,7 @@ class CandidateTest(unittest.TestCase):
 class BriefingTest(unittest.TestCase):
     def setUp(self):
         self.cfg = temp_cfg(self)
-        self.st, _ = bootstrap.init(self.cfg)
+        self.st, _ = bootstrap.init(self.cfg, seed=True)
         self.ds = mk_discussion(self.st)
         self.asm = briefing.Assembler(self.st)
 
@@ -141,7 +141,7 @@ class BriefingTest(unittest.TestCase):
 class McpServerTest(unittest.TestCase):
     def setUp(self):
         self.cfg = temp_cfg(self)
-        self.st, _ = bootstrap.init(self.cfg)
+        self.st, _ = bootstrap.init(self.cfg, seed=True)
         self.ds = mk_discussion(self.st)
         self.tdir = self.cfg.tasks / "T00001"
         self.tdir.mkdir(parents=True)

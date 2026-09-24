@@ -12,7 +12,8 @@
 | `~/autoresearch` | 运行环境：`state/`（Research State，独立 git 仓库）+ `run/`（任务日志、额度、班次）+ `library/`（论文原件与全文，不进 git） | **第一次 `./ar serve` 时自动创建**，不用手建 |
 
 不需要装任何东西：只用系统 `python3` 的标准库，没有 venv、没有 pip。
-想删掉整个系统的运行痕迹：`rm -rf ~/autoresearch`。
+想删掉整个系统的运行痕迹、或重置研究从头开始：先停掉 `./ar serve`，再 `rm -rf ~/autoresearch`（上传过的 PDF 也在里面）。
+重新 `./ar serve` 后前端会让你重新建项目，不会带回任何旧内容。
 
 ### 第一次启动
 
@@ -20,10 +21,11 @@
 
 ```bash
 cd ~/workspace/AutoResearch
-./ar init          # 可选：只建 ~/autoresearch/state，不启动服务。serve 也会自动做这一步
-./ar validate      # 可选：确认初始 State 合法，应输出“0 个错误，0 个警告”
-./ar serve         # 启动班次 daemon + 前端，监听 127.0.0.1:8765
+./ar serve         # 启动班次 daemon + 前端，监听 127.0.0.1:8765；首次会建一个空的 ~/autoresearch/state
 ```
+
+首次打开前端会弹出 **Start a research project**：填项目标题、描述和主问题（成为 Q001），系统从这里开始。
+项目建立之前 daemon 不做任何事。`./ar init --fixture` 会种入 Phase 0 的示例研究内容，只用于开发测试。
 
 在你自己的电脑上开隧道（服务器的 SSH 对外是 7400 端口，22 端口连不进来），然后用浏览器访问：
 

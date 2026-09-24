@@ -20,7 +20,7 @@ class ServerTest(unittest.TestCase):
         os.environ["FAKE_MODE"] = "reply"
         self.addCleanup(os.environ.pop, "FAKE_MODE", None)
         self.cfg = temp_cfg(self, AR_CLAUDE_BIN=FAKE, AR_PORT=0, AR_DISTILL_EVERY=1)
-        st, _ = bootstrap.init(self.cfg)
+        st, _ = bootstrap.init(self.cfg, seed=True)
         self.daemon = Daemon(self.cfg, st, Bus(self.cfg))
         self.daemon.start()
         self.addCleanup(self.daemon.stop)
@@ -121,7 +121,7 @@ class IncubationApiTest(unittest.TestCase):
             self.addCleanup(os.environ.pop, k, None)
         net = str(Path(__file__).resolve().parent / "fixtures" / "net")
         self.cfg = temp_cfg(self, AR_CLAUDE_BIN=FAKE, AR_PORT=0, AR_NET_FIXTURES=net)
-        self.st, _ = bootstrap.init(self.cfg)
+        self.st, _ = bootstrap.init(self.cfg, seed=True)
         self.daemon = Daemon(self.cfg, self.st, Bus(self.cfg))
         self.daemon.start()
         self.addCleanup(self.daemon.stop)

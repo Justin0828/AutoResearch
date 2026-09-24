@@ -1339,6 +1339,30 @@ function connect() {
   es.onerror = () => { es.close(); setTimeout(() => { connect(); loadShift(); refreshDs(); }, 3000); };
 }
 
+// A fresh State has no project: the researcher writes its starting point in their own words.
+// Nothing else works until then, so the form comes back until it succeeds.
+async function setupProject() {
+  let v = { title: "", description: "", question: "", maturity: "vague" };
+  while (true) {
+    const r = await ask("Start a research project",
+      `<p>The State is empty. Everything the system does will start from what you write here.</p>` +
+      field("Project title", "title", v.title) +
+      field("Description", "description", v.description, "the direction and its boundaries", 5) +
+      field("Main question", "question", v.question, "becomes Q001; it can stay vague", 5) +
+      select("How clear is the question?", "maturity",
+        { vague: "Vague — still exploring", scoped: "Scoped — boundaries are clear", formalized: "Formalized — measurable" }, v.maturity),
+      "Create project");
+    if (!r) { toast("A project is needed before anything else can run.", "warn"); continue; }
+    v = r;
+    try {
+      await api("POST", "/api/project/setup", r);
+      toast("Project created.");
+      await Promise.all([loadOverview(), loadMode()]);
+      return;
+    } catch (err) { fail(err); }
+  }
+}
+
 (async function init() {
   route();          // show the page frame immediately; data fills in as it arrives
   connect();
@@ -1346,6 +1370,7 @@ function connect() {
     S.notes = await api("GET", "/api/notifications");
     S.dsList = await api("GET", "/api/discussions");
     await Promise.all([loadShift(), loadInbox(), loadOverview(), loadMode()]);
+    if (S.overview?.setup_needed) await setupProject();
   } catch (err) { fail(err); }
   route();
 })();

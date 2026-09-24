@@ -7,7 +7,7 @@ from tests.util import temp_cfg
 class InsightTest(unittest.TestCase):
     def setUp(self):
         self.cfg = temp_cfg(self)
-        self.st, _ = bootstrap.init(self.cfg)
+        self.st, _ = bootstrap.init(self.cfg, seed=True)
         self.ds = discussion.create(self.st, "t")
         discussion.append_turn(self.st, self.ds, "human", "我总觉得难点在接触瞬间的时序。")
         discussion.append_turn(self.st, self.ds, "ai", "这更像闭环问题。")

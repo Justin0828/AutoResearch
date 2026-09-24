@@ -27,7 +27,7 @@ class FrontmatterTest(unittest.TestCase):
 class SchemaTest(unittest.TestCase):
     def setUp(self):
         self.cfg = temp_cfg(self)
-        self.st, _ = bootstrap.init(self.cfg)
+        self.st, _ = bootstrap.init(self.cfg, seed=True)
 
     def put(self, rel, meta, body="正文"):
         p = self.cfg.state / rel

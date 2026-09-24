@@ -17,7 +17,7 @@ class DaemonTest(unittest.TestCase):
         self.addCleanup(lambda: [os.environ.pop(k, None) for k in
                                  ("FAKE_MODE", "FAKE_7D", "FAKE_RESET_IN")])
         self.cfg = temp_cfg(self, AR_CLAUDE_BIN=FAKE, AR_DISTILL_EVERY=2)
-        self.st, _ = bootstrap.init(self.cfg)
+        self.st, _ = bootstrap.init(self.cfg, seed=True)
         self.d = self.new_daemon()
         self.ds = discussion.create(self.st, "测试讨论")
 

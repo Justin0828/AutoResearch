@@ -21,7 +21,7 @@ PDF = HERE / "fixtures" / "restricted.pdf"
 class Base(unittest.TestCase):
     def setUp(self):
         self.cfg = temp_cfg(self, AR_NET_FIXTURES=NET, AR_CLAUDE_BIN=FAKE)
-        self.st, _ = bootstrap.init(self.cfg)
+        self.st, _ = bootstrap.init(self.cfg, seed=True)
         self.lib = Library(self.cfg.library)
 
     def errors(self):

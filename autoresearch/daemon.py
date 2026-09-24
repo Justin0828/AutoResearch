@@ -15,7 +15,7 @@ import threading
 import time
 import traceback
 
-from . import discussion, frontmatter, incubation, modes, papers, planner, protocol, reviews, schema
+from . import bootstrap, discussion, frontmatter, incubation, modes, papers, planner, protocol, reviews, schema
 from .briefing import Assembler
 from .quota import Quota
 from .runner import Runner
@@ -518,6 +518,8 @@ class Daemon:
     # ------------------------------------------------------------ Phase 2：规划
 
     def _plan(self):
+        if bootstrap.needs_setup(self.store):
+            return      # 研究者还没建立项目：不预习、不自演进
         if any(t["lane"] == "background" and t["status"] == "queued" for t in self.ledger.all()):
             return
         m = modes.mode(self.store)

@@ -9,8 +9,10 @@ from .store import Store
 
 
 def cmd_init(cfg, a):
-    st, created = bootstrap.init(cfg, seed=not a.empty)
+    st, created = bootstrap.init(cfg, seed=a.fixture)
     print(f"State 仓库{'已创建' if created else '已存在'}：{cfg.state}")
+    if bootstrap.needs_setup(st):
+        print("还没有项目：启动 ./ar serve 后在前端填写项目与主问题。")
 
 
 def cmd_validate(cfg, a):
@@ -79,7 +81,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="ar", description="AutoResearch")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("init", help="创建 State 仓库")
-    p.add_argument("--empty", action="store_true", help="不从 Phase 0 fixture 播种")
+    p.add_argument("--fixture", action="store_true", help="从 Phase 0 fixture 播种（仅开发 / 测试用）")
     sub.add_parser("validate", help="校验 State 仓库")
     p = sub.add_parser("brief", help="打印一份 briefing")
     p.add_argument("profile", choices=sorted(briefing.PROFILES))

@@ -1,4 +1,7 @@
-"""初始化 State 仓库，从 spike/phase0/fixture 长出第一版真实 State。
+"""初始化 State 仓库。
+
+默认建一个空仓库，项目由研究者在前端填写后经 setup() 建立（DESIGN.md §5「新项目的建立」）。
+seed=True 从 spike/phase0/fixture 长出一份带研究内容的 State，只用作测试夹具。
 
 从 fixture 迁移的只有研究内容本身（问题、A001、H001、H002），并按 v1.2 schema
 改写：origin 移入 provenance.json、problem.md 变为 questions/Q001.md、假设补
@@ -77,13 +80,43 @@ def _seed(tx):
     tx.write("README.md", README)
 
 
-def init(cfg, seed=True):
+def needs_setup(st):
+    return not (st.state / "project.md").exists()
+
+
+def setup(st, title, description, question, maturity="vague"):
+    """研究者建立项目：写 project.md、主问题 Q001 与其 provenance。已有项目时拒绝，绝不覆盖。"""
+    title, description, question = (x.strip() for x in (title or "", description or "", question or ""))
+    if not title or not question:
+        raise ValueError("项目标题和主问题不能为空")
+    if maturity not in ("vague", "scoped", "formalized"):
+        raise ValueError("maturity 必须是 vague / scoped / formalized")
+    with st.tx("setup: 研究者建立项目", actor="human") as tx:
+        if not needs_setup(st):
+            raise ValueError("项目已存在，不能重复建立")
+        d = today()
+        tx.write("project.md", frontmatter.dump(
+            {"id": "project", "type": "project", "title": title,
+             "mode": "discussion", "main_question": "Q001", "created": d},
+            "# 研究项目\n\n" + (description or title) + "\n"))
+        tx.write_obj("Q001", {"id": "Q001", "type": "question", "maturity": maturity, "created": d},
+                     "# 研究问题\n\n" + question + "\n")
+        prov = st.provenance()
+        prov["Q001"] = {"origin": "human", "source": "project-setup"}
+        tx.write("provenance.json", json.dumps(prov, ensure_ascii=False, indent=1) + "\n")
+
+
+def init(cfg, seed=False):
     st = Store(cfg.state, cfg.lock)
     if (cfg.state / ".git").exists():
         return st, False
     cfg.state.mkdir(parents=True, exist_ok=True)
     st.git("init", "-q", "-b", "main")
     if seed:
-        with st.tx("init: 从 Phase 0 fixture 建立 State（v1.2 schema）", actor="system") as tx:
+        with st.tx("init: 从 Phase 0 fixture 建立 State（测试夹具）", actor="system") as tx:
             _seed(tx)
+    else:
+        with st.tx("init: 空 State，等待研究者建立项目", actor="system") as tx:
+            tx.write(".gitignore", GITIGNORE)
+            tx.write("README.md", README)
     return st, True

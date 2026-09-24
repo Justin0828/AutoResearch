@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import (candidates, discussion, frontmatter, incubation, insights, metrics, observe, papers,
+from . import (bootstrap, candidates, discussion, frontmatter, incubation, insights, metrics, observe, papers,
                reviews, schema)
 from .library import Library
 
@@ -60,7 +60,17 @@ def make_handler(app):
                 "bias": metrics.bias_by_origin(st),
                 "reviews": reviews.list_all(st, "open"),
                 "validation": {"errors": errs, "warnings": warns},
+                "setup_needed": bootstrap.needs_setup(st),
                 "head": st.head()}
+
+    @route("POST", "/api/project/setup")
+    def setup_project(req, q):
+        """研究者建立项目（DESIGN.md §5「新项目的建立」）。已有项目时拒绝。"""
+        b = req.json()
+        bootstrap.setup(st, b.get("title"), b.get("description"), b.get("question"),
+                        b.get("maturity") or "vague")
+        app.bus.publish("state", {"project": "setup"})
+        return {"ok": True}
 
     @route("GET", "/api/objects/(?P<id>[A-Z]+\\d+)")
     def get_object(req, q, id):
@@ -77,6 +87,8 @@ def make_handler(app):
 
     @route("POST", "/api/discussions")
     def new_discussion(req, q):
+        if bootstrap.needs_setup(st):
+            raise ApiError(409, "还没有项目：先建立项目与主问题")
         return {"id": discussion.create(st, (req.json().get("title") or "").strip())}
 
     @route("GET", "/api/discussions/(?P<ds>DS\\d+)")

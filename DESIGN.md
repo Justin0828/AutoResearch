@@ -562,6 +562,17 @@ $AR_ROOT/
   run/          运行期数据，不入 git：任务目录、额度、班次、事件、通知、锁
 ```
 
+#### 新项目的建立（2026-09-24 用户确认）
+
+State 首次建立时**是空的**：只有 git 仓库、`README.md`、`.gitignore`，没有 `project.md`，也不带任何研究内容。
+研究者在前端首次打开时填写项目标题、项目描述与主问题，后端据此写入 `project.md`（`mode: discussion`、`main_question: Q001`）、
+`questions/Q001.md` 与 `provenance.json`（Q001 的 origin 为 human）。
+
+- **理由**：重置研究（`rm -rf $AR_ROOT` 后重来）时，旧的 Phase 0 fixture 内容（问题、A001、H001、H002、U001）不应被自动种回——
+  它们会以“已有前提与假设”的身份影响新的讨论。项目的起点只能是研究者自己的话。
+- 项目建立之前，daemon 不规划任何任务（没有夜间预习、没有自演进），前端只显示建项目表单。已存在 `project.md` 时建项目请求被拒绝，不会覆盖。
+- Phase 0 fixture 只留作测试夹具（`bootstrap.init(cfg, seed=True)` / `./ar init --fixture`）。
+
 #### State 仓库布局
 
 | 路径 | 对象 | 谁能写 |

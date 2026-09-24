@@ -11,7 +11,7 @@ class ReviewTest(unittest.TestCase):
 
     def setUp(self):
         self.cfg = temp_cfg(self)
-        self.st, _ = bootstrap.init(self.cfg)
+        self.st, _ = bootstrap.init(self.cfg, seed=True)
 
     def put(self, ident, meta, body="正文"):
         with self.st.tx(f"test: {ident}", actor="human") as tx:
