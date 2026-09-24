@@ -10,6 +10,7 @@ M2.0 的模式门在这里：讨论模式下 daemon 只执行人发起的讨论�
 """
 import datetime
 import json
+import os
 import threading
 import time
 import traceback
@@ -22,6 +23,32 @@ from .store import now, today
 from .tasks import KINDS, Ledger
 
 MAX_ATTEMPTS = 3
+
+
+class AlreadyRunning(RuntimeError):
+    pass
+
+
+def instance_lock(cfg):
+    """一个 AR_ROOT 只能有一个 daemon（2026-09-24 实测踩过：第二个 ./ar serve 忘了设 AR_ROOT，
+    落到了同一份 State 上——它把第一个的在飞任务当成崩溃遗留、写了 crash 交接、两边一起派活）。
+    返回持锁的文件对象，进程活着锁就在；进程被 SIGKILL 时内核自动释放，不会留下死锁。"""
+    import fcntl
+    p = cfg.run / "serve.lock"
+    fh = open(p, "a+", encoding="utf-8")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        fh.seek(0)
+        who = fh.read().strip() or "未知进程"
+        fh.close()
+        raise AlreadyRunning(f"{cfg.root} 上已经有一个 AutoResearch 在运行（{who}）。"
+                             "同一份 State 只能有一个服务；要另开实例，请换一个 AR_ROOT。")
+    fh.seek(0)
+    fh.truncate()
+    fh.write(f"pid {os.getpid()}，端口 {cfg.port}，启动于 {now()}")
+    fh.flush()
+    return fh
 JUDGE_KINDS = {k for k, v in KINDS.items() if v["profile"] == "judge"}
 UNATTENDED_KINDS = JUDGE_KINDS | {"incubate"}
 NOTE_REASON = {"quota_5h": "5-hour limit", "quota_7d": "weekly limit", "cutoff": "cut off",

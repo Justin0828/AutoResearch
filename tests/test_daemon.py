@@ -149,3 +149,16 @@ class DaemonTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InstanceLockTest(unittest.TestCase):
+    def test_second_serve_on_same_root_refused(self):
+        from autoresearch.daemon import AlreadyRunning, instance_lock
+        cfg = temp_cfg(self)
+        fh = instance_lock(cfg)
+        with self.assertRaisesRegex(AlreadyRunning, "已经有一个"):
+            instance_lock(cfg)
+        fh.close()                      # 进程退出（或被杀）锁就释放
+        instance_lock(cfg).close()
+        other = temp_cfg(self)          # 换一个 AR_ROOT 可以另开
+        instance_lock(other).close()

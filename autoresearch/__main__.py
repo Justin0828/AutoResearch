@@ -31,10 +31,14 @@ def cmd_brief(cfg, a):
 
 
 def cmd_serve(cfg, a):
-    from .daemon import Daemon
+    from .daemon import AlreadyRunning, Daemon, instance_lock
     from .events import Bus
     from .server import App
 
+    try:
+        lock = instance_lock(cfg)      # noqa: F841  持有到进程结束
+    except AlreadyRunning as e:
+        sys.exit(f"没有启动：{e}")
     st, _ = bootstrap.init(cfg)
     bus = Bus(cfg)
     daemon = Daemon(cfg, st, bus)
