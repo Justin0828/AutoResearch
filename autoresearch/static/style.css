@@ -448,3 +448,5 @@ dialog details.why summary { cursor: pointer; color: var(--muted); }
 #ds-list .pin { color: var(--accent); font-size: 8px; margin-right: 6px; vertical-align: middle; }
 #ds-list .ftag { font-family: var(--mono); font-size: 10.5px; background: var(--accent-soft); color: var(--accent-ink); border-radius: 4px; padding: 0 5px; }
 #ds-meta a { color: var(--accent-ink); }
+/* The generic `dialog input` rule (full width, padding, background) is for text fields; keep checkboxes native. */
+dialog input[type=checkbox], dialog input[type=radio] { width: auto; padding: 0; margin: 3px 0 0; flex: none; background: none; border: 0; }
