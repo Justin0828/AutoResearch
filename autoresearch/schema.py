@@ -25,7 +25,7 @@ class Kind:
 
 
 # 正式对象都可带的可选关联（§5.15）：候选确认时保留的 relates_to、撤下它的决定
-RELATES = ("Q", "A", "H", "U", "IN", "I", "D", "E", "P", "X", "DS")
+RELATES = ("Q", "A", "H", "U", "IN", "EV", "D", "E", "P", "X", "DS")
 COMMON_REFS = {"relates_to": RELATES, "withdrawn_by": ("DEC",)}
 
 KINDS = {k.type: k for k in [
@@ -40,23 +40,23 @@ KINDS = {k.type: k for k in [
          {"status": {"unexamined", "examined", "promoted", "retired", "invalidated"},
           "fragile": {"true", "false"}},
          nonempty=("relied_on_by",),
-         refs={"relied_on_by": ("Q", "A", "H", "I", "U", "IN"), "promoted_to": ("H",),
+         refs={"relied_on_by": ("Q", "A", "H", "U", "IN"), "promoted_to": ("H",),
                "invalidated_by": ("E", "DEC"), "derived_from": ("IN",), "evidence": ("E",),
-               "idea": ("I",), **COMMON_REFS}),
+               **COMMON_REFS}),
     Kind("hypothesis", "hypotheses", "H",
          ("status", "confidence", "falsifier", "validation", "evidence"),
          {"status": {"proposed", "investigating", "supported", "refuted",
                      "inconclusive", "abandoned"},
           "confidence": {"low", "medium", "high"}},
          nonempty=("falsifier", "validation"),
-         refs={"evidence": ("E",), "promoted_from": ("A",), "idea": ("I",), **COMMON_REFS}),
+         refs={"evidence": ("E",), "promoted_from": ("A",), **COMMON_REFS}),
     # 证据追到段落（§5.5）：target 可以是假设或前提；locator + quote 由工具对照全文校验
     Kind("evidence", "evidence", "E", ("target", "stance", "strength", "source", "basis"),
          {"stance": {"support", "contradict", "neutral"},
           "strength": {"weak", "moderate", "strong"},
           "basis": {"abstract", "fulltext"}},
          nonempty=("source",),
-         refs={"target": ("H", "A", "I"), "source": ("P", "X")}, tool_only=True),
+         refs={"target": ("H", "A"), "source": ("P", "X")}, tool_only=True),
     # 论文只能经 register_paper 登记（登记即核实）；正文是阅读笔记，身份与阅读状态字段归工具（§5.5）
     Kind("paper", "papers", "P", ("title", "read", "fulltext"),
          {"read": {"none", "abstract", "fulltext"},
@@ -70,7 +70,7 @@ KINDS = {k.type: k for k in [
          {"status": {"active", "superseded", "abandoned"},
           "firmness": {"hunch", "working", "settled"},
           "starred": {"true", "false"}},          # 星标（§5.17.2），只由人改
-         refs={"basis": ("Q", "A", "H", "E", "P", "X", "U", "IN", "DS", "D", "I"),
+         refs={"basis": ("Q", "A", "H", "E", "P", "X", "U", "IN", "DS", "D", "EV"),
                "informs": ("Q", "A", "H", "U", "IN"), "superseded_by": ("IN",),
                "consolidates": ("IN",), **COMMON_REFS}),
     Kind("uncertainty", "uncertainties", "U", ("status", "importance"),
@@ -85,7 +85,7 @@ KINDS = {k.type: k for k in [
           "status": {"pending", "accepted", "rejected", "superseded"},
           "origin": {"human", "ai", "unclear"},
           "resolution": {"answered", "decided", "merged"}},
-         refs={"basis": ("Q", "A", "H", "E", "P", "X", "U", "IN", "DS", "D"),
+         refs={"basis": ("Q", "A", "H", "E", "P", "X", "U", "IN", "DS", "D", "EV"),
                "target": ("Q", "A", "H", "U", "IN"),
                # resolve 候选的 answered_by 可引用同批 pending 候选 C###（§5.16.1）
                "answered_by": ("IN", "H", "C"), "merged_into": ("Q",), "supersedes": ("IN",),
@@ -96,7 +96,7 @@ KINDS = {k.type: k for k in [
     # 对抗性接地（M4.6，§5.6）：只标注，被核查对象一字不改
     Kind("grounding", "groundings", "GR", ("target", "verdict"),
          {"verdict": {"novel", "prior_work", "contradicted", "mixed"}},
-         refs={"target": ("H", "A", "C", "I"), "refs": ("P", "E")}, tool_only=True),
+         refs={"target": ("H", "A", "C"), "refs": ("P", "E")}, tool_only=True),
     # Paper Request Queue（M4.5，§5.8）
     Kind("request", "requests", "RQ", ("paper", "status", "task"),
          {"status": {"open", "fulfilled", "dismissed"}},
@@ -105,23 +105,12 @@ KINDS = {k.type: k for k in [
     Kind("review", "reviews", "R", ("trigger", "event", "target", "status", "depth"),
          {"event": {"hypothesis_refuted", "assumption_invalidated", "insight_withdrawn"},
           "status": {"open", "resolved", "dismissed"}},
-         refs={"trigger": ("A", "H", "IN"), "target": ("Q", "A", "H", "U", "C", "I", "IN")},
+         refs={"trigger": ("A", "H", "IN"), "target": ("Q", "A", "H", "U", "C", "IN")},
          tool_only=True),
-    # 自演进（M11，§5.10–5.11）：Idea 只能经 record_idea 建；基本盘与推演记录由后端机械生成
-    Kind("idea", "ideas", "I", ("status", "falsifier", "premises", "foundation", "chain"),
-         {"status": {"grounding", "screened_out", "shortlisted", "accepted", "rejected"}},
-         nonempty=("falsifier", "foundation", "chain"),
-         refs={"premises": ("A",), "challenges": ("Q", "A", "H", "D", "U", "E", "IN"),
-               "builds_on": ("Q", "A", "H", "D", "U", "E", "IN"),
-               "relates_to": ("Q", "A", "H", "U", "IN", "I"), "foundation": ("F",),
-               "grounding": ("GR",), "promoted_to": ("H", "IN"), "session": ("DEC",),
-               "evidence": ("E",)}, tool_only=True),
-    Kind("foundation", "foundations", "F", ("session", "round", "question"),
-         refs={"session": ("DEC",), "question": ("Q",), "parent": ("F",), "delta": ("E", "GR")},
-         tool_only=True),
-    Kind("chain", "chains", "T", ("session", "round", "foundation", "status"),
-         {"status": {"done", "empty", "interrupted"}},
-         refs={"session": ("DEC",), "foundation": ("F",), "ideas": ("I",)}, tool_only=True),
+    # 自演进（M11 v1.8，§5.18）：演进文档，由后端把演进任务的最终回复写入；不改任何研究对象
+    Kind("evolution", "evolutions", "EV", ("seeds", "task"), nonempty=("seeds",),
+         enums={"trigger": {"manual", "auto"}},
+         refs={"seeds": ("Q", "IN"), "question": ("Q",)}, tool_only=True),
 ]}
 
 BY_PREFIX = {k.prefix: k for k in KINDS.values()}
@@ -162,11 +151,11 @@ def is_consolidation_source(ins, meta):
 # 可撤下的对象类型 → 撤下后的状态（§5.15.6）；insight 沿用既有的 Abandon
 WITHDRAWN_STATUS = {"question": "withdrawn", "assumption": "retired", "hypothesis": "abandoned",
                     "uncertainty": "withdrawn"}
-FOCUSABLE = ("question", "assumption", "hypothesis", "uncertainty", "insight")
+FOCUSABLE = ("question", "assumption", "hypothesis", "uncertainty", "insight", "evolution")
 
 
 def is_withdrawn(meta):
-    """人以“不再相关”撤下的对象。只看 withdrawn_by：推演前提被否决时的 retired 不算撤下。"""
+    """人以“不再相关”撤下的对象。只看 withdrawn_by：其他原因的 retired 不算撤下。"""
     meta = meta or {}
     return bool(meta.get("withdrawn_by")) and \
         meta.get("status") == WITHDRAWN_STATUS.get(meta.get("type"))
@@ -179,14 +168,14 @@ def revision_of(meta):
     except (TypeError, ValueError):
         return 1
 
-PROJECT_MODES = {"discussion", "incubation", "validation"}
+PROJECT_MODES = {"discussion", "validation"}      # v1.8 起自演进不再是模式（§5.18）
 ORIGINS = {"human", "ai"}
 COMMON = ("id", "type", "created")
 
 # agent 不得直接 Write/Edit 的路径（DESIGN.md §5.1「受保护路径」）
 PROTECTED = ("project.md", "provenance.json", "evidence/", "decisions/",
              "candidates/", "discussions/", "handoffs/", "reviews/", "groundings/", "requests/",
-             "ideas/", "foundations/", "chains/")
+             "evolutions/")
 
 # 字段级受保护（§5.5）：agent 可以 Edit 论文笔记正文，但这些字段只归 register_paper 等工具
 PAPER_TOOL_FIELDS = ("id", "type", "title", "authors", "year", "venue", "arxiv", "doi", "url",
@@ -292,8 +281,6 @@ def check_object(meta, kind, ids, rel):
         # abandoned 是人的方向决定（§5.15.6），不要求证据
         if meta.get("status") not in (None, "proposed", "abandoned") and not _as_list(meta.get("evidence")):
             errs.append(f"{rel}: status={meta['status']} 但没有任何 evidence")
-    if kind.type == "idea" and str(meta.get("falsifier") or "").strip() == "":
-        errs.append(f"{rel}: Idea 必须说得出何时是错的（falsifier）")
     if kind.type == "evidence":
         if str(meta.get("source", "")).startswith("P") and not _as_list(meta.get("locator")):
             errs.append(f"{rel}: 出处是论文的证据必须带 locator（段落锚点）")

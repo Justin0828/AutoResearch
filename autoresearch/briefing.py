@@ -6,7 +6,7 @@
 """
 import re
 
-from . import attribution, candidates, discussion, frontmatter, incubation, modes, reviews, schema
+from . import attribution, candidates, discussion, evolution, frontmatter, modes, reviews, schema
 
 PROFILES = {
     # redact: 是否剥离 origin；sections: 章节（见 §5.2 表），"3b" = 当前理解
@@ -27,8 +27,6 @@ MODE_RULES = {
     "discussion": "当前是**讨论模式**：研究者主导。你不得自主发起验证、实验或方向变更；"
                   "只允许为当下讨论做低成本的文献查证。讨论中出现的研究内容只能进候选区，"
                   "由研究者确认后才成为正式 State 对象。",
-    "incubation": "当前是**自演进模式**：系统在检索关闭的条件下从冻结的基本盘推演想法（Idea），"
-                  "每条想法由开着检索的任务做外部核查（只标注、不改写），产出等研究者分诊。",
     "validation": "当前是**验证模式**：研究者已把一批前提 / 假设交棒给系统，系统自主检索、阅读、"
                   "记录证据并在证据足够时迁移状态。出现重大结果时系统会停下来建议回到讨论，而不是自己继续闭环。",
 }
@@ -223,8 +221,7 @@ class Assembler:
         return "\n\n".join(out)
 
     def s_assumptions(self, redact):
-        # 推演中新引入、所属想法未被接受的前提不进这里（§5.10），否则会淹没真正的前提集
-        items = self._live(incubation.real_assumptions(self.store))
+        items = self._live(self.store.list("assumption"))
         items.sort(key=lambda x: (x[0].get("status") != "unexamined", x[0]["id"]))
         if not items:
             return "## 4. 前提（Assumption）\n\n（暂无。）"
@@ -277,16 +274,12 @@ class Assembler:
 
     def s_dead_ends(self, redact):
         items = self.store.list("dead-end")
-        if not items and not incubation.rejected_ideas(self.store):
+        if not items:
             return "## 7. 已关闭方向（禁止重复）\n\n本项目还没有记录任何 dead-end。"
         out = ["## 7. 已关闭方向（禁止重复）\n\n以下**全部**列出、不做截断。展开新思路前逐条对照；"
                "若你认为某条关得太早，明确说出来，而不是悄悄重走。"]
         for m, b in items:
             out.append(f"### {m['id']} · {_fm_line(m, ['status', 'closed_by'])}\n\n{self._body(b, redact)}")
-        rej = incubation._rejected_block(self.store)
-        if rej:
-            out.append("### 被研究者否决的想法（与已关闭方向同等对待，§5.14）\n\n"
-                       + self._body("\n".join(rej), redact))
         return "\n\n".join(out)
 
     def s_uncertainties(self, redact):
@@ -400,6 +393,11 @@ class Assembler:
                "该合并、该放弃；**不以提升成熟度为目标**，同级打磨（vague → vague，只是说得更准）是完全正当的进展。"
                "当表述确有推进时，明说“这一版比上一版好在哪”；蒸馏会据此提出修订候选"
                f"（kind=revision，target={fid}，base_revision={rev}）。只有问题变成了另一个问题时，才应新建对象并用 relates_to 连回来。"]
+        if m.get("type") == "evolution":
+            # 演进文档不修订（§5.18.4）：讨论它是为了从里面提炼出理解、问题的修订或新问题
+            out[1] = (f"本场讨论（{ds}）围绕自演进文档 {fid}（检索关闭时从 {', '.join(m.get('seeds') or [])} 出发写的一段思考）。"
+                      "目标是和研究者一起判断里面哪些想法站得住、值得记下：站得住的可以提成 insight 候选（basis 写 "
+                      f"{fid}），让某个问题说得更准的提修订候选，拆出的新问题提 question 候选。文档本身不修订。")
         if info["withdrawn"]:
             out.append(f"**注意：{fid} 已被研究者撤下**（{info['withdrawn']['reason']}）。")
         out.append(f"### 当前全文（第 {rev} 版）\n\n{_fm_line(m, keys)}{_rev(m, ' · ')}")
@@ -464,42 +462,10 @@ class Assembler:
 
     # ---------------------------------------------------------------- 装配
 
-    def s_idea(self, iid):
-        """对 Idea 的接地（§5.12）：被核查的想法全文 + 它出发时的基本盘（去掉“当前理解”一章：评判看不到理解）。"""
-        m, b = self.store.read_obj(iid)
-        d = incubation.as_dict(self.store, m, b)
-        prem = "\n".join(f"  - {p['id']}：{p['text']}" for p in d["premises"]) or "  （没有新前提。）"
-        fm, fb = self.store.read_obj(m.get("foundation"))
-        fb = re.sub(r"## 2\. 当前理解.*?(?=\n## 3\.)", "## 2. 当前理解\n\n（评判类任务不看理解。）\n",
-                    fb or "", flags=re.S)
-        fb = re.sub(r"^#+ ", lambda x: "#" + x.group(0), fb, flags=re.M)
-        return (f"## 被核查的想法 {iid}\n\n**陈述**：{d['statement']}\n\n**证伪条件**：{d['falsifier']}\n\n"
-                f"**它自己引入的新前提（{len(d['premises'])} 条）**：\n{prem}\n\n"
-                f"**对基本盘的挑战**（{', '.join(d['challenges']) or '无'}）：{d['challenge_note']}\n\n"
-                f"**推理概要**：{d['reasoning']}\n\n**与既有对象的关系**（{', '.join(d['relates_to'] + d['builds_on']) or '—'}）："
-                f"{d['relation']}\n\n### 它出发时的基本盘 {m.get('foundation')}\n\n{fb.strip()}")
-
-    def s_incubate_task(self, task):
-        did = task.get("incubation")
-        prior = [a for a in incubation.angles(self.store, did) if a[0] != task["id"]]
-        lines = [f"- 任务：`{task['id']}`（推演链，第 {task.get('round')} 轮，基本盘 {task.get('foundation')}）",
-                 f"- 目标：{task['goal']}",
-                 "- 检索关闭：你没有联网工具，也读不到论文。能读的只有这份 briefing。"]
-        if prior:
-            lines.append("- 本 session 之前的推演选过的角度（避开重复）：")
-            lines += [f"  - {t}（第 {r} 轮）：{a}" for t, r, a in prior]
-        if task.get("prior_checkpoints"):
-            lines.append("\n**本推演之前被切断过**，接着你上次的笔记往下想，不要从头开始：")
-            lines += [f"  - {c['ts']} {c['note']}" for c in task["prior_checkpoints"]]
-        return "## 1. 本次任务\n\n" + "\n".join(lines)
-
     def briefing(self, profile, task):
-        if profile == "incubate":
-            # 只有两章：任务与冻结的基本盘（§5.12）。基本盘是 F### 的原文拷贝，State 之后怎么变都看不到
-            _, fb = self.store.read_obj(task["foundation"])
-            fb = re.sub(r"^#+ ", lambda x: "#" + x.group(0), fb or "", flags=re.M)
-            return ("# Briefing\n\n这是你本次推演的全部上下文。\n\n" + self.s_incubate_task(task)
-                    + f"\n\n## 2. 基本盘 {task['foundation']}（冻结）\n\n" + fb.strip() + "\n")
+        if profile == "evolve":
+            # 自演进（§5.18.3）：任务读不到任何文件，briefing 就是全部上下文
+            return evolution.briefing(self.store, task)
         p = PROFILES[profile]
         redact = p["redact"]
         ds = task.get("discussion")
@@ -529,8 +495,6 @@ class Assembler:
                 "你没有任何先前的记忆——这里写的就是研究至今的全部共识；"
                 "细节可以去 State 仓库读原文件。")
         secs = [builders[i]() for i in p["sections"]]
-        if str(task.get("target") or "").startswith("I") and self.store.exists(task["target"]):
-            secs.insert(1, self.s_idea(task["target"]))
         if self.focus:
             secs.insert(p["sections"].index(2) + 1, self.s_focus(ds, redact))
         secs.append(self.s_withdrawn(redact))

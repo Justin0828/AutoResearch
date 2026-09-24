@@ -1,8 +1,8 @@
-"""Phase 2.8：理解的独立表述、星标、手动合并；自演进以新理解与星标理解为出发点（DESIGN.md §5.17）。"""
+"""Phase 2.8：理解的独立表述、星标、手动合并（DESIGN.md §5.17）。自演进的重做见 test_evolution.py。"""
 import os
 import unittest
 
-from autoresearch import bootstrap, briefing, candidates, incubation, insights, protocol, reviews, schema
+from autoresearch import bootstrap, briefing, candidates, insights, protocol, reviews, schema
 from autoresearch.store import today
 from tests.test_phase26 import mk_ds
 from tests.test_phase27 import ApiTest as _Api
@@ -61,7 +61,6 @@ class StandaloneTest(Base):
         for p in (protocol.DISTILL_PROTOCOL, protocol.DISCUSS_PROTOCOL):
             self.assertIn("脱离讨论也能读懂", p)
         self.assertIn("读不懂的理解改写成独立表述", protocol.TIDY_PROTOCOL)
-        self.assertIn("【本次重点】", protocol.INCUBATE_PROTOCOL)
 
     def test_tidy_rewrite_candidate(self):
         i = self.ins("上面那个方案更好", firmness="working")
@@ -81,27 +80,6 @@ class StandaloneTest(Base):
         self.assertEqual(m["firmness"], "working")
         self.assertEqual(self.st.read_obj(i)[0]["superseded_by"], new)
         self.ok()
-
-
-class IncubationFocusTest(Base):
-    def foundation(self, did="DEC900"):
-        return incubation.build_first(self.st, did)
-
-    def test_starred_and_new_are_focus(self):
-        old = self.ins("旧理解")
-        star = self.ins("星标理解")
-        insights.set_starred(self.st, star, True)
-        body = incubation.foundation_body(self.st)
-        self.assertIn(f"**{star}** · hunch【本次重点：研究者星标】", body)
-        self.assertNotIn(f"**{old}** · hunch【", body)              # 没有上个 session：只看星标
-        self.foundation()
-        new = self.ins("上次自演进之后才有的理解")
-        body = incubation.foundation_body(self.st)
-        self.assertIn(f"**{new}** · hunch【本次重点：上次自演进", body)
-        self.assertNotIn(f"**{old}** · hunch【", body)
-        sec = body.split("## 2. 当前理解")[1]
-        self.assertLess(sec.index(star), sec.index(old))            # 重点排在最前
-        self.assertLess(sec.index(new), sec.index(old))
 
 
 class ApiTest(_Api):

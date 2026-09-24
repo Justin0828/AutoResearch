@@ -14,7 +14,7 @@
 | Phase 2.5 | 想法自演进 M11（1 周） | ✅ 完成（2026-09-24 用户确认） |
 | Phase 2.6 | 对象的持续打磨与讨论组织（§5.15） | ✅ 已合入 main（2026-09-24） |
 | Phase 2.7 | 让研究收敛：问题生命周期、活跃集、理解合并、问题树（§5.16） | 🟡 已实现（分支 `phase2.7`），待用户确认 |
-| Phase 2.8 | 理解的独立表述、星标、手动合并；自演进以新理解为出发点（§5.17） | 🟡 已实现（分支 `phase2.8`），待用户确认 |
+| Phase 2.8 | 理解的独立表述、星标、手动合并（§5.17）；自演进重做为演进文档（§5.18） | 🟡 已实现（分支 `phase2.8`），待用户确认 |
 | **Phase 3** | **实验 + 网络分流（3–4 周）** | ⬜ **下一步** |
 | Phase 4 | 完整自治 + 迁移到公司服务器 | ⬜ |
 
@@ -252,6 +252,23 @@ daemon / runner / briefing / MCP server / 前端的相应扩展。测试 72 个�
   Tidy up（假 claude）对 IN006 提改写候选 C024 → 修订卡 “from tidy-up T00001” → 对照确认 → IN008 取代 IN006 且继承星标。全程无 JS 错误。
 - **没有跑真实 claude**：独立表述与“优先从重点出发”是协议层改动，效果要在真实使用中看。自演进仍要求主问题 formalized，当前真实 Q001 是 vague，所以 §5.17.4 暂时用不上。
 - **待用户**：重启 `./ar serve`；给重要的理解标星；读不懂的旧理解可以点一次 Tidy up 让它提改写候选。
+
+### 自演进重做（2026-09-24，同在 `phase2.8`；DESIGN M11 与 §5.18，v1.8）
+
+- **起因**：研究者重新定义自演进——“演进一种思考，形成一个文档，记录有 insight 的想法；出发点是 insight 和 question，越 vague 的 question 越要演进”；
+  现有的不兼容就删除。研究者选定：触发 = 手动 + 空闲自动；检索关闭、不接地；产出只有文档（不自动提候选）；不设门槛。
+- **删除**：`incubation` 模式与入场闸门（formalized）、Idea / Foundation / 推演记录三类对象、`record_idea`、Idea 接地（`ground_idea`）、停止条件与交卷、
+  Ideas 页与 Inbox 的 Ideas 分诊、Chat 的 Incubate 按钮、前提 / 假设上的 `idea` 字段与“推测性前提”、被否决 Idea 进 dead-end 一章、`AR_INCUBATE_*`、
+  `incubation.py` 与 `tests/test_incubation.py`。DESIGN §5.10–5.14 与 §5.17.4 标为废止（原文在 git 历史）。真实 State 里没有这些对象，删除不影响数据。
+- **新增**：`evolution.py`（选题：open 问题按 vague → 活跃 → 演进次数少 → 越久没演进；没有 open 问题时取星标 / 最新理解。briefing：出发点全文、相关理解、
+  同一出发点上一篇全文、研究全景（理解全文、问题 / 前提 / 假设各一行、已撤下的问题、全部 dead-end），剥离 origin 与论文标题）；任务 `evolve`
+  （sealed：不挂目录、`--restricted`、只有 Read/Grep/Glob 与 checkpoint，runner 开跑自检改为“MCP 只能有 checkpoint”）；最终回复写成 `evolutions/EV###.md`
+  （seeds / question / task / trigger / title / seen）；daemon：手动 `request_evolve`、讨论模式下空闲自动（排在夜间预习之后、每个空闲期至多一篇、受无人值守份额约束，
+  `AR_EVOLVE_AUTO`）；评判任务封读 `evolutions/**`；EV 可聚焦讨论（2b 章给全文，提示从中提炼理解 / 修订 / 新问题），理解的 basis 可引用 EV。
+  API：`GET /api/evolutions`、`POST /api/evolve`。前端：Evolution 页、问题 / 理解页 Evolve ✦、文档页 Discuss this。
+- **测试全过**（新增 `tests/test_evolution.py` 13 个；删掉 incubation 相关 17 个；`test_phase2` 的预习测试改为允许预习后自动演进）。
+- **验收（当前真实 State 的副本，端口 8796，结束后按 PID 停掉）**：校验 0 错误；系统挑中 Q001（“vague、还没演进过”）；问题页 Evolve ✦ → EV001；Evolution 页「Evolve…」→ EV002 带上了 EV001（接着往下写）；
+  实际下发的 briefing 四章齐全、无 origin；`--tools` 只有 Read/Grep/Glob；EV001 页 Discuss this 开出聚焦讨论。全程无 JS 错误。没有跑真实 claude。
 
 ## 已知缺口（Phase 2 之后）
 

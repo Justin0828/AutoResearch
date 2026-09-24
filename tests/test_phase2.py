@@ -325,8 +325,11 @@ class DaemonPhase2Test(Base):
         prep = self.d.st["prep"]
         dm, db = self.st.read_obj(prep["decision"])
         self.assertIn("你要求的", db)
-        ks = [(t["kind"], t.get("prep")) for t in self.d.ledger.all()]
+        ks = [(t["kind"], t.get("prep")) for t in self.d.ledger.all() if t["kind"] != "evolve"]
         self.assertEqual([k for k, _ in ks], ["lit_search", "read_paper"])
+        # 预习结束后，同一个空闲期里自动演进一篇（§5.18.2），排在预习之后
+        ev = [t for t in self.d.ledger.all() if t["kind"] == "evolve"]
+        self.assertTrue(all(t["created"] >= prep["ended"] for t in ev))
         self.assertNotIn("assess", [k for k, _ in ks])            # 预习不评估、不迁移
         self.assertEqual(self.st.read_obj("H001")[0]["status"], "proposed")
 

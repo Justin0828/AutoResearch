@@ -7,7 +7,7 @@ import unittest
 import urllib.request
 from pathlib import Path
 
-from autoresearch import (bootstrap, briefing, candidates, discussion, frontmatter, incubation, insights,
+from autoresearch import (bootstrap, briefing, candidates, discussion, evolution, frontmatter, insights,
                           objects, papers, reviews, schema)
 from autoresearch.library import Library
 from tests.util import temp_cfg
@@ -217,7 +217,9 @@ class WithdrawTest(Base):
             self.assertIn(f"- {ident}：", tail)
             self.assertNotIn(f"### {ident}", body)
         self.assertIn("不再是关心的方向", tail)
-        self.assertNotIn(u, incubation.foundation_body(self.st))
+        eb = evolution.briefing(self.st, {"id": "T9", "seed": "Q001"}).split("研究者撤下的问题")
+        self.assertNotIn(q, eb[0])                                    # 撤下的只在“撤下”一节列一行
+        self.assertIn(f"- {q}：", eb[1])
         self.ok()
 
     def test_main_question_cannot_be_withdrawn(self):

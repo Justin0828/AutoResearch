@@ -55,10 +55,6 @@ def check_item(store, ident):
             raise ValueError(f"{ident} 不是待确认的假设 / 前提候选")
         if meta.get("origin") == "unclear":
             raise ValueError(f"{ident} 的归属还没裁定：先在 Inbox 里选定 human / ai")
-    elif p == "A" and meta.get("idea"):
-        im, _ = store.read_obj(meta["idea"])
-        if not im or im.get("status") != "accepted":
-            raise ValueError(f"{ident} 是想法 {meta['idea']} 推演中引入的前提，想法被接受前不能送去验证")
     if p == "A" and meta.get("status") not in ("unexamined", "examined"):
         raise ValueError(f"{ident} 是 {meta.get('status')}，不能再送去验证")
     elif p == "H" and meta.get("status") not in ("proposed", "investigating", "inconclusive"):
@@ -73,8 +69,6 @@ def handoff(store, items, note=""):
         raise ValueError("批次不能为空：至少挑一条前提或假设")
     if mode(store) == "validation":
         raise ValueError("已经在验证模式：先收回，再交一个新批次")
-    if mode(store) == "incubation":
-        raise ValueError("正在自演进：先回到讨论模式，再交棒验证（两者互斥，§5.13）")
     for i in items:
         check_item(store, i)
     final = []

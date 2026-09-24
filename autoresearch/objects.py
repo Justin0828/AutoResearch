@@ -288,7 +288,8 @@ def links(store, ident, idx=None):
         withdrawn = {"decision": m["withdrawn_by"], "from": m.get("withdrawn_from"),
                      "reason": _section(db, "为什么"), "date": (dm or {}).get("created")}
     return {
-        "id": ident, "meta": m, "body": body, "statement": statement_of(body),
+        "id": ident, "meta": m, "body": body,
+        "statement": body.strip() if m.get("type") == "evolution" else statement_of(body),
         "provenance": prov, "revision": rev, "withdrawn": withdrawn,
         "revisions": revision_history(store, ident),
         "discussions": discussions, "evidence": evidence, "related": related,

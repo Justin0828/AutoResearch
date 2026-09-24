@@ -6,7 +6,7 @@
 """
 import json
 
-from . import incubation, modes
+from . import modes, schema
 
 DONE_H = {"supported", "refuted", "abandoned"}
 DONE_A = {"invalidated", "promoted", "retired"}
@@ -74,7 +74,7 @@ def next_step(store, ledger, cfg, targets, tasks, tag):
                 and m.get("read") != "fulltext" and not any(
                     t.get("paper") == m["id"] and t["status"] in LIVE for t in tasks):
             read_papers.discard(m["id"])
-    # 前提在前（阶梯第 3 级：未检验前提的核查直接喂养基本盘），假设在后（第 4 级）
+    # 前提在前（阶梯第 3 级：被依赖却没人查过的前提最危险），假设在后（第 4 级）
     for target in sorted(targets, key=lambda x: (not x.startswith("A"), x)):
         if target_done(store, target):
             continue
@@ -137,8 +137,8 @@ def next_step(store, ledger, cfg, targets, tasks, tag):
 
 def pick_prep_target(store):
     """夜间预习的机械选题（人没写“今晚查什么”时）。返回 (target, why) 或 (None, None)。"""
-    # 推演中新引入、所属想法未被接受的前提不参与选题（§5.10）
-    asm = [m for m, _ in incubation.real_assumptions(store) if m.get("status") == "unexamined"]
+    asm = [m for m, _ in store.list("assumption") if m.get("status") == "unexamined"
+           and not schema.is_withdrawn(m)]
     if asm:
         a = max(asm, key=lambda m: (len(_as_list(m.get("relied_on_by"))), m["id"]))
         return a["id"], (f"{a['id']} 是未检验的前提，支撑着 {', '.join(_as_list(a.get('relied_on_by')))}"
@@ -149,7 +149,6 @@ def pick_prep_target(store):
         h = hyp[0]
         return h["id"], f"{h['id']} 还没有任何证据"
     # 活跃问题（§5.16.2）：研究者标为“正在想的”，以“调研 Q00x”为题
-    from . import schema
     act = [m for m, _ in store.list("question") if schema.is_active(m)
            and schema.question_status(m) == "open" and not schema.is_withdrawn(m)]
     if act:

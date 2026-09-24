@@ -26,19 +26,19 @@
 | 模式 | 谁主导 | loop engine 的权限 | 产出 |
 |---|---|---|---|
 | **讨论模式** | 人 | 不得自主发起验证、实验或方向变更；仅允许为当下讨论做低成本文献查证 | 想法、`Assumption`、候选 `Hypothesis` / `Question` / `Uncertainty` |
-| **自演进模式** | AI（你不在场时） | **关闭检索**，从冻结的基本盘做长链推演；不得发起实验或方向变更 | `Idea`、新 `Assumption` |
+| （自演进，v1.8 起不再是模式） | AI（你离开后的空闲窗口，或你点 Evolve） | **关闭检索**，从一个问题或理解出发演进思考；不改任何研究对象 | 演进文档 `EV###`（§5.18） |
 | **验证模式** | AI | 按 M2 的 next-action 选择自主推进 | `Evidence`、实验结果、信念更新 |
 
 模式间由人显式**交棒（Handoff）**切换。典型流转：
 
 ```text
 讨论模式（人主导，搜索开）
-  → 问题达到 formalized，基本盘冻结
-  → 自演进模式（AI 主导，搜索关）产出 Idea
-  → 接地任务（搜索开，对抗性，只标注不改写）
+  ↔ 自演进（后台，搜索关）：从越 vague 的问题、新的理解出发演进思考，写成文档；人读后带回讨论
   → 候选区 → 人判断
-  → 回到讨论模式，或交棒进验证模式
+  → 交棒进验证模式 → 结果回流讨论
 ```
+
+v1.8（2026-09-24 用户决定）：自演进不再是一种模式，而是讨论期间的后台活动，产出只是一份思考文档（§5.18）。
 
 验证结果回流后通常应回到讨论模式重新解释，而不是让 AI 自己闭环。需求 §1 里“分析结果 → 修正理解 → 产生新的 hypothesis”这一段，天然属于讨论模式。
 
@@ -171,7 +171,7 @@ Claude Code Max 5x 的 5 小时滚动窗口会强制结束 session。**系统不
 | M8 | Observability & Progress | 在做什么 + 是否真的进步了 | §12 §14 §15 |
 | M9 | Web Frontend | 长期交互与状态理解入口 | §11 §15 |
 | M10 | Infrastructure | 存储、隔离、环境卫生、部署 | 全局 |
-| M11 | Idea Incubation | 关闭检索下的长链自我推演，产出直觉层面的新想法 | §1 §3 §13 |
+| M11 | 自演进 | 关闭检索，从问题 / 理解出发演进一段思考，写成演进文档（v1.8，§5.18） | §1 §3 §13 |
 
 ---
 
@@ -184,8 +184,7 @@ Claude Code Max 5x 的 5 小时滚动窗口会强制结束 session。**系统不
 1. **核心对象建模**（文件化，非 schema 定义）
    - `ResearchProject` / `Question`（成熟度：vague → scoped → formalized）
    - `DeadEnd` 的一条约束：**不内嵌实验结果，而是引用关闭它的 `Evidence` / `Experiment`**。Phase 0 中 10 次 trial 有 6 次把 `source` 写成 dead-end id，因为 fixture 里 D001 内嵌了一份内部复现结果而这份结果没有独立的实验记录。结果就是证据的出处链断在 dead-end 上，追不到原始实验。
-   - `Idea`：自演进模式的产出——直觉层面的陈述 + 证伪条件 + 推演中新引入的前提清单 + 接地标注 + 与既有假设的关系。不要求工程细节。
-   - `Foundation`（基本盘）：某一轮自演进进入时对 State 取的只读快照，作为该轮推演的约束面。
+   - `Evolution`（演进文档，§5.18）：自演进的产出——从一个问题或理解出发、在检索关闭的条件下演进出的一段思考，记录其中有洞见的想法。只是文档，不改任何研究对象；人读后自己决定记成理解或带进讨论。
    - `Assumption`：当前被默认为真、整个方向据以成立的**前提**，带 examined / unexamined 标记。与 `Hypothesis` 区分开是为了抓住“整条研究方向建立在一条从没人检查过的前提上”这个失败模式。
 
      > **Phase 0 实测修正**：原先的定义（“前提” vs “待验证命题”）在实践中分类不稳定——5 次独立 trial 对同一条命题（“感知不是瓶颈”）给出了 3 种分类。原因是这条命题两者都像：它可证伪，同时又正在被用来剪枝而无人验证。
@@ -236,10 +235,10 @@ Claude Code Max 5x 的 5 小时滚动窗口会强制结束 session。**系统不
 ### 需要实现的功能
 
 0. **模式门（Mode Gate）** —— 0.2 的落实处，优先于以下一切逻辑
-   - State 持有当前 `mode`（`discussion` / `incubation` / `validation`），人拥有唯一切换权。
+   - State 持有当前 `mode`（`discussion` / `validation`），人拥有唯一切换权。（v1.8 起自演进不再是模式，§5.18。）
    - 讨论模式下，loop engine **不得**自主发起验证任务、实验或方向变更；只放行低成本文献查证。
-   - 自演进模式下，**检索在 executor 层被真正移除**（非提示词约束，也非“白名单里不写”）：`--tools` 只给文件读取、MCP 不注册联网工具、deny-list 兜底，且用 `--restricted` 把文件读取关进只含基本盘快照的工作目录（Phase 2.5 spike 实测，§5.9）；不得发起实验或方向变更；详见 M11。
-   - **窗口预算分配（已定）**：自演进占 **5h 窗口的 30% 上限**。按 Phase 0 实测（一个 evidence 量级任务约占窗口 1%），30% 约合 30 个任务当量；一轮"短推演 + 接地"约 2 个当量，即**每窗口约 15 轮迭代**，足够 M11.6 的累进循环跑开。
+   - 自演进任务的**检索在 executor 层被真正移除**（非提示词约束，也非“白名单里不写”）：`--tools` 只给文件读取、MCP 不注册联网工具、deny-list 兜底，且用 `--restricted` 把文件读取关进只含 briefing 的工作目录（Phase 2.5 spike 实测，§5.9）；详见 M11 与 §5.18。
+   - **额度**：自动的自演进每个空闲期至多一篇，受无人值守份额（§5.7）约束；人手动点的不受份额限制。
    - **交棒（Handoff）**：人从候选区挑选本轮要验证的 assumption / hypothesis 批次，确认后切到验证模式。交棒记录写入 `Decision`。
    - 验证模式产出重大结果后，主动建议切回讨论模式，而不是自行继续。
    - **夜间预习（已定保留）**：讨论模式下若窗口空闲，agent 去做文献查证，结果在你下次打开前端时已就位。仅限文献，不含实验与方向变更。
@@ -250,13 +249,13 @@ Claude Code Max 5x 的 5 小时滚动窗口会强制结束 session。**系统不
 
 0b. **无人值守窗口的优先级阶梯**
 
-   窗口不按固定排班填充，而是取当下价值最高的可做之事。推演循环（M11.6）单独撑不满一个窗口，其余由阶梯补齐：
+   窗口不按固定排班填充，而是取当下价值最高的可做之事：
 
    | 优先级 | 工作 | 为什么适合无人值守 |
    |---|---|---|
    | 1 | 闭合上一班被截断的任务 | 否则半成品持续堆积 |
-   | 2 | 推演 / 接地循环（M11.6） | 主线 |
-   | 3 | 未检验 assumption 的文献核查 | 直接喂养下一轮基本盘，是主线的上游 |
+   | 2 | 演进文档（M11，§5.18） | 把最模糊的问题往前推，你回来时有东西可读 |
+   | 3 | 未检验 assumption 的文献核查 | 被依赖却没人查过的前提最危险 |
    | 4 | 待读文献深读与证据抽取 | 永远有存货，永远不亏 |
    | 5 | 矛盾扫描：已积累证据之间的冲突检测 | 真正的研究活动，且完全不需要人在场 |
    | 6 | 实验推进（Phase 3 后） | 跑实验与调试本就最适合夜间 |
@@ -337,7 +336,7 @@ Claude Code Max 5x 的 5 小时滚动窗口会强制结束 session。**系统不
    - 人经清华认证取得 PDF 后**从前端上传**。
    - 系统入库、解阻对应任务、继续推进。
    - 依赖 M2 的 `blocked_on_human` 状态：等待期间 loop 不停摆。
-6. **对抗性接地（Grounding Pass）**：为 M11 产出的 `Idea` 做事后核查——有什么直接反驳？有哪些相近的工作（作为线索，不作扣分）？是否与基本盘矛盾？**只能标注，不能改写 idea**，否则自演进刚买到的不锚定性又被交还给文献框架。
+6. **对抗性接地（Grounding Pass）**：为假设、前提与待确认候选做事后核查——有什么直接反驳？有哪些相近的工作（作为线索，不作扣分）？**只能标注，不能改写被核查对象**。（v1.8 起演进文档不做接地，§5.18。）
 7. **Gap 检测**：识别“已被做过”“没人做过”，供 M2 调整方向。
 8. **持续监控**：定期发现新论文，判断是否改变现有结论；改变时触发信念更新与通知。
 9. **文献地图**：展示某假设周围的相关工作全貌。
@@ -351,7 +350,7 @@ Claude Code Max 5x 的 5 小时滚动窗口会强制结束 session。**系统不
 ### 需要实现的功能
 
 1. **双向来源**：human 与 AI 提出的假设平等进入同一队列，标注来源。
-1a. **Idea 的落地**：经你确认的 `Idea` 拆成一条或多条可证伪的 `Hypothesis` 进入验证队列；未被采纳的 `Idea` 连同理由归档，与 dead-end 同等对待。
+1a. **演进文档的落地**：演进文档（§5.18）里的想法由你读后自己记成理解，或对文档发起聚焦讨论，在讨论里提炼成候选。
 1b. **Assumption 的审视**：定期检查 unexamined 的前提，把其中可证伪的提升为 `Hypothesis` 送入验证；不可证伪但关键的，标记为研究方向的已知脆弱点。
 2. **主动提出对立假设**：系统需主动生成与当前主流解释不同甚至相反的解释。
 3. **可证伪化**：推到“什么结果会反驳它”的形式；无证伪条件者标记为未成熟。
@@ -498,50 +497,27 @@ Claude Code Max 5x 的 5 小时滚动窗口会强制结束 session。**系统不
 
 ---
 
-## M11. Idea Incubation（想法自演进）
+## M11. 自演进（思考的演进，v1.8 重做）
 
-**职责**：在**关闭检索**的条件下，从冻结的基本盘出发做长链自我推演，产出**直觉层面的、可证伪的新想法**，而非工程实现细节。这是系统在你不在场时最有价值的一种产出。
+**职责**：在**关闭检索**的条件下，从一个研究问题或一条理解出发，把思考往前推一段，写成一份**演进文档**，记录其中有洞见的想法。
+**越是 vague 的问题越需要演进**：它说不清边界，正需要有人替它想——它到底在问什么、有几种问法、藏着什么前提、可以怎么拆。
 
-### 为什么要关掉检索
+v1.8 的改动（2026-09-24 用户决定）：v1.4 的形态（入场要求 formalized、冻结基本盘、多轮短链、每条 Idea 须有证伪条件并逐条接地、分诊）整体废止。
+原因：它要求问题先 formalized 才能进入，恰好把最需要演进的 vague 问题挡在门外；产出拆成一条条带闸门的 Idea，也不是研究者想读的“一段思考”。
 
-两个真实机制：检索会把思路锚定到文献的既有框架上，模型转而复述而非重组；检索也消耗注意力与上下文预算，读完十篇论文就没剩多少余量真正去想。代价是产出不接地。
+### 为什么仍然关掉检索
 
-**特征失败模式**：链条越推越长、越推越自信，但并不更真——而模型从内部分辨不出洞见与空话，因为两者用的是同一套流畅性。因此本模块的设计目标不是“让它自由发挥”，而是**在保留不锚定的前提下，用结构手段挡住失控的抽象漂移**。以下 2/5/7/8 四条是主要防线。
+两个真实机制不变：检索会把思路锚定到文献的既有框架上，模型转而复述而非重组；读完十篇论文就没剩多少余量真正去想。
+代价是产出不接地——所以演进文档**只是文档**：不改任何研究对象、不进候选区、不进 briefing，由研究者读后判断。
 
 ### 需要实现的功能
 
-1. **入场闸门**：仅当 `Question` 成熟度达到 `formalized` 时可进入。基本盘未成形就自演进，产出必然是空转。
-2. **基本盘冻结（Foundation Snapshot）**：进入时对 State 取只读快照——形式化问题定义、已确立事实、已知 dead-end、当前 assumption 集。运行期间不变，作为本轮推演的约束面。
-3. **搜索关闭的执行环境**：禁掉 WebSearch / WebFetch / Bash / Task 等一切可能触达外部的工具（**仅从白名单里省略是不够的**，见 §0.6），只保留基本盘读取与推演记录写入。**物理上做不到检索，而不是靠提示词请它别搜**。Phase 2.5 spike 实测：网络一侧三层禁用成立，但裸 `Read` 能读宿主机任意文件（论文可能在任何地方），必须加 `--restricted` 把读取关进工作目录——具体形态见 §5.9。
-4. **允许挑战基本盘，但必须显式**：推翻基本盘里的某条前提本身可能就是最有价值的 idea。但必须显式登记为“对 X 的挑战”，不能靠悄悄漂移。
-5. **新前提追踪（Assumption Trace）**：推演中每引入一条新前提，登记为一条 `Assumption`。终局可直接读出“这个 idea 建立在它自己发明的 N 条未检验前提上”。**最有效的机械质量信号**——N 大的大概率是流畅空话，N 小的才值得看。
-6. **短链累进循环，而非单条长链**：推演以较短的链为单位（量级上是十几分钟到半小时，不是数小时），每条链结束后立刻接一次接地核查，核查结果更新基本盘，再从**新的**基本盘开出下一条链：
-
-   ```text
-   短推演（搜索关）→ 接地核查（搜索开）→ 基本盘更新 → 下一轮短推演
-   ```
-
-   长链的问题是复利式累积错误；而"从同一冻结基本盘并行跑 N 条"的问题是 N 条之间高度重叠——基本盘相同、问题相同，跑到第四五条就只是换说法。**循环把重叠变成累进**：每轮起点都被上一轮真实推动过。一个 5h 窗口约合六到八轮迭代。
-   
-   同一轮内仍可开若干条不同角度的短链，独立推演之间的收敛是"有料"的弱证据；短链也更适配窗口的随时截断。
-
-6b. **基本盘的更新规则（防漂移的关键）**：基本盘**在一条链内冻结，只在链之间更新，且只能由外部证据推动，永不由自我推演推动**。链条不能中途给自己挪球门；但一次带回真实文献证据的接地核查，有资格更新基本盘。这条规则同时保住了累进性与 2 的防漂移性质。
-7. **双重停止条件（已定）**：**产出 3 条高价值 hint** 或 **用满 30% 窗口预算**，先到先停。三条早早凑齐就收工，不继续烧额度。
-
-   > **“3”是目标，不是配额。** 配额会制造凑数压力——这是本模块最危险的激励。若预算用尽只有 1 条过关，就交 1 条并说明；一条都没有就交白卷（M11.9）。**绝不允许为了凑够 3 条而降低门槛。**
-   >
-   > 什么算“过关”不能由模型自评（自评新颖性正是它最不可靠的能力）。判定是机械的两道闸：先过下面第 8 条的结构性门槛，再经接地核查存活（不被文献直接反驳；**已被做过不算淘汰**——要的是思想而不是实现，2026-09-23 用户决定，§5.14）。**最终价值只有人能判断**——系统的职责是把值得你花十分钟的东西挑出来，不是替你决定什么是好的。
-
-8. **结构性门槛**（过不了就不算候选，与自我评价无关）：
-   - 能说出这个想法**在什么情况下是错的**；
-   - 已调用 `check_dead_ends` 与自身历史比对；
-   - 新引入的前提已全部登记。
-
-   “我觉得这个想法不错”**不算**过关。这三条同时也是防止它写散文的闸门：要求给出证伪条件，就逼它把直觉收敛成一个有内容的断言。
-9. **事后对抗性接地**：交给 M4 的 Grounding Pass，由**另一个开着检索的任务**执行，只标注不改写。
-10. **选择与排序**：多条推演产出后做一次选择，只把最值得你花十分钟的送进候选区。**允许且应当输出“本轮没有值得你看的东西”**。
-11. **产出形态**：`Idea` 对象（见 M1）。要求直觉层面的洞察，不要求工程细节。
-12. **中断恢复**：推演链增量提交，5h 截断后从断点续推。半条链是合法的可恢复状态。
+1. **出发点**：一个问题或一条理解。问题越 vague 越优先（vague > scoped > formalized）；理解优先星标的与新形成的。
+2. **触发**：研究者在问题 / 理解页点 **Evolve**，或在 Evolution 页点“挑一个”；讨论模式下研究者离开后的空闲窗口，系统自动挑一个跑一篇（每个空闲期至多一篇）。
+3. **搜索关闭的执行环境**：同 §5.9，物理上做不到检索。
+4. **延续**：同一出发点此前的演进文档给到下一次，演进是接着上一次往前走，而不是每次从头。
+5. **产出**：一份独立可读的 markdown 文档（§5.18）。不设结构性门槛（2026-09-24 用户决定）；但协议要求诚实——没想出有料的东西就直说。
+6. **中断恢复**：被切断时带着 checkpoint 续写。
 
 ---
 
@@ -600,9 +576,7 @@ State 首次建立时**是空的**：只有 git 仓库、`README.md`、`.gitigno
 | `discussions/DS###/summary.md` | 讨论摘要 | 仅 `update_discussion_summary` |
 | `handoffs/HO###.md` | 班次交接记录 | 仅后端（机械生成） |
 | `reviews/R###.md` | 待重新审视（推翻的传播，M5.6b） | 仅对账函数；人经前端处理 |
-| `ideas/I###.md` | Idea（自演进的产出，§5.10） | 仅 `record_idea` 建；分诊由人经前端做 |
-| `foundations/F###.md` | 基本盘快照（§5.11） | 仅后端（机械生成） |
-| `chains/T#####.md` | 推演记录（§5.10） | 仅后端（机械生成） |
+| `evolutions/EV###.md` | 演进文档（自演进的产出，§5.18） | 仅后端（由演进任务的最终回复写入） |
 
 「仅某工具」的路径对 agent 是**受保护路径**：runner 在 stream 里看到 agent 用 Write/Edit 触碰它们时回滚并记违规。Phase 1 的讨论类任务根本不给 Write/Edit，此条是给后续阶段留的闸。
 
@@ -616,10 +590,10 @@ State 首次建立时**是空的**：只有 git 仓库、`README.md`、`.gitigno
 
 | type | 必填字段（除通用三项） | 枚举 / 约束 |
 |---|---|---|
-| `project` | `title` `mode` `main_question` | `mode`: discussion / incubation / validation |
+| `project` | `title` `mode` `main_question` | `mode`: discussion / validation |
 | `question` | `maturity` | vague / scoped / formalized（定义见 §5.15.1）；可选 `revision` `revised` `relates_to`（§5.15）；可选 `status`: open（缺省）/ answered / decided / merged / withdrawn（§5.15.6、§5.16.1），及对应的 `answered_by` / `decided_by` / `merged_into`；可选 `parent`（母问题，§5.16.4）、`active`（true/false，§5.16.2） |
-| `assumption` | `status` `relied_on_by` | `status`: unexamined / examined / promoted / retired / invalidated；`relied_on_by` 非空，元素须是已存在 id；可选 `fragile`（true/false）、`promoted_to`、`derived_from`（IN###，由某条理解派生）、`idea`（I###：推演中新引入的前提，§5.10）；invalidated 时须有 `invalidated_by`（E### 或 DEC###：证据，或人的推翻决定） |
-| `hypothesis` | `status` `confidence` `falsifier` `validation` `evidence` | `status`: proposed / investigating / supported / refuted / inconclusive / abandoned；`confidence`: low / medium / high；`falsifier` `validation` 非空；`evidence` 元素须存在；status≠proposed 时 evidence 非空；可选 `promoted_from`、`group`、`idea`（由哪条 Idea 拆出，§5.14） |
+| `assumption` | `status` `relied_on_by` | `status`: unexamined / examined / promoted / retired / invalidated；`relied_on_by` 非空，元素须是已存在 id；可选 `fragile`（true/false）、`promoted_to`、`derived_from`（IN###，由某条理解派生）；invalidated 时须有 `invalidated_by`（E### 或 DEC###：证据，或人的推翻决定） |
+| `hypothesis` | `status` `confidence` `falsifier` `validation` `evidence` | `status`: proposed / investigating / supported / refuted / inconclusive / abandoned；`confidence`: low / medium / high；`falsifier` `validation` 非空；`evidence` 元素须存在；status≠proposed 时 evidence 非空；可选 `promoted_from`、`group` |
 | `evidence` | `hypothesis` `stance` `strength` `source` | `stance`: support / contradict / neutral；`strength`: weak / moderate / strong；`source` 必须是已存在的 `P###` 或 `X###`（**不得是 dead-end**）；可选 `revision`：记录时假设处于第几版（§5.15.3，由工具自动填） |
 | `paper` | `title` | 可选 `url` `venue` `year` `read` |
 | `dead-end` | `status` `closed_by` | `status`: closed / reopened；`closed_by` 非空，元素是 `E###` / `X###` |
@@ -631,9 +605,7 @@ State 首次建立时**是空的**：只有 git 仓库、`README.md`、`.gitigno
 | `discussion_summary` | `discussion` `covers_through` | 摘要覆盖到第几轮 |
 | `handoff` | `shift` `reason` `started` `ended` | `reason`: normal / quota_5h / quota_7d / cutoff / crash / manual |
 | `review` | `trigger` `event` `target` `status` `depth` | `event`: hypothesis_refuted / assumption_invalidated / insight_withdrawn；`status`: open / resolved / dismissed；`depth` 为传递距离（1 = 直接相关） |
-| `idea` | `status` `falsifier` `premises` `foundation` `chain` | 见 §5.10 |
-| `foundation` | `session` `round` `question` | 见 §5.11 |
-| `chain` | `session` `round` `foundation` `status` | 见 §5.10 |
+| `evolution` | `seeds` `task` | `seeds` 为出发点（Q### / IN###）；可选 `question`（出发的问题）、`trigger`（manual / auto）、`title`（§5.18） |
 
 几条容易做错、因此写死的规则：
 
@@ -680,7 +652,7 @@ State 首次建立时**是空的**：只有 git 仓库、`README.md`、`.gitigno
 | `discuss` | 讨论回合 | 保留 | 1–11（含 3b） |
 | `distill` | 讨论蒸馏（策展） | 保留 | 1–11（含 3b），讨论上下文给未蒸馏部分的全文 |
 | `judge` | 评估证据 / 状态迁移 / 对抗性接地 | **剥离** | 1–8 与 11；不含候选区与讨论（二者都暴露归属），**不含 3b 当前理解**（避免锚定） |
-| `incubate` | 自演进的推演链（§5.12） | **剥离** | 只有两章：本次任务、基本盘快照（F### 原文）。理由见 §5.12 |
+| `evolve` | 自演进（§5.18） | **剥离** | 专用章节：本次任务、出发点、此前的演进、研究全景。任务读不到任何文件，所以 briefing 就是全部上下文 |
 | `handoff` | 班次交接记录 | 保留 | 专用章节：班次概况、已完成、被截断（含 checkpoint）、队列、本班 State 变更、待人处理 |
 
 `judge` profile 的剥离规则：
@@ -826,7 +798,7 @@ quote 校验是反编造的第二道闸：agent 可以读错，但不能凭空�
 
 **对抗性接地**（M4.6）：Phase 2 还没有 Idea，接地的对象是**假设与待确认的假设/前提候选**（由人在前端点“接地核查”，或批次里的假设自动做一次）。
 结论写成独立的 `groundings/GR###.md`（仅工具可写）：`target`、`verdict`（novel / prior_work / contradicted / mixed）、`refs`（P### / E###）、正文。
-**被核查对象一个字不改**。Phase 2.5 的 Idea 直接复用这个对象。
+**被核查对象一个字不改**。（Phase 2.5 的 Idea 曾复用这个对象；v1.8 起自演进不做接地。）
 
 **偏差指标**：M8 的按-origin 反驳率由 provenance + hypothesis status 实时计算（已实现），Phase 2 起真实迁移会让它第一次有数据；
 `disputed` 的归属单列（前端显示为 “Disputed origin (not counted)”），不计入 human / ai 任一方，直到人裁定。
@@ -897,158 +869,22 @@ M11 的全部价值压在“推演时物理上做不到检索”上。Phase 2.5 
 | `--restricted` | 文件工具关进工作目录与 `--add-dir`：`/etc`、`/home`、兄弟任务目录、**工作目录里指向论文库的符号链接**全部被拒，0 泄漏 |
 
 限制的理由不是防模型“作弊”，而是模型想把事情做好时，看到路径就会顺手去读——这是它的正常行为，不需要任何恶意；
-而推演任务除了 briefing 什么都不需要读，所以关死没有代价。推演任务（`incubate`）的执行形态：
+而推演任务除了 briefing 什么都不需要读，所以关死没有代价。演进任务（`evolve`，v1.8；原 `incubate`）的执行形态：
 
-- cwd = 任务目录，里面只有 briefing.md（= 任务说明 + 基本盘快照）与任务自己的日志；**不 `--add-dir` 任何目录**（State、library 都不挂）；加 **`--restricted`**。
+- cwd = 任务目录，里面只有 briefing.md（= 任务说明 + 出发点与研究全景）与任务自己的日志；**不 `--add-dir` 任何目录**（State、library 都不挂）；加 **`--restricted`**。
 - `--tools Read,Grep,Glob`；deny-list = `ALWAYS_DENY` + WebSearch + WebFetch + 全部非本任务的 `mcp__state__*` + State 与 library 绝对路径的 Read/Grep/Glob 封读（纵深）。
-- MCP 只注册 `check_dead_ends` `record_idea` `checkpoint`。server 端改为 **fail-closed**：`AR_TOOLSET` 缺失时只给 checkpoint（原先是全给）。
-- 于是**基本盘里给多少文献，推演就只读得到多少**，这是显式决定（§5.11），不是执行层的副作用。
-- runner 在开跑前自检 cmd：incubate 任务的 cmd 里出现 `--add-dir`、缺 `--restricted`、`--tools` 含 Read/Grep/Glob 以外的任何工具，直接拒绝启动（配置回归比模型越界更可能发生）。
+- MCP 只注册 `checkpoint`（v1.8；原先还有 check_dead_ends / record_idea）。server 端 **fail-closed**：`AR_TOOLSET` 缺失时只给 checkpoint。
+- 于是**briefing 里给多少文献，推演就只读得到多少**，这是显式决定（§5.18），不是执行层的副作用。
+- runner 在开跑前自检 cmd：sealed 任务的 cmd 里出现 `--add-dir`、缺 `--restricted`、`--tools` 含 Read/Grep/Glob 以外的任何工具，直接拒绝启动（配置回归比模型越界更可能发生）。
 
 已知缺口（记录，不改，2026-09-23 用户决定）：Phase 2 的 judge 任务是裸 `Read`，能读 `$AR_ROOT/run/tasks/*/briefing.md`（讨论任务的 briefing 带 origin），
 是 origin 屏蔽的一条物理旁路。agent 要主动去翻才会碰到，偏差表按 origin 统计兜底；需要时给 judge 加 `--restricted` 即可堵上。
 
-### 5.10 Idea、推演记录与 Assumption Trace（Phase 2.5，v1.4）
+### 5.10–5.14（已废止，v1.8）
 
-**自演进的内容全部留存**（用户要求）：每条推演链的推理本身、每条 Idea（包括没过闸门的）都进 State 的 git，人分诊时可以从任何一条里挑出有价值的东西，
-送进验证（拆成假设）或记成理解（Insight）。
-
-`ideas/I###.md`，**只能经 `record_idea` 建**（tool_only），分诊由人经前端做。`provenance.json` 里 origin 恒为 `ai`，source 为推演任务号。
-
-| 字段 | 约束 |
-|---|---|
-| `status` | `grounding`（待接地）→ `screened_out`（被直接反驳，保留）/ `shortlisted`（过关，进 Inbox）→ `accepted` / `rejected`（人）。人也可以分诊 screened_out 的 |
-| `falsifier` | **必填**：什么情况下这个想法是错的。与陈述不能相同 |
-| `premises` | Assumption Trace：推演中**新引入**的前提，每条是一个 `A###`（见下）。`N = len(premises)`，前端显式显示。可以为空，但参数必须显式给出 |
-| `challenges` | 可选：若它挑战了基本盘里的某条（Q / A / H / D / U / E / IN——包括研究问题的形式化本身，验收中 4 条 Idea 有 3 条是这一类），必须显式登记在这里，正文写明挑战什么、为什么（M11.4：挑战可以，悄悄漂移不行）。不要求每条 Idea 都是挑战 |
-| `builds_on` | 可选：它建立在哪些已有对象上（含 Insight：在已有理解上更进一步，或对它提出批评） |
-| `relates_to` | 与既有假设 / 前提 / 问题 / 不确定性的关系（id 列表） |
-| `foundation` / `chain` | 推演时的基本盘 `F###`、推演任务 `T#####` |
-| `grounding` | 接地结论 `GR###`（工具回填） |
-| `promoted_to` / `decided` | 人分诊后回填：由它建出的 `H###` / `IN###`、分诊时间 |
-
-正文固定四节：陈述（直觉层面的断言，不要求工程细节）、推理概要、对基本盘的挑战（没有就写“无”）、与既有对象的关系。被拒时追加“为什么不要”（人写的理由）。
-
-**推演记录** `chains/T#####.md`（后端机械写，tool_only）：`session` `round` `foundation` `angle`（agent 自己选的切入角度）`ideas` `status`（done / empty / interrupted）。
-正文是这条链的完整推理：各次 checkpoint 与最终回复原文。交白卷的链也留着——白卷为什么是白卷本身有信息量。
-
-**Assumption Trace**：`record_idea(new_premises=[...])` 里的每条前提由工具在同一次提交里建成 `A###`：`status: unexamined`、
-`relied_on_by: [I###]`、`idea: I###`。带 `idea` 字段、且该 Idea 未被接受的前提是**推测性前提**：不进讨论 / 评判 briefing 的前提一章、
-不进夜间预习选题、不能进验证批次。Idea 被接受后它们成为普通前提；被拒后工具把它们置为 `retired`。
-
-**`record_idea` 的机械闸门**（过不了就拒绝）：falsifier 非空且不同于陈述；**本任务里已调用过 `check_dead_ends`**（查 tools.jsonl）；
-`new_premises` 显式给出；`challenges` / `builds_on` / `relates_to` 的 id 存在，挑战对象在本轮基本盘里；当前模式是 incubation；每条推演链最多记 2 条。
-工具**不接受任何自评分数**（新颖性、重要性、信心都不收）。
-
-证据与接地的对象范围随之扩展：`evidence.target` 可以是 `I###`；`grounding.target` 可以是 `I###`；`insight.basis` 可以含 `I###`。
-
-### 5.11 Foundation（基本盘）快照（Phase 2.5，v1.4）
-
-`foundations/F###.md`，后端机械生成、进 State 的 git（tool_only）。frontmatter：`session`（进入自演进的 Decision `DEC###`）、`round`、
-`question`（Q###）、`parent`（上一版 F###，首版无）、`delta`（相对 parent 新增的 E### / GR###）、`base`（首版取快照时 State 的 commit）。
-
-**内容**（首版 F001 在人切进自演进时从 State 取）：
-
-1. 形式化的研究问题（main question 正文）。
-2. 当前理解：active 的 Insight（按牢固程度），标明“是理解，不是证据”。推演可以在上面更进一步，也可以批评它——不强制二者之一。
-3. 已确立的事实：supported / refuted 的假设（陈述 + 结论 + 支撑它的全文级证据）、审视过的前提（holds / fragile）、被推翻的前提。
-   证据只给**陈述、立场、强度、≤400 字引文与出处编号**——这是推演能看到的全部文献。
-4. 前提集：unexamined / examined 的非推测性前提（带 relied_on_by 与 fragile）。
-5. 未定的假设：proposed / investigating / inconclusive，标明“未定——不是事实，也不是约束”。
-6. 已关闭方向：**全部** dead-end + 被人否决的 Idea（附理由），不截断。
-7. 未决不确定性与待重新审视。
-8. 本 session 外部核查带回的结果（首版为空，见下）。
-
-**不含**：论文全文与阅读笔记、论文标题（出处只给编号与年份）、origin、讨论与摘要、候选区、Decision、交接记录、本 session 产出的 Idea 正文。
-接地任务写的话与证据的 note 里常带论文名：装配时按已登记论文的标题与冒号前简称机械替换成 P###（Phase 2.5 冒烟发现；自起的缩写管不到，屏蔽不完美，但推演读不到任何全文）。
-（基本盘只给证据引文、不给全文与标题：2026-09-23 用户确认。）
-
-**更新规则（M11.6b 的落地）**：链内冻结——推演任务拿到的是 F### 的一份拷贝。**只在轮与轮之间、只由本 session 接地任务产出的 E### 与 GR### 更新**：
-一轮的推演与接地全部结束后，后端生成 F(n+1) = F(n) + 第 8 节追加这些证据与接地结论（只取接地任务自己的话与出处，不取 Idea 的原文）。
-提交信息写明 `foundation: F003 ← F002：+E031 E032（GR007 GR008）`，`git log -p foundations/` 就是“每轮起点变了什么、因为哪条证据”。
-一轮没有带回任何外部证据，就不出新版，下一轮沿用。
-
-**永不由推演自身更新**：Idea、它的前提、推演记录都不进本 session 的基本盘。人在自演进期间对 State 的改动也不进（下一次进入自演进才取到）。
-推演的产出要进入研究，唯一的路是人在分诊时把它送进验证或记成理解（§5.14）——之后的自演进 session 就会在基本盘里看到它。
-
-### 5.12 自演进任务契约（Phase 2.5，v1.4）
-
-| kind | profile | 可用工具 | MCP | 产出 |
-|---|---|---|---|---|
-| `incubate` | incubate | Read Grep Glob（`--restricted`，cwd 只有 briefing） | check_dead_ends, record_idea, checkpoint | 0–2 条 Idea + 推演记录（交白卷合法） |
-| `ground_idea`（对象为 I###） | judge | Read Grep Glob WebSearch（`--add-dir` State + library） | search_papers, register_paper, open_paper, record_evidence, annotate_grounding, check_dead_ends, checkpoint | 一条 GR（只标注），可附证据 |
-
-**推演任务**（一条短链，timeout 30 分钟；每轮 2 条，`AR_INCUBATE_CHAINS`）：
-
-- **角度不固定**：协议引导它自己选一个切入点（在某条理解上更进一步、批评它、从一条事实的反常处出发、质疑一条前提、从 dead-end 失败的原因找没覆盖的变体……
-  只是举例，不是菜单），并在开头用 checkpoint 写明选了什么角度。briefing 列出本 session 之前各条链选过的角度，让它避开重复——独立链之间的收敛仍是“有料”的弱证据。
-- 先 `check_dead_ends`（同时列出被否决的 Idea 与本 session 已记下的 Idea 的陈述行，只为不重复）；每引入一条基本盘里没有的前提就记下来；
-  说不出何时是错的就不记；**交白卷是合法且常见的结果**，结尾说明为什么。briefing 里**不出现“要产出几条”**，推演链没有凑数的压力。
-- 被切断：已记的 Idea 已提交；下一班带着 checkpoint 续推（M11.12）。
-
-**`incubate` briefing profile**：“本次任务”（目标、轮次、之前的角度）+ “基本盘”（F### 原文）。
-
-- **看得到 Insight**（2026-09-23 用户决定）：推演可以在已有理解上更进一步，也可以对它提出批评；不强制挑战或延伸，让模型发挥。
-  挑战了某条理解就登记在 `challenges`，建立在它上面就登记在 `builds_on`，这样人看得出一条 Idea 与现有理解的关系。
-- **看不到 origin**：推演要敢于质疑任何一条前提；标着“研究者提出”会压低这种倾向。origin 对推演也没有信息量。
-
-**Idea 的接地任务** `ground_idea` 复用 Phase 2 的 GR 对象与 `annotate_grounding`（judge profile，另可 `record_evidence`；Idea 恒为 ai 这一点无法屏蔽，但所有 Idea 同源，不构成组间偏差）：
-
-- briefing 另附被核查的 Idea 全文与它的基本盘 F###。任务：**找直接反驳**（有没有原文证据说明这个想法是错的——触发了它自己的证伪条件）；
-  **找相近的工作**（作为线索附上，不是扣分项：思想被人做过不降低它的价值，实现一个思想的路径有很多）；查它是否与基本盘矛盾而没登记为挑战、是否依赖了没登记的前提。
-- 结论 `annotate_grounding(target=I###, verdict, refs, note, hidden_premises, silent_challenges)`。verdict 仍是 novel / prior_work / contradicted / mixed，
-  但对 Idea 只有 **contradicted** 影响闸门（§5.14）。
-- 找到直接反驳时用 `record_evidence`（target 为该 Idea 或它的某条前提，追到段落）。这些 E 是下一轮基本盘的唯一来源。
-- **只标注，不改写**：没有 Edit；`ideas/` 是受保护路径；工具只写 GR 与 E。
-
-### 5.13 模式与调度（Phase 2.5，v1.4）
-
-**进入**：只有人能切（前端“Incubate”，写 Decision kind=mode）。闸门：当前是讨论模式（验证模式要先收回）；**main question 的 maturity 必须是 formalized**，
-否则拒绝，并说明缺什么（当前成熟度、formalized 的定义“有可测量定义”，以及问题正文里记下的未形式化之处）。通过后后端立刻生成 F001。
-maturity 由人改（前端问题卡片上的编辑，或在编辑器里改）；把问题推到 formalized 本身是讨论模式的工作。
-
-**一个 session 内的调度**（规划器机械执行，M2.0b 第 2 级）：
-
-```text
-第 r 轮（基本盘 F_r）：2 条推演链 → 每条新 Idea 一个接地任务（优先于下一条链）
-全部结束 → 有新的 E/GR 就生成 F_(r+1) → 第 r+1 轮
-```
-
-**停止**（规划器在开新链之前检查，先到先停）：
-
-1. 过关的 Idea（shortlisted）达到 3 条；
-2. 本 session 消耗达到 5h 窗口的 30%（按本 session 各任务开始 / 结束时的 `five_hour` 利用率差累加；没有额度数据时按 30 个任务当量兜底）；
-3. 连续两轮一条 Idea 都没有记下——**没有东西可说**；
-4. 轮数达到上限（默认 8，`AR_INCUBATE_MAX_ROUNDS`）。
-
-已派出的接地任务做完再停。无人值守的额度护栏照旧：5h 利用率 ≥ `AR_UNATTENDED_CAP` 不开新任务，周额度 ≥95% 全面暂停。
-
-**收工**：写一条 Decision（kind=research）作为本 session 的交卷：停止原因、轮数、链数、记下几条、每条没过的原因、过关的按下面的顺序列出。
-**0 条过关时明确写“本轮没有值得你看的东西”**。然后 hold（kind=incubation_done），前端横幅建议回到讨论模式去分诊。模式仍由人切回。
-
-**与其他模式的关系**：自演进与验证互斥（交棒前要先收回）。夜间预习只在讨论模式发生。自演进期间人仍然可以在 Chat 里讨论，但讨论带来的 State 变化不进本 session 的基本盘。
-
-### 5.14 质量闸门与分诊（Phase 2.5，v1.4）
-
-全部机械化，**没有一道闸门由模型给自己打分**：
-
-| 层 | 内容 | 在哪强制 |
-|---|---|---|
-| 结构性门槛（M11.8） | 说得出何时是错的（falsifier）；已 check_dead_ends；新前提显式登记；挑战显式登记且指向基本盘 | `record_idea` 拒绝 |
-| 接地存活（M11.7） | **只有 contradicted（被文献直接反驳）→ `screened_out`**。prior_work 不扣分（2026-09-23 用户决定：要的是思想不是实现，思想被人做过不降低它的价值）；相近工作作为线索显示 | 后端在接地任务结束后按 GR 机械置状态 |
-| 信号（不是闸门） | **N**（它自己发明的前提数）、接地发现的未登记前提数与未登记挑战数、相近工作 | 前端显式显示，并用于排序 |
-
-- **“3”是目标不是配额**：它只出现在规划器的停止条件里；推演链看不到它，闸门不因“还差几条”而放松。一条都没过就交白卷。
-- **排序**（M11.10，机械）：N 小的在前；再按接地发现的未登记前提数升序。前端 Inbox 的 Ideas 只列 shortlisted；screened_out 的折叠在下面，带被挡的原因。
-  推演记录（含交白卷的链）在自演进页里按轮次全部可看。
-- **分诊**（人，可以对任何一条 Idea 做，包括 screened_out 的）：
-  - **送去验证**：拆出一条可证伪的假设（陈述、falsifier 预填 Idea 的、validation 必填）→ 建 `H###`（`idea: I###`，provenance origin=ai、source=I###）。
-  - **记成理解**：建 `IN###`（firmness 默认 hunch，basis 含 I###，origin=ai）——对“有意思但还不可证伪”的想法，这是它进入研究的路。
-  - 二者可以都做，也可以只“接受”、留到讨论里再说。接受后它的前提转为普通前提。写 Decision（kind=curation）。
-  - **拒绝**：必须写理由。Idea 置 `rejected`，推测性前提置 `retired`。**与 dead-end 同等对待**：之后每次 `check_dead_ends`、每份 briefing 的已关闭方向一章、
-    每个基本盘都全文列出它与理由，不截断。（不写成 D###：dead-end 必须由证据关闭，“我不要这个想法”是人的判断。）
-- 自评新颖性不算过关，最终价值只有人能判断。
-
+v1.4 的 Idea / 推演记录 / Assumption Trace（§5.10）、基本盘快照（§5.11）、推演任务与 Idea 接地（§5.12）、自演进模式与调度（§5.13）、
+质量闸门与分诊（§5.14）于 2026-09-24 按用户决定整体废止，由 §5.18 取代；原文见 git 历史（`git show 87b846a:DESIGN.md`）。
+保留下来的只有 §5.9 的检索关闭执行环境。
 
 ### 5.15 对象的持续打磨：聚焦讨论、原地修订、对象详情、讨论组织（Phase 2.6，v1.5，2026-09-24 用户提出）
 
@@ -1294,7 +1130,10 @@ decided 则在 `陈述` 里写建议的决定；`理由` 写依据哪几轮、�
 - 后端复用 `insights.consolidate`（§5.16.3）：新 IN 记 `consolidates`，旧的 superseded，basis / informs 取并集，provenance origin=human、source=direct；
   被合并条目派生的前提不进 Review。被合并的若有星标，新条目继承星标。
 
-#### 5.17.4 自演进以新理解与星标理解为出发点
+#### 5.17.4 自演进以新理解与星标理解为出发点（已被 §5.18 取代）
+
+> 同日稍后研究者重新定义了自演进（§5.18）：不再有基本盘与“本次重点”标记，而是直接以问题 / 理解为出发点。下面保留原文作记录。
+
 
 - 触发不变：自演进仍只能由研究者手动进入，入场闸门不变（主问题 formalized，§5.13）。
 - 首版基本盘的“当前理解”一章把两类理解标为**本次重点**：研究者星标的，以及**上一次自演进之后新增的**
@@ -1306,6 +1145,58 @@ decided 则在 `陈述` 里写建议的决定；`理由` 写依据哪几轮、�
 #### 5.17.5 兼容
 
 `starred` 可选，缺省 false。已有 State 不需要迁移，校验 0 错误。**行为变化须知**：升级后没有星标的 active 理解在 briefing 里从全文变为一行（与 §5.16 的问题同理），前端提示标星。
+
+### 5.18 自演进：演进一段思考，写成文档（v1.8，2026-09-24 用户决定，取代 §5.10–5.14 与 §5.17.4）
+
+**定义**。自演进是**演进一种思考**：从一个问题或一条理解出发，在检索关闭的条件下把思考往前推一段，形成一份文档，记录其中有洞见的想法。
+**越是 vague 的问题越要演进**。它不是一种模式，也不改任何研究对象。
+
+研究者的四个选择（2026-09-24）：触发 = 手动 + 空闲自动；检索关闭、不做接地；产出只有文档（不自动提候选）；不设结构性门槛。
+
+#### 5.18.1 出发点与选题
+
+- 出发点（`seeds`）：一个问题 Q###，或一条 active 理解 IN###。
+- **手动**：问题页 / 理解页的 **Evolve** 按钮（以它为出发点）；Evolution 页的 **Evolve…**（选一个，或让系统挑）。
+- **自动选题**（空闲自动、以及手动时“让系统挑”）：候选是全部 open、未撤下的问题（含主问题），按以下顺序取第一个：
+  1. 成熟度：vague → scoped → formalized（越 vague 越优先）；
+  2. 研究者标为活跃的优先；
+  3. 以它为出发点的演进文档越少越优先；
+  4. 上一次演进它越久越优先；最后按编号。
+  没有 open 问题时，取没有演进过的星标理解，再取最新的 active 理解；都没有就不跑。
+- 以问题为出发点时，**同时带上与它相关的理解**（informs / relates_to 指向它、或它 answered_by 的）、全部星标理解、以及上一次演进之后新形成的理解，在 briefing 里标“相关”。
+  以理解为出发点时，带上它 informs 的问题。
+
+#### 5.18.2 触发与额度
+
+- **手动**：随时可点（讨论与验证模式下都可以），立刻入队，不受无人值守份额限制；同一出发点已有一篇在排队或在跑时不重复建。
+- **空闲自动**：只在讨论模式下；条件与夜间预习相同（研究者最后一次发言后 `AR_PREP_IDLE_MIN` 分钟、窗口在无人值守份额内），
+  排在夜间预习**之后**（预习结束或没有预习时）；**每个空闲期至多一篇**（研究者再发言才算新的空闲期）。`AR_EVOLVE_AUTO=0` 可关掉自动。
+
+#### 5.18.3 执行与 briefing（profile `evolve`，剥离 origin）
+
+执行环境同 §5.9（sealed：不挂目录、`--restricted`、只有 Read/Grep/Glob 与 MCP checkpoint，timeout 30 分钟）。briefing 是全部上下文，章节：
+
+1. 本次任务：出发点、为什么选它（手动 / 自动选题的理由）、被切断时之前的 checkpoint；
+2. 出发点全文：问题（成熟度及其含义、母问题与子问题各一行）或理解（及它 informs 的问题）；相关理解全文；
+3. 此前以同一出发点的演进：最近一篇全文，更早的只给标题与日期（演进是接着往前走）；
+4. 研究全景：项目描述；其余 active 理解全文（任务读不到文件，只能给全文）；其余 open 问题、已结问题（附结论）各一行；前提、假设各一行；**全部** dead-end；
+   不给论文全文与标题、讨论、候选、决策、origin（与 v1.4 的基本盘同样的屏蔽理由）。
+
+#### 5.18.4 产出：演进文档
+
+- 任务的**最终回复就是文档**（markdown），后端写入 `evolutions/EV###.md`（tool_only）。frontmatter：`seeds` `question`（出发问题，若有）`task` `trigger`（manual / auto）`title`（文档第一个 `# ` 标题）`created`。
+  回复为空视为失败；被切断的任务下一班带着 checkpoint 重写整篇。
+- 协议建议的结构（不强制）：出发点 → 演进（思路怎么走的）→ 值得记下的想法（每条说清从哪长出来、为什么有意思）→ 对问题的新理解（包括可以怎么拆、怎么换问法）→ 还没想通的。
+  要求独立可读（同 §5.17.1）；不设门槛，但**没想出有料的东西就直说**，不硬凑。
+- 文档不进任何 briefing（聚焦讨论除外）、不进候选区。研究者读后自己记成理解，或在文档页点 **Discuss this** 开聚焦讨论（evolution 可聚焦），讨论照常蒸馏；
+  理解的 basis 可以引用 EV###。
+- 前端：导航 **Evolution** 页列出全部文档（最新在前、出发点可点、手动 / 自动、在排队或在跑的任务）；问题 / 理解页的关联里能看到以它为出发点的文档。
+
+#### 5.18.5 兼容与删除
+
+v1.4 的自演进整体删除（研究者：“现有的如果不能兼容就删除”）：`incubation` 模式、Idea / Foundation / 推演记录三类对象、`record_idea` 与 Idea 的接地、
+Ideas 页与 Inbox 的 Ideas 分诊、前提与假设上的 `idea` 字段、被否决 Idea 进 dead-end 一章的规则。研究者当前的真实 State 里没有这些对象，删除不影响数据；
+若某份 State 仍有它们，校验会报错，需要手工删除对应目录。
 
 ---
 
@@ -1353,7 +1244,7 @@ State repo + MCP server + task runner + 班次 daemon（含额度耗尽暂停/�
 
 M4（含 Paper Request Queue 与 Grounding Pass）+ M5（含 Assumption 审视）+ 交棒机制 + M8 观察视图。系统能持续调研、更新假设，你能交棒也能收回。
 
-### Phase 2.5 — 自演进（1 周）
+### Phase 2.5 — 自演进（1 周；v1.8 起由 §5.18 取代，下文为历史记录）
 
 M11。依赖 Phase 1 的讨论模式（形成基本盘）与 Phase 2 的 M4（事后接地），所以排在这里；但它不依赖实验能力，可以早于 Phase 3 交付。
 
@@ -1395,14 +1286,14 @@ M11。依赖 Phase 1 的讨论模式（形成基本盘）与 Phase 2 的 M4（�
 5. Research 页是问题树：状态、活跃、答案链接一眼可见；未归位的问题有一键挂靠建议。
 6. 用户当前真实 State（副本）在新代码下校验 0 错误，已有问题、理解、讨论、候选照常可用。
 
-### Phase 2.8 — 理解的可读性、星标与手动合并（1 天）
+### Phase 2.8 — 理解的可读性、星标与手动合并；自演进重做（1–2 天）
 
 §5.17。**验收标准**：
 
 1. 蒸馏出的 insight 候选是独立表述（协议可检；真实 agent 的效果由研究者在使用中判断）；Tidy up 能对读不懂的理解提只改措辞的修订候选，确认后新 IN 取代旧的。
 2. 理解可标星；`./ar brief discuss` 的 3b 章只给星标理解全文，其余一行。
 3. 研究者可在 Research 页勾选几条理解、自己写表述完成合并，旧条目 superseded、新条目 consolidates。
-4. 首版基本盘把星标与上次自演进后新增的理解标为本次重点，推演协议要求优先从它们出发。
+4. 自演进按 §5.18 重做：问题 / 理解页点 Evolve 或空闲自动，从越 vague 的问题出发，检索物理关闭，产出一篇演进文档（EV###），Evolution 页可读、可 Discuss this；旧的自演进模式与 Idea 全部移除。
 5. 用户当前真实 State（副本）校验 0 错误，已有理解、候选照常可用。
 
 ### Phase 3 — 实验（3–4 周）
