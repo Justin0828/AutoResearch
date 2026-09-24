@@ -14,6 +14,7 @@
 | Phase 2.5 | 想法自演进 M11（1 周） | ✅ 完成（2026-09-24 用户确认） |
 | Phase 2.6 | 对象的持续打磨与讨论组织（§5.15） | ✅ 已合入 main（2026-09-24） |
 | Phase 2.7 | 让研究收敛：问题生命周期、活跃集、理解合并、问题树（§5.16） | 🟡 已实现（分支 `phase2.7`），待用户确认 |
+| Phase 2.8 | 理解的独立表述、星标、手动合并；自演进以新理解为出发点（§5.17） | 🟡 已实现（分支 `phase2.8`），待用户确认 |
 | **Phase 3** | **实验 + 网络分流（3–4 周）** | ⬜ **下一步** |
 | Phase 4 | 完整自治 + 迁移到公司服务器 | ⬜ |
 
@@ -235,6 +236,22 @@ daemon / runner / briefing / MCP server / 前端的相应扩展。测试 72 个�
   “answered_by 可引用同批候选”诱发 agent 推广到了别的字段。修复：提交时拒绝（提示改用 promoted_to）、确认与 insights.revise 时兜底映射 / 去掉、
   协议写明引用规则（DESIGN §5.1 规则 4）。真实 State 以一次 `ar-human` 提交（57c2e01）清理了 IN002–IN005 → 校验 0 错误；
   待确认候选（C013、C015、C016、C019–C023）里的互相引用保留，确认时由兜底处理。测试 141 个全过。
+
+## Phase 2.8（2026-09-24，分支 `phase2.8`，待用户确认）
+
+- **起因**：用户问自演进的触发条件，并提出三点：新 insight 希望被系统自动往前推；insight 直接从上下文蒸出、过后读不懂；insight 偏多，要星标与合并。
+  澄清后定下（2026-09-24 用户选择）：**不做对理解的自动审查**（评判看不到理解的原则不破例）；自演进仍只能手动进入，但以**星标的与上次自演进后新增的**理解为本次重点；
+  星标**影响 briefing**（星标全文，其余一行）；手动合并**只由研究者写**表述，不经候选、不花额度。设计写入 DESIGN §5.17（v1.7）与 §7 Phase 2.8 验收标准。
+- **实现**：insight 可选 `starred`（`insights.set_starred`，修订与合并继承星标）；briefing 3b 分层（tidy 与自演进基本盘仍给全文）；`/api/insights/<IN>/star`、`/api/insights/merge`
+  （复用 `insights.consolidate`，origin human）；基本盘“当前理解”把重点条目排前并标【本次重点：原因】（`incubation.focus_insights`：星标 + 不在上个 session 首版基本盘里的），
+  推演协议要求优先从重点出发（选别的要在 checkpoint 说明理由）；蒸馏 / 讨论协议要求 insight 写成独立表述；Tidy up 增加第三种候选——对读不懂的理解提只改措辞的 revision
+  （source 为任务号，不许带 firmness / change_mind，只能针对 IN）。前端：Understanding 行首 ☆/★、星标排前、Merge… 多选对话框、首次标星提示与 >5 星提示；对象页 Star / Merge with…；修订卡显示“from tidy-up T#####”。
+- **测试 151 个全过**（新增 `tests/test_phase28.py` 10 个；假 claude 的整理任务加 `rewrite` / `tidy_rewrite`）。
+- **兼容与验收（当前真实 State 的副本，端口 8798，结束后按 PID 停掉；`~/autoresearch` 未动）**：新代码下校验 0 错误（1 条警告是 C021 引用了已撤下的 Q004，属预期提醒）；
+  jsdom 跑真实 `app.js`：给 IN006 标星 → 3b 章 IN006 全文、其余一行；Merge… 勾 IN002 + IN003 自写表述 → IN007（consolidates，旧条目折进 “How our understanding changed”）；
+  Tidy up（假 claude）对 IN006 提改写候选 C024 → 修订卡 “from tidy-up T00001” → 对照确认 → IN008 取代 IN006 且继承星标。全程无 JS 错误。
+- **没有跑真实 claude**：独立表述与“优先从重点出发”是协议层改动，效果要在真实使用中看。自演进仍要求主问题 formalized，当前真实 Q001 是 vague，所以 §5.17.4 暂时用不上。
+- **待用户**：重启 `./ar serve`；给重要的理解标星；读不懂的旧理解可以点一次 Tidy up 让它提改写候选。
 
 ## 已知缺口（Phase 2 之后）
 

@@ -279,6 +279,23 @@ def make_handler(app):
         app.bus.publish("state", {"insight": new})
         return {"id": new}
 
+    @route("POST", "/api/insights/(?P<iid>IN\\d+)/star")
+    def star_insight(req, q, iid):
+        """星标（§5.17.2）：星标的理解以全文进 briefing，其余一行。"""
+        changed = insights.set_starred(st, iid, req.json().get("starred"))
+        app.bus.publish("state", {"insight": iid})
+        return {"changed": changed}
+
+    @route("POST", "/api/insights/merge")
+    def merge_insights(req, q):
+        """研究者手动合并（§5.17.3）：自己写合并后的表述，不经候选。"""
+        b = req.json()
+        new = insights.consolidate(st, b.get("supersedes"), b.get("statement", ""), b.get("firmness", ""),
+                                   change_mind=b.get("change_mind", ""), note=b.get("note", ""),
+                                   origin="human", source="direct")
+        app.bus.publish("state", {"insight": new})
+        return {"id": new}
+
     @route("POST", "/api/insights/(?P<iid>IN\\d+)/abandon")
     def abandon_insight(req, q, iid):
         new = insights.abandon(st, iid, req.json().get("reason", ""))

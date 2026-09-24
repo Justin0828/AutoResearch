@@ -484,3 +484,9 @@ h3.sub .count { color: var(--muted); font-weight: 500; margin-left: 6px; }
   .qmain .t { grid-column: 1 / -1; white-space: normal; }
   .unplaced-row .suggest { padding-left: 14px; }
 }
+
+/* ---------- Phase 2.8: starred insights (DESIGN §5.17) ---------- */
+.starrow { display: grid; grid-template-columns: 30px minmax(0, 1fr); align-items: center; padding-left: 6px; }
+.starrow + .starrow { border-top: 1px solid var(--line); }
+.starrow .orow { border-top: 0; padding-left: 4px; }
+.acts-inline { display: inline-flex; gap: 8px; align-items: center; }

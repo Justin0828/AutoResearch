@@ -188,6 +188,7 @@ class Assembler:
         return "\n\n".join(out)
 
     def s_insights(self, redact):
+        """第 3b 章分层（§5.17.2）：研究者星标的理解给全文，其余 active 理解每条一行。"""
         items = [(m, b) for m, b in self.store.list("insight") if m.get("status") == "active"]
         head = ("## 3b. 当前理解（是理解，不是证据）\n\n研究至今形成的看法与直觉。它们是解读框架，"
                 "不能当作证据引用；拿其中某条来排除方向时，要把这个用法作为 assumption 提出"
@@ -197,18 +198,29 @@ class Assembler:
         order = {"settled": 0, "working": 1, "hunch": 2}
         name = {"settled": "稳固理解", "working": "工作理解", "hunch": "直觉"}
         items.sort(key=lambda x: (order.get(x[0].get("firmness"), 3), x[0]["id"]))
-        parts = []
-        for m, b in items:
-            h = (f"### {m['id']} · {name.get(m.get('firmness'), m.get('firmness'))} · "
-                 f"{_fm_line(m, ['basis', 'informs'])}{self._origin(m['id'], redact)}")
-            body = self._body(b, redact)
-            extra = "".join(f"\n- {k}：{m[f]}" for f, k in
-                            (("basis_note", "根基说明"), ("change_mind", "什么会让我改观")) if m.get(f))
-            if m["id"] == self.focus:
-                parts.append((self._pointer(h), h))
-                continue
-            parts.append((f"{h}\n\n{body}{extra}", f"{h} — {body.splitlines()[0] if body else ''}"))
-        return head + "\n\n" + _clip(parts, BUDGET["3b"], "insights/")
+        starred = [(m, b) for m, b in items if schema.is_starred(m)]
+        rest = [(m, b) for m, b in items if not schema.is_starred(m)]
+        out = [head]
+        if starred:
+            parts = []
+            for m, b in starred:
+                h = (f"#### {m['id']} · {name.get(m.get('firmness'), m.get('firmness'))} · "
+                     f"{_fm_line(m, ['basis', 'informs'])}{self._origin(m['id'], redact)}")
+                body = self._body(b, redact)
+                extra = "".join(f"\n- {k}：{m[f]}" for f, k in
+                                (("basis_note", "根基说明"), ("change_mind", "什么会让我改观")) if m.get(f))
+                if m["id"] == self.focus:
+                    parts.append((self._pointer(h), h))
+                    continue
+                parts.append((f"{h}\n\n{body}{extra}", f"{h} — {_one(_stmt(b), 120)}"))
+            out.append("### 研究者星标的理解\n\n" + _clip(parts, BUDGET["3b"], "insights/"))
+        if rest:
+            out.append("### 其余理解（每条一行；全文见 insights/，需要时自行 Read）\n\n" + "\n".join(
+                f"- {m['id']} · {name.get(m.get('firmness'), m.get('firmness'))}："
+                + ("（本场讨论的聚焦对象，全文见第 2b 章。）" if m["id"] == self.focus
+                   else _one(self._body(_stmt(b), redact), 140))
+                for m, b in rest))
+        return "\n\n".join(out)
 
     def s_assumptions(self, redact):
         # 推演中新引入、所属想法未被接受的前提不进这里（§5.10），否则会淹没真正的前提集

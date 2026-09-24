@@ -68,7 +68,8 @@ KINDS = {k.type: k for k in [
     # 理解（DESIGN.md M1 Insight）：研究的产出，可以是描述性的直觉，不要求可证伪，但必须说出根基
     Kind("insight", "insights", "IN", ("status", "firmness"),
          {"status": {"active", "superseded", "abandoned"},
-          "firmness": {"hunch", "working", "settled"}},
+          "firmness": {"hunch", "working", "settled"},
+          "starred": {"true", "false"}},          # 星标（§5.17.2），只由人改
          refs={"basis": ("Q", "A", "H", "E", "P", "X", "U", "IN", "DS", "D", "I"),
                "informs": ("Q", "A", "H", "U", "IN"), "superseded_by": ("IN",),
                "consolidates": ("IN",), **COMMON_REFS}),
@@ -147,6 +148,10 @@ def question_status(meta):
 
 def is_active(meta):
     return str((meta or {}).get("active", "")).lower() == "true"
+
+
+def is_starred(meta):
+    return str((meta or {}).get("starred", "")).lower() == "true"
 
 
 def is_consolidation_source(ins, meta):
@@ -307,7 +312,7 @@ def check_object(meta, kind, ids, rel):
                 errs.append(f"{rel}: 出自讨论的候选必须带 turns")
         elif TASK_ID.match(src):
             # 整理任务（Tidy up，§5.16.3）的候选只有合并与结问题两种，根基是被合并 / 被引用的对象本身
-            tidy = meta.get("kind") == "resolve" or bool(_as_list(meta.get("supersedes")))
+            tidy = meta.get("kind") in ("resolve", "revision") or bool(_as_list(meta.get("supersedes")))
             if not tidy and not _as_list(meta.get("basis")):
                 errs.append(f"{rel}: 出自验证任务的候选必须带 basis（E### / P###）")
             if meta.get("origin") != "ai":

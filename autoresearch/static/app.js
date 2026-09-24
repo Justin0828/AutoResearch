@@ -633,7 +633,7 @@ function revisionCard(c) {
     : c.status === "rejected" ? `<span class="tag plain">Rejected</span>` : "";
   return `<div class="card ${pending ? "" : "dim"} ${c.stale && pending ? "flagged" : ""}" data-id="${c.id}">
     <div class="card-top"><span class="tag plain">Revision</span><span class="id">${c.id}</span>
-      <span>revises ${idl(c.target)}${c.target_type ? ` (${TYPE[c.target_type] || c.target_type})` : ""} · drafted on v${esc(c.base_revision)} · from ${idl(c.source)} turn ${fmtv(c.turns)} · proposed by ${ORIGIN[c.origin] || c.origin}</span>
+      <span>revises ${idl(c.target)}${c.target_type ? ` (${TYPE[c.target_type] || c.target_type})` : ""} · drafted on v${esc(c.base_revision)} · ${srcLine(c)} · proposed by ${ORIGIN[c.origin] || c.origin}</span>
       ${c.stale && pending ? `<span class="tag warn" title="Another revision of ${c.target} was accepted after this was drafted">Drafted on an old version (now v${c.target_revision})</span>` : ""}${state}</div>
     <div class="statement md">${md(c.statement)}</div>
     ${c.maturity ? `<dl><dt>Suggested maturity</dt><dd>${esc(MATURITY[c.maturity] || c.maturity)} — you decide when confirming</dd></dl>` : ""}
@@ -929,7 +929,7 @@ function statusTag(x) {
   if (t === "assumption") return `<span class="tag assumption">${A_STATUS[x.status] || x.status}</span>${x.fragile === "true" || x.fragile === true ? `<span class="tag warn">Fragile</span>` : ""}`;
   if (t === "hypothesis") return `<span class="tag hypothesis">${H_STATUS[x.status] || x.status}</span>`;
   if (t === "uncertainty") return `<span class="tag uncertainty">${esc(x.importance)} importance</span>${x.status !== "open" ? `<span class="tag plain">${U_STATUS[x.status] || x.status}</span>` : ""}`;
-  if (t === "insight") return `<span class="tag insight">${FIRM[x.firmness] || x.firmness}</span>${x.status !== "active" ? `<span class="tag plain">${x.status === "superseded" ? "Superseded by " + x.superseded_by : "Abandoned"}</span>` : ""}`;
+  if (t === "insight") return `<span class="tag insight">${FIRM[x.firmness] || x.firmness}</span>${x.starred === "true" && x.status === "active" ? `<span class="tag insight" title="Starred: the AI sees it in full">★</span>` : ""}${x.status !== "active" ? `<span class="tag plain">${x.status === "superseded" ? "Superseded by " + x.superseded_by : "Abandoned"}</span>` : ""}`;
   return x.status ? `<span class="tag plain">${esc(x.status)}</span>` : "";
 }
 
@@ -960,9 +960,16 @@ function renderResearch() {
 
   const ord = { settled: 0, working: 1, hunch: 2 };
   const insAll = o.insights || [];
-  const ins = insAll.filter((x) => x.status === "active").sort((a, b) => ord[a.firmness] - ord[b.firmness]);
-  const insHtml = listWithFolded("ins", ins, insAll.filter((x) => x.status !== "active"),
-    "No insights yet. An insight can be just a feel for the problem — as long as you say where it comes from.", "How our understanding changed");
+  const starred = (x) => x.starred === "true" || x.starred === true;
+  const ins = insAll.filter((x) => x.status === "active").sort((a, b) => starred(b) - starred(a) || ord[a.firmness] - ord[b.firmness]);
+  const nStar = ins.filter(starred).length;
+  const insHints = (ins.length && !nStar && !hint.seen("star") ? `<div class="banner info" data-hint="star"><strong>Star the insights that matter most.</strong>
+      Only starred insights reach the AI in full now; the others appear as one line each (it can still open them). <div class="acts"><button class="btn ghost small" data-dismiss="star">Got it</button></div></div>` : "") +
+    (nStar > 5 ? `<div class="banner warn"><strong>${nStar} insights are starred.</strong> When everything is starred, nothing is.</div>` : "");
+  const insRows = ins.length ? `<div class="olist">${ins.map((x) => `<div class="starrow"><button class="star ${starred(x) ? "on" : ""}" data-istar="${x.id}" data-on="${starred(x) ? 1 : 0}" title="${starred(x) ? "Starred — click to unstar" : "Star it: the AI sees starred insights in full"}">${starred(x) ? "★" : "☆"}</button>${orow(x)}</div>`).join("")}</div>`
+    : `<div class="empty">No insights yet. An insight can be just a feel for the problem — as long as you say where it comes from.</div>`;
+  const insFolded = insAll.filter((x) => x.status !== "active");
+  const insHtml = insHints + insRows + (insFolded.length ? `<details class="history" data-fold="research.ins" ${fold.get("research.ins", false) ? "open" : ""}><summary>How our understanding changed · ${insFolded.length}</summary>${olist(insFolded)}</details>` : "");
 
   const as = o.assumptions.slice().sort((a, b) => (a.status !== "unexamined") - (b.status !== "unexamined"));
   const asHtml = listWithFolded("a", as.filter((x) => !x.withdrawn), as.filter((x) => x.withdrawn), "No assumptions recorded.");
@@ -981,7 +988,7 @@ function renderResearch() {
     section("sec-question", "Research questions", tree.open.length, "The question tree. Closed questions fade and fold away with their answer on the node. ★ marks what you're thinking about now — the AI sees those in full and the rest as one line each.", q,
       `<button class="btn ghost small" data-act="tidy" title="Ask the AI to propose merging overlapping insights and closing answered or duplicate questions">Tidy up</button>`) +
     section("sec-insights", "Understanding", ins.length, "What we've come to think so far. Understanding, not evidence — it can be a feel, but it must say where it comes from.", insHtml,
-      `<button class="btn small" data-act="new-insight">Add insight</button>`) +
+      `<span class="acts-inline">${ins.length >= 2 ? `<button class="btn ghost small" data-act="merge-insights" title="Pick two or more insights and write the merged one yourself">Merge…</button>` : ""}<button class="btn small" data-act="new-insight">Add insight</button></span>`) +
     section("sec-assumptions", "Assumptions", as.filter((x) => !x.withdrawn).length, "Premises the research relies on. Unexamined ones come first — they're the dangerous ones.", asHtml) +
     section("sec-hypotheses", "Hypotheses", hs.filter((x) => !x.withdrawn).length, "Claims with an arranged test. Status only changes with evidence attached.", hsHtml) +
     section("sec-uncertainties", "Uncertainties", usLive.length, "Unknowns that discount our conclusions.", usHtml) +
@@ -994,6 +1001,8 @@ function renderResearch() {
   const nb = $('[data-act="new-insight"]', $("#research-body"));
   if (nb) nb.onclick = newInsight;
   bindTree($("#research-body"));
+  $$("[data-istar]", $("#research-body")).forEach((b) => b.onclick = () => starInsight(b.dataset.istar, b.dataset.on !== "1"));
+  $$('[data-act="merge-insights"]', $("#research-body")).forEach((b) => b.onclick = () => mergeInsights([]));
   spyChips();
 }
 
@@ -1106,6 +1115,31 @@ async function newInsight() {
   try { const x = await api("POST", "/api/insights", r); toast(`Added ${x.id}.`); } catch (err) { fail(err); }
   loadOverview();
 }
+async function starInsight(id, on) {
+  try { await api("POST", `/api/insights/${id}/star`, { starred: on }); hint.done("star"); } catch (err) { fail(err); }
+  after();
+}
+
+// Manual merge (§5.17.3): you pick the insights and write the merged one yourself. No candidate, no quota.
+async function mergeInsights(pre) {
+  if (!S.overview) await loadOverview();
+  const act = (S.overview.insights || []).filter((i) => i.status === "active");
+  if (act.length < 2) return toast("Merging needs at least two active insights.", "warn");
+  const r = await ask("Merge insights", `<p>Pick two or more and write the merged insight. The picked ones are marked as merged into the new one — nothing is withdrawn, and assumptions derived from them still stand. Grounding and “informs” are combined automatically.</p>
+    <div class="checks">${act.map((i) => `<label><input type="checkbox" name="supersedes" value="${i.id}" ${pre.includes(i.id) ? "checked" : ""}><span><span class="id">${i.id}</span> <span class="tag insight">${FIRM[i.firmness] || i.firmness}</span>${i.starred === "true" ? " ★" : ""}<br>${esc(mainText(i.body).replace(/（来由见候选 C\d+。?）/g, "").slice(0, 400))}</span></label>`).join("")}</div>` +
+    field("The merged insight", "statement", "", "write it so it reads on its own — someone who wasn't in the discussion should get it", 6) + firmSel("working") +
+    field("Would change if", "change_mind", "", "optional") + field("Why merge", "note", "", "optional"), "Merge", { wide: true });
+  if (!r) return;
+  if ((r.supersedes || []).length < 2) return toast("Pick at least two insights to merge.", "warn");
+  if (!(r.statement || "").trim()) return toast("Write the merged insight.", "warn");
+  try {
+    const x = await api("POST", "/api/insights/merge", r);
+    toast(`Merged ${r.supersedes.join(", ")} into ${x.id}.`);
+    go(`#/obj/${x.id}`);
+  } catch (err) { fail(err); }
+  after();
+}
+
 async function reviseInsight(x) {
   const r = await ask(`Revise ${x.id}`, `<p>Nothing is overwritten. A new insight replaces this one; the old one stays in the history and becomes part of the new one's grounding.</p>` +
     field("Revised insight", "statement", mainText(x.body), "", 4) + firmSel(x.meta.firmness) +
@@ -1337,7 +1371,12 @@ async function renderObject(id) {
   if (["assumption", "hypothesis"].includes(t)) acts.push(`<a class="btn ghost small" href="#/reading/${id}">Evidence chain</a>`);
   if (["assumption", "hypothesis"].includes(t) && !x.withdrawn && m.status !== "invalidated") acts.push(`<button class="btn ghost small" data-act="ground">Ground check</button>`);
   if (t === "assumption" && !["invalidated", "retired"].includes(m.status)) acts.push(`<button class="btn ghost small danger" data-act="invalidate">Invalidate</button>`);
-  if (t === "insight" && m.status === "active") acts.push(`<button class="btn ghost small" data-act="revise-insight">Revise</button>`);
+  if (t === "insight" && m.status === "active") {
+    const on = m.starred === "true";
+    acts.push(`<button class="btn ghost small" data-act="star-insight">${on ? "★ Starred — unstar" : "☆ Star"}</button>`);
+    acts.push(`<button class="btn ghost small" data-act="revise-insight">Revise</button>`);
+    acts.push(`<button class="btn ghost small" data-act="merge-with">Merge with…</button>`);
+  }
   if (focusable && x.withdrawn) acts.push(`<button class="btn ghost small" data-act="restore">Restore</button>`);
   else if (focusable) acts.push(`<button class="btn ghost small danger" data-act="withdraw" ${x.withdraw_code ? `disabled title="${esc(WITHDRAW_WHY[x.withdraw_code] || "")}"` : ""}>${t === "insight" ? "Abandon" : "Withdraw"}</button>`);
   if (focusable) acts.push(`<button class="btn ghost small" data-act="undo" ${x.can_undo ? "" : `disabled title="Not available: ${esc(undoWhy(x).replace(/<[^>]+>/g, ""))}"`}>Undo accept</button>`);
@@ -1413,6 +1452,8 @@ async function renderObject(id) {
   on("ground", () => groundCheck(id));
   on("invalidate", () => invalidate(id));
   on("revise-insight", () => reviseInsight(x));
+  on("star-insight", () => starInsight(id, m.starred !== "true"));
+  on("merge-with", () => mergeInsights([id]));
   on("withdraw", () => withdrawObj(x));
   on("restore", () => restoreObj(x));
   on("undo", () => undoAccept(x));

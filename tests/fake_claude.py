@@ -8,7 +8,7 @@ distill        真的启动 MCP server，提交一个候选并更新摘要
 distill_sleep  提交一个候选、记一条 checkpoint 后挂住
 distill_resolve 聚焦讨论的蒸馏：提一条 insight 候选，再提一条引用它（C###）结掉聚焦问题的 resolve 候选
 整理任务（协议里有“整理（Tidy up）”时自动进入）：把第 10 章的前两条理解提成合并候选；
-               FAKE_TIDY=blank（或 run/fake_mode 为 tidy_blank）交白卷
+               FAKE_TIDY=blank（或 run/fake_mode 为 tidy_blank）交白卷；rewrite / tidy_rewrite 把第一条理解改写成独立表述
 judge          按 briefing 里的任务种类驱动 Phase 2 的 MCP 工具（检索 / 精读 / 评估 / 扫描 / 接地）。
                FAKE_BAD_EDIT=1 时精读任务会越界改论文的 title（应被 runner 回滚）
                对 Idea 的接地（ground_idea）：FAKE_GVERDICT=contradicted 时记一条反驳证据再下结论
@@ -96,7 +96,8 @@ def main():
     rate()
 
     if "整理（Tidy up）" in (arg("--append-system-prompt") or ""):
-        tidy(brief, blank=mode == "tidy_blank" or os.environ.get("FAKE_TIDY") == "blank")
+        tidy(brief, blank=mode == "tidy_blank" or os.environ.get("FAKE_TIDY") == "blank",
+             rewrite=mode == "tidy_rewrite" or os.environ.get("FAKE_TIDY") == "rewrite")
         return
 
     if mode in ("reply", "sleep"):
@@ -172,10 +173,16 @@ def main():
         return
 
 
-def tidy(brief, blank=False):
+def tidy(brief, blank=False, rewrite=False):
     mcp = Mcp()
     ch = brief.split("## 10. 待整理的全部内容", 1)[-1]
     ins = re.findall(r"^#### (IN\d+)", ch, re.M)
+    if rewrite and ins:
+        mcp.call("propose_candidate", kind="revision", target=ins[0], base_revision=1,
+                 statement="接口宜在时间上稀疏、信息上稠密：上层隔一段时间才下发一次指导，但每次给出足够完整的几何目标。",
+                 rationale="原文用了“上面那个方案”，离开讨论读不懂；只改措辞")
+        result("改写了 1 条理解。")
+        return
     if blank or len(ins) < 2:
         result("看过了全部理解与问题，没有值得合并或结掉的。")
         return

@@ -484,7 +484,9 @@ def apply_revision(store, cid, *, origin=None, force=False, maturity=None, actor
         changes.append(("maturity", meta.get("maturity"), fields["maturity"]))
     if not changes:
         raise ValueError(f"修订后与 {target} 当前版本完全相同。")
-    src = {"discussion": cm.get("source"), "turns": [int(t) for t in _as_list(cm.get("turns"))]}
+    # 修订多出自讨论；整理任务的理解改写（§5.17.1）出自任务号，没有讨论与轮次
+    src = {"discussion": cm.get("source"), "turns": [int(t) for t in _as_list(cm.get("turns"))]} \
+        if str(cm.get("source") or "").startswith("DS") else {}
 
     if ttype == "insight":
         new = insights.revise(store, target, statement, fields.get("firmness") or meta.get("firmness"),
@@ -528,7 +530,7 @@ def apply_revision(store, cid, *, origin=None, force=False, maturity=None, actor
                            "candidate": cid, "from_revision": cur, "to_revision": new_rev,
                            "created": today()},
                      f"## 做了什么\n\n修订 {target}：第 {cur} 版 → 第 {new_rev} 版（候选 {cid}，"
-                     f"出自 {cm.get('source')} 第 {', '.join(map(str, src['turns'])) or '?'} 轮）。\n\n"
+                     f"出自 {cm.get('source')} 第 {', '.join(map(str, src.get('turns', []))) or '?'} 轮）。\n\n"
                      + ("## 注意\n\n" + "\n\n".join(warn) + "\n\n" if warn else "")
                      + f"## 修订前（第 {cur} 版）\n\n{statement_of(body)}\n\n字段：\n\n{old_fields}\n\n"
                      f"## 修订后（第 {new_rev} 版）\n\n{statement.strip()}\n\n字段：\n\n{_fields_md(meta, ttype)}\n\n"

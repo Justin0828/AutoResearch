@@ -175,6 +175,26 @@ def _stmt(body):
     return statement_of(body)
 
 
+def focus_insights(store, active_ids):
+    """自演进的本次重点（§5.17.4）：研究者星标的 + 上一次自演进之后新增的（不在上个 session 首版基本盘里的）。
+
+    返回 {IN###: 原因}。没有上一个 session 时只看星标。"""
+    out = {}
+    for m, _ in store.list("insight"):
+        if m.get("id") in active_ids and schema.is_starred(m):
+            out[m["id"]] = "研究者星标"
+    firsts = [m for m, _ in store.list("foundation") if str(m.get("round")) == "1"]
+    if firsts:
+        prev = max(firsts, key=lambda m: schema.split_id(m["id"])[1])
+        _, pb = store.read_obj(prev["id"])
+        sec = re.search(r"## 2\. 当前理解(.*?)(?=\n## 3\.|\Z)", pb or "", re.S)
+        seen = set(re.findall(r"\*\*(IN\d+)\*\*", sec.group(1) if sec else ""))
+        for i in active_ids:
+            if i not in seen:
+                out[i] = out.get(i, "") + ("、" if i in out else "") + f"上次自演进（{prev['id']}）之后新增"
+    return out
+
+
 def foundation_body(store):
     """首版基本盘的正文：只由 State 机械装配，不含 origin、论文全文 / 笔记 / 标题、讨论、候选、决策。"""
     n = attribution.neutralize
@@ -195,10 +215,16 @@ def foundation_body(store):
 
     ins = [(m, b) for m, b in store.list("insight") if m.get("status") == "active"]
     order = {"settled": 0, "working": 1, "hunch": 2}
-    ins.sort(key=lambda x: order.get(x[0].get("firmness"), 3))
+    focus = focus_insights(store, [m["id"] for m, _ in ins])
+    ins.sort(key=lambda x: (x[0]["id"] not in focus, order.get(x[0].get("firmness"), 3)))
+    note = ""
+    if focus:
+        note = ("标着【本次重点】的理解是研究者星标的，或上一次自演进之后新形成的——本 session 优先以它们为出发点："
+                "在上面更进一步、找出它们推不出的东西，或挑战它们。\n\n")
     parts.append("## 2. 当前理解\n\n以下是研究至今形成的看法与直觉——**是理解，不是证据**。你可以在上面更进一步，"
-                 "也可以批评它；不必二选一。\n\n" + ("\n\n".join(
-                     f"- **{m['id']}** · {m.get('firmness')}：{n(b.strip())}" for m, b in ins) or "（暂无。）"))
+                 "也可以批评它；不必二选一。\n\n" + note + ("\n\n".join(
+                     f"- **{m['id']}** · {m.get('firmness')}{'【本次重点：' + focus[m['id']] + '】' if m['id'] in focus else ''}："
+                     f"{n(b.strip())}" for m, b in ins) or "（暂无。）"))
 
     facts = []
     for m, b in store.list("hypothesis"):
