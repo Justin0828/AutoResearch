@@ -143,16 +143,22 @@ class ApiTest(_Api):
     def docs(self):
         return self.req("GET", "/api/evolutions")[1]["docs"]
 
+    def idle(self):
+        """文档写入与任务状态落定之间有一瞬间（_finish 先写文档，finally 再存 done）：等任务真正结束再发下一次。"""
+        self.wait(lambda: not self.req("GET", "/api/evolutions")[1]["live"])
+
     def test_manual_evolve(self):
         s, r = self.req("POST", "/api/evolve", {"seed": "Q001"})
         self.assertEqual(s, 200)
         self.assertEqual(self.req("POST", "/api/evolve", {"seed": "Q001"})[1]["task"], None)   # 不重复建
         self.wait(lambda: len(self.docs()) == 1)
+        self.idle()
         d = self.docs()[0]
         self.assertEqual((d["seeds"], d["trigger"], d["task"]), (["Q001"], "manual", r["task"]["id"]))
         self.assertIn("[第一次]", d["body"])
         self.req("POST", "/api/evolve", {"seed": "Q001"})
         self.wait(lambda: len(self.docs()) == 2)
+        self.idle()
         self.assertIn(f"[接着:{d['id']}]", self.docs()[0]["body"])     # 接着上一篇往前走
         self.assertEqual(self.req("POST", "/api/evolve", {"seed": "H001"})[0], 400)
         s, r = self.req("POST", "/api/evolve", {})                  # 让系统挑
