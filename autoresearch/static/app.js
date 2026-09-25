@@ -1047,10 +1047,9 @@ function renderResearch() {
     : `<div class="empty">No hypotheses yet.</div>`;
 
   $("#research-body").innerHTML = top + convergeBanners(tree, ins.length, o.tidy) +
-    section("sec-question", "Research questions", tree.open.length, "The question tree. Closed questions fade and fold away with their answer on the node. ★ marks what you're thinking about now — the AI sees those in full and the rest as one line each.", q,
-      `<button class="btn ghost small" data-act="tidy" title="Ask the AI to propose merging overlapping insights and closing answered or duplicate questions">Tidy up</button>`) +
+    section("sec-question", "Research questions", tree.open.length, "The question tree. Closed questions fade and fold away with their answer on the node. ★ marks what you're thinking about now — the AI sees those in full and the rest as one line each.", q) +
     section("sec-insights", "Understanding", ins.length, "What we've come to think so far. Understanding, not evidence — it can be a feel, but it must say where it comes from.", insHtml,
-      `<span class="acts-inline">${ins.length >= 2 ? `<button class="btn ghost small" data-act="merge-insights" title="Pick two or more insights and write the merged one yourself">Merge…</button>` : ""}<button class="btn small" data-act="new-insight">Add insight</button></span>`) +
+      `<span class="acts-inline">${ins.length >= 2 ? `<button class="btn ghost small" data-act="tidy" title="Ask the AI to group insights that say the same thing and propose merging each group — proposals wait in the Inbox">Tidy up</button><button class="btn ghost small" data-act="merge-insights" title="Pick two or more insights and write the merged one yourself">Merge…</button>` : ""}<button class="btn small" data-act="new-insight">Add insight</button></span>`) +
     section("sec-assumptions", "Assumptions", as.filter((x) => !x.withdrawn).length, "Premises the research relies on. Unexamined ones come first — they're the dangerous ones.", asHtml) +
     section("sec-hypotheses", "Hypotheses", hs.filter((x) => !x.withdrawn).length, "Claims with an arranged test. Status only changes with evidence attached.", hsHtml) +
     section("sec-uncertainties", "Uncertainties", usLive.length, "Unknowns that discount our conclusions.", usHtml) +
@@ -1129,10 +1128,7 @@ function convergeBanners(t, activeInsights, tidy) {
     Since this update, only the main question and questions you mark active (☆ → ★) reach the AI in full; the others appear as one line each, so each discussion stays focused.
     <div class="acts"><button class="btn ghost small" data-dismiss="active">Got it</button></div></div>`);
   if (t.active.length > 3) out.push(`<div class="banner warn"><strong>${t.active.length} questions are active.</strong> When everything is active, nothing is — consider unmarking the ones you aren't working on this week.</div>`);
-  if (activeInsights > 12 || t.open.length > 8) out.push(`<div class="banner info"><strong>It's getting crowded</strong> — ${activeInsights} active insights, ${t.open.length} open questions.
-    Tidy up asks the AI to propose merging overlapping insights and closing questions that are already answered or duplicated. It doesn't add anything new, and every proposal waits for you in the Inbox.
-    <div class="acts"><button class="btn small" data-act="tidy">Tidy up</button></div></div>`);
-  if (tidy && ["queued", "running"].includes(tidy.status)) out.push(`<div class="banner info"><span class="thinking">Tidying up (${tidy.id})</span> — proposals will land in the Inbox.</div>`);
+  if (tidy && ["queued", "running"].includes(tidy.status)) out.push(`<div class="banner info"><span class="thinking">Looking for insights to merge (${tidy.id})</span> — proposals will land in the Inbox.</div>`);
   else if (tidy && tidy.status === "done" && tidy.result_brief) out.push(`<div class="meta tidy-last">Last tidy-up ${esc(tidy.id)} · ${fmtTs(tidy.ended)}: ${linkIds(esc(tidy.result_brief))}</div>`);
   return out.join("");
 }
@@ -1152,13 +1148,10 @@ function bindTree(root) {
 }
 
 async function tidyUp() {
-  const r = await ask("Tidy up?", `<p>A separate task reads every active insight and every open question in full, and proposes only two things: <b>merging</b> insights that say the same thing, and <b>closing</b> questions that are already answered or duplicate another. It adds nothing new, and it's fine for it to find nothing.</p>
-    <p class="meta">Every proposal waits in the Inbox for you. Costs about one distill.</p>`, "Tidy up");
-  if (!r) return;
-  try {
-    const x = await api("POST", "/api/tidy", {});
-    toast(x.task ? `Tidy-up queued (${x.task.id}).` : "A tidy-up is already queued or running.");
-  } catch (err) { fail(err); }
+  const r = await ask("Tidy up?", `<p>A separate task reads every active insight in full, groups the ones that say the same thing or complete each other, and proposes <b>merging</b> each group into one. That's all it does — no new insights, no rewrites. Finding nothing to merge is fine.</p>
+    <p class="meta">Every proposal waits in the Inbox; you edit the wording and pick the firmness when you accept. It also runs once on its own while you're away. Costs about one distill.</p>`, "Tidy up",
+    { submit: () => api("POST", "/api/tidy", {}) });
+  if (r) toast(r.$res.task ? `Tidy-up queued (${r.$res.task.id}).` : "A tidy-up is already queued or running.");
   loadOverview();
 }
 

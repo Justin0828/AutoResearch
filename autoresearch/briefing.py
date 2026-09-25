@@ -169,20 +169,13 @@ class Assembler:
         return f"决定（{m.get('decided_by')}）：{_one(self._body(dec.group(1) if dec else '', redact), 200)}"
 
     def s_tidy(self):
-        """整理任务（§5.16.3）的上下文：全部 active 理解与全部 open 问题的全文，不截断。"""
+        """整理任务（§5.19）的上下文：全部 active 理解的全文，不截断。只做聚合，所以不给问题。"""
         ins = [(m, b) for m, b in self.store.list("insight") if m.get("status") == "active"]
-        qs = [(m, b) for m, b in self._live(self.store.list("question")) if schema.question_status(m) == "open"]
-        main = self.store.project()[0].get("main_question")
-        out = [f"## 10. 待整理的全部内容（{len(ins)} 条 active 理解、{len(qs)} 个 open 问题）"]
-        out.append("### 理解（active）\n\n" + ("\n\n".join(
-            f"#### {m['id']} · {m.get('firmness')} · {_fm_line(m, ['basis', 'informs'])}\n\n{b.strip()}"
+        out = [f"## 10. 待聚合的全部理解（{len(ins)} 条 active）"]
+        out.append("\n\n".join(
+            f"#### {m['id']} · {m.get('firmness')}{' · 研究者星标' if schema.is_starred(m) else ''} · {_fm_line(m, ['basis', 'informs'])}\n\n{b.strip()}"
             + "".join(f"\n- {k}：{m[f]}" for f, k in (("basis_note", "根基说明"), ("change_mind", "什么会让我改观")) if m.get(f))
-            for m, b in ins) or "（没有。）"))
-        out.append("### 问题（open）\n\n" + ("\n\n".join(
-            f"#### {m['id']}{'（主问题，不能结）' if m['id'] == main else ''} · 成熟度 {m.get('maturity')}"
-            f"{_parent(m, ' · ')}{' · 活跃' if schema.is_active(m) else ''}{_rev(m, ' · ')}"
-            f"{' · ' + _fm_line(m, ['relates_to']) if m.get('relates_to') else ''}\n\n{b.strip()}"
-            for m, b in qs) or "（没有。）"))
+            for m, b in ins) or "（没有。）")
         return "\n\n".join(out)
 
     def s_insights(self, redact):
@@ -319,7 +312,8 @@ class Assembler:
             head = f"- **{c['id']}**（待确认 · {kind} · {src}）"
             parts.append((f"{head}：{c['statement']}", head))
         for c in rejected:
-            head = f"- **{c['id']}**（已丢弃 · {c['kind']}{' ' + c['target'] if c.get('target') else ''}）"
+            what = f"合并 {_v(c['supersedes'])}" if c.get("supersedes") else c["kind"] + (" " + c["target"] if c.get("target") else "")
+            head = f"- **{c['id']}**（已丢弃 · {what}）"
             parts.append((f"{head}：{c['statement']} —— {c['decision_note']}", head))
         return ("## 9. 候选区\n\n用于去重：待确认的不要重复提交；已丢弃的附有研究者的理由，"
                 "不要换个说法再提。\n\n" + _clip(parts, BUDGET[9], "candidates/"))
