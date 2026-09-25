@@ -38,6 +38,8 @@ class Config:
         self.searches_per_target = int(os.environ.get("AR_SEARCHES_PER_TARGET", "2"))
         self.reads_per_target = int(os.environ.get("AR_READS_PER_TARGET", "6"))
         self.prep_idle_minutes = int(os.environ.get("AR_PREP_IDLE_MIN", "90"))
+        # 夜间预习（M2.0）：0 关掉——不再在你离开后自动读论文；空闲自动演进不受影响（它有自己的 AR_EVOLVE_AUTO）
+        self.prep_auto = os.environ.get("AR_PREP_AUTO", "1") != "0"
         self.prep_max_tasks = int(os.environ.get("AR_PREP_MAX_TASKS", "6"))
         # 自演进（§5.18）：研究者离开后的空闲窗口自动演进一篇；0 关掉（手动仍可用）
         self.evolve_auto = os.environ.get("AR_EVOLVE_AUTO", "1") != "0"

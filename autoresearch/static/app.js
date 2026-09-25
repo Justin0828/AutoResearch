@@ -1521,7 +1521,7 @@ function renderModeBanner() {
         ${p.end_reason ? `<div class="meta">Stopped: ${esc(p.end_reason)} · ${fmtTs(p.ended)} · ${dec.id}</div>` : ""}</details>`);
     }
     const req = m.prep_request;
-    parts.push(`<div class="prep-row"><span class="meta">Tonight, look into:</span><input id="prep-input" placeholder="${req ? "" : "optional — if empty, the AI picks an unexamined premise and says why tomorrow"}" value="${esc(req ? req.text : "")}"><button class="btn ghost small" id="prep-save">${req ? "Update" : "Set"}</button></div>`);
+    if (m.prep_auto !== false) parts.push(`<div class="prep-row"><span class="meta">Tonight, look into:</span><input id="prep-input" placeholder="${req ? "" : "optional — if empty, the AI picks an unexamined premise and says why tomorrow"}" value="${esc(req ? req.text : "")}"><button class="btn ghost small" id="prep-save">${req ? "Update" : "Set"}</button></div>`);
   }
   el.innerHTML = parts.join("");
   $$("[data-mode]", el).forEach((b) => b.onclick = () => (b.dataset.mode === "recall" ? recallMode() : continueMode()));

@@ -631,6 +631,10 @@ class Daemon:
 
     def _plan_prep(self):
         prep = self.st.get("prep") or {}
+        if not self.cfg.prep_auto:
+            if prep.get("active"):
+                self._end_prep("夜间预习已关闭（AR_PREP_AUTO=0）")
+            return
         if prep.get("active"):
             return self._continue_prep(prep)
         last = self._last_human_ts()
@@ -820,6 +824,7 @@ class Daemon:
         return {"mode": pm.get("mode", "discussion"), "batch_decision": pm.get("batch"),
                 "batch": modes.batch(self.store), "hold": self.st.get("hold"),
                 "prep": self.st.get("prep"), "prep_request": self.st.get("prep_request"),
+                "prep_auto": self.cfg.prep_auto,
                 "cap": self.cfg.unattended_cap, "cap_note": self.st.get("cap_note")}
 
     # ------------------------------------------------------------ 人在编辑器里的直接修改
