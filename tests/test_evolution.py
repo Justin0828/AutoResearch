@@ -181,6 +181,17 @@ class ApiTest(_Api):
         self.wait(lambda: len([t for t in self.daemon.ledger.all() if t["kind"] == "evolve"]) == 2, timeout=30)
 
 
+    def test_prep_off_still_evolves(self):
+        """AR_PREP_AUTO=0：离开后不再自动读论文（即使有未检验的前提），空闲自动演进照常。"""
+        self.daemon.cfg.prep_auto = False
+        self.daemon.cfg.prep_idle_minutes = 0
+        mk_ds(self.st)
+        self.wait(lambda: len(self.docs()) == 1, timeout=30)
+        kinds = {t["kind"] for t in self.daemon.ledger.all()}
+        self.assertEqual(kinds, {"evolve"})
+        self.assertFalse(self.req("GET", "/api/mode")[1]["prep_auto"])
+
+
 del _Api
 
 if __name__ == "__main__":
