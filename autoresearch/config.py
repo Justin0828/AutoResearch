@@ -43,6 +43,8 @@ class Config:
         self.prep_max_tasks = int(os.environ.get("AR_PREP_MAX_TASKS", "6"))
         # 自演进（§5.18）：研究者离开后的空闲窗口自动演进一篇；0 关掉（手动仍可用）
         self.evolve_auto = os.environ.get("AR_EVOLVE_AUTO", "1") != "0"
+        # 聚合理解（Tidy up，§5.19）：研究者离开后的空闲窗口自动跑一次；0 关掉（手动仍可用）
+        self.tidy_auto = os.environ.get("AR_TIDY_AUTO", "1") != "0"
 
     def ensure(self):
         for d in (self.root, self.run, self.tasks, self.library):

@@ -160,18 +160,13 @@ def validate_proposal(store, kind, statement, rationale, origin, origin_note, so
                       resolution=None):
     if kind not in TARGET_TYPE and kind not in SPECIAL:
         raise ValueError(f"kind 必须是 {sorted(TARGET_TYPE) + list(SPECIAL)} 之一，收到 '{kind}'。")
-    rewrite = kind == "revision" and tidy          # 整理任务把读不懂的理解改写成独立表述（§5.17.1）
-    if rewrite:
-        if schema.split_id(target or "")[0] != "IN":
-            raise ValueError("整理任务的修订只针对理解（IN###）：把读不懂的理解改写成独立表述。")
-        if fields.get("firmness") or fields.get("change_mind"):
-            raise ValueError("整理任务的改写只改措辞：不传 firmness / change_mind，不改观点与牢固程度。")
-    elif kind == "revision" and schema.TASK_ID.match(source or ""):
-        raise ValueError("修订候选只出自讨论：评判类任务的产出是证据与状态迁移，不提修订。")
+    if kind == "revision" and schema.TASK_ID.match(source or ""):
+        raise ValueError("修订候选只出自讨论：评判与整理任务不提修订。")
     merging = kind == "insight" and bool(fields.get("supersedes"))
-    if tidy and not (kind == "resolve" or merging or rewrite):
-        raise ValueError("整理任务只提三种候选：合并理解（kind=insight 带 supersedes）、结问题（kind=resolve）、"
-                         "把读不懂的理解改写成独立表述（kind=revision，target=IN###）。不产新想法。")
+    if tidy and not merging:
+        # Tidy up 只做聚合（§5.19）：不结问题、不改写、不产新想法
+        raise ValueError("整理任务只提一种候选：把几条 active 理解合成一条（kind=insight，supersedes 列出 ≥2 条 IN###）。"
+                         "不结问题、不改写、不提新想法。")
     if schema.TASK_ID.match(source or "") and not tidy and (kind == "resolve" or merging):
         raise ValueError("结问题与合并理解只出自讨论或整理任务（Tidy up）。")
     if not statement.strip():
@@ -211,8 +206,6 @@ def validate_proposal(store, kind, statement, rationale, origin, origin_note, so
         return
     if kind == "resolve":
         from . import questions
-        if resolution == "decided" and tidy:
-            raise ValueError("拍板（decided）只能由研究者在讨论里做：整理任务只提 answered 与 merged。")
         questions.check_resolve(store, target, resolution, fields.get("answered_by"),
                                 fields.get("merged_into"), allow_candidates=True)
         return

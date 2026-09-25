@@ -313,14 +313,20 @@ class TreeTest(Base):
 
 
 class TidyRulesTest(Base):
-    def test_tidy_only_merges_and_resolves(self):
+    def test_tidy_only_merges(self):
+        """§5.19：整理任务只聚合理解——不提新对象、不结问题、不改写。"""
         i1, i2 = self.ins("甲"), self.ins("乙")
-        with self.assertRaisesRegex(ValueError, "整理任务只提"):
+        with self.assertRaisesRegex(ValueError, "整理任务只提一种候选"):
             candidates.propose(self.st, kind="question", statement="x", rationale="r", origin="ai",
                                source="T00001", turns=[], maturity="vague", tidy=True)
-        with self.assertRaisesRegex(ValueError, "拍板"):
-            candidates.propose(self.st, kind="resolve", target=self.q(), resolution="decided", statement="x",
-                               rationale="r", origin="ai", source="T00001", turns=[], tidy=True)
+        q = self.q()
+        for res, extra in (("decided", {}), ("answered", {"answered_by": [i1]})):
+            with self.assertRaisesRegex(ValueError, "整理任务只提一种候选"):
+                candidates.propose(self.st, kind="resolve", target=q, resolution=res, statement="x",
+                                   rationale="r", origin="ai", source="T00001", turns=[], tidy=True, **extra)
+        with self.assertRaisesRegex(ValueError, "整理任务只提一种候选"):
+            candidates.propose(self.st, kind="insight", statement="新想法", rationale="r", origin="ai",
+                               source="T00001", turns=[], firmness="hunch", tidy=True, actor="agent", basis=[self.ds])
         with self.assertRaisesRegex(ValueError, "只出自讨论或整理"):
             candidates.propose(self.st, kind="insight", supersedes=[i1, i2], statement="x", rationale="r",
                                origin="ai", source="T00001", turns=[], firmness="hunch", basis=["E001"])
@@ -482,6 +488,8 @@ class ApiTest(unittest.TestCase):
         self.assertIn(c["id"], self.req("GET", "/api/overview")[1]["tidy"]["result_brief"])
         new = self.req("POST", f"/api/candidates/{c['id']}/accept", {"changes": {"firmness": "working"}})[1]["id"]
         self.assertEqual(self.st.read_obj(new)[0]["consolidates"], [i1, i2])
+        self.assertEqual(self.req("POST", "/api/tidy", {})[0], 400)  # 合并后只剩一条，不足以聚合
+        insights.create(self.st, "丙", "hunch", basis=["H001"])
         os.environ["FAKE_TIDY"] = "blank"
         self.addCleanup(os.environ.pop, "FAKE_TIDY", None)
         tid = self.req("POST", "/api/tidy", {})[1]["task"]["id"]

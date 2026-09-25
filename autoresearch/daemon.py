@@ -253,17 +253,52 @@ class Daemon:
         with self.lock:
             return self._enqueue_distill(ds, manual)
 
-    def request_tidy(self):
-        """整理（Tidy up，§5.16.3）：人从前端手动触发，不定时。已有一个在排队或在跑就不重复建。"""
+    def request_tidy(self, auto=False):
+        """聚合理解（Tidy up，§5.19）：人随时可点；另在空闲时自动跑。已有一个在排队或在跑就不重复建。"""
         with self.lock:
             if bootstrap.needs_setup(self.store):
                 raise ValueError("还没有项目：先建立项目与主问题")
+            if len(self._active_insights()) < 2:
+                raise ValueError("active 的理解不到两条，没有可聚合的")
             if self._active("tidy", None):
                 return None
-            t = self.ledger.create("tidy", "整理：找出可以合并的理解、已被回答或彼此重复的问题，提交候选（可以交白卷）",
-                                   priority=4)
+            t = self.ledger.create("tidy", "聚合理解：把讲同一件事或互相补充的理解归组，每组提一条合并候选（可以交白卷）",
+                                   priority=6 if auto else 4, trigger="auto" if auto else "manual", auto=auto)
+            self.st["tidy_seen"] = sorted(self._active_insights())
+            self._save_state()
             self.bus.publish("task", t)
             return t
+
+    def _active_insights(self):
+        return {m["id"] for m, _ in self.store.list("insight") if m.get("status") == "active"}
+
+    def _plan_tidy(self):
+        """空闲自动聚合（§5.19）：同自动演进的空闲条件，排在它之后；每个空闲期至多一次；
+        理解集合自上次整理以来有变化、且上次提出的合并都已处理，才值得再跑。"""
+        if not self.cfg.tidy_auto or (self.st.get("prep") or {}).get("active") or self.runners:
+            return
+        last = self._last_human_ts()
+        if not last or self.st.get("tidy_after") == last:
+            return
+        if self.cfg.evolve_auto and self.st.get("evolve_after") != last:
+            return                      # 先让自动演进跑（或判断不跑）
+        try:
+            idle = (datetime.datetime.now() - datetime.datetime.fromisoformat(last)).total_seconds()
+        except ValueError:
+            return
+        if idle < self.cfg.prep_idle_minutes * 60 or not self._unattended_ok():
+            return
+        self.st["tidy_after"] = last
+        self._save_state()
+        act = self._active_insights()
+        pending = [m for m, _ in self.store.list("candidate") if m.get("status") == "pending"
+                   and m.get("supersedes") and schema.TASK_ID.match(str(m.get("source") or ""))]
+        if len(act) < 2 or pending or sorted(act) == self.st.get("tidy_seen"):
+            return
+        t = self.request_tidy(auto=True)
+        if t:
+            self.bus.notify("info", f"You've been away, so I'm looking for insights to merge ({t['id']}). "
+                            "Proposals will wait in the Inbox.")
 
     # ------------------------------------------------------------ 入队
 
@@ -436,11 +471,11 @@ class Daemon:
             made = [c["id"] for c in planner.tool_calls(self.ledger, task["id"], "propose_candidate",
                                                         since=task.get("tools_from"))]
             task["result"] = (out.result or "")[:4000]
-            task["result_brief"] = (f"提交了 {len(made)} 条候选：{', '.join(made)}" if made else
-                                    "交白卷：没有值得合并或结掉的")
+            task["result_brief"] = (f"提交了 {len(made)} 条合并候选：{', '.join(made)}" if made else
+                                    "交白卷：没有值得聚合的理解")
             self.bus.publish("candidates", {"tidy": task["id"]})
-            self.bus.notify("info", f"Tidy up finished: " + (f"{len(made)} proposal(s) in the Inbox."
-                                                          if made else "nothing worth merging or closing."),
+            self.bus.notify("info", f"Tidy up finished: " + (f"{len(made)} merge proposal(s) in the Inbox."
+                                                          if made else "nothing worth merging."),
                             task=task["id"])
             return
         if task["kind"] == "evolve":
@@ -566,6 +601,7 @@ class Daemon:
         elif m == "discussion":
             self._plan_prep()
             self._plan_evolve()
+            self._plan_tidy()
 
     # ------------------------------------------------------------ 自演进（M11 v1.8，§5.18）
 

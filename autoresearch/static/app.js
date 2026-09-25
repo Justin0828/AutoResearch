@@ -149,25 +149,92 @@ window.addEventListener("hashchange", route);
 const go = (hash) => { if (location.hash !== hash) location.hash = hash; else route(); };
 
 // ---------------------------------------------------------------- dialog
+// A dialog must never lose what you typed (a rejected "Add insight" once did).
+//  - opts.check(values) → error text: shown in the dialog before anything is sent; the dialog stays open.
+//  - opts.submit(values) → does the request; if it throws, the dialog stays open with the error and your text.
+//    The promise resolves with the values plus `$res` (what submit returned), or null if you cancel.
+//  - Every dialog keeps a draft of its text fields in this browser, keyed by title (opts.draft to override).
+//    A successful confirm clears it; cancelling, a failure, or a reload keeps it and it's restored next time.
+const drafts = {
+  get: (k) => { try { return JSON.parse(localStorage.getItem("ar.draft." + k) || "null"); } catch { return null; } },
+  set: (k, v) => { try { localStorage.setItem("ar.draft." + k, JSON.stringify(v)); } catch { /* private mode */ } },
+  del: (k) => { try { localStorage.removeItem("ar.draft." + k); } catch { /* private mode */ } },
+};
+function dlgValues() {
+  const out = {};
+  $$("[name]", $("#dlg-body")).forEach((el) => {
+    if (el.type === "checkbox") { out[el.name] = out[el.name] || []; if (el.checked) out[el.name].push(el.value); }
+    else out[el.name] = el.value;
+  });
+  return out;
+}
+function dlgError(msg) {
+  const e = $("#dlg-err");
+  e.textContent = msg || "";
+  e.hidden = !msg;
+  if (msg) e.scrollIntoView({ block: "nearest" });
+}
 function ask(title, bodyHtml, okLabel = "Confirm", opts = {}) {
   return new Promise((resolve) => {
-    const dlg = $("#dlg");
+    const dlg = $("#dlg"), form = $("#dlg-form"), body = $("#dlg-body"), okBtn = $("#dlg-ok");
+    const key = opts.draft ?? title;
     dlg.classList.toggle("wide", !!opts.wide);
     $("#dlg-title").textContent = title;
-    $("#dlg-body").innerHTML = bodyHtml;
-    $("#dlg-ok").textContent = okLabel;
-    dlg.onclose = () => {
-      if (dlg.returnValue !== "ok") return resolve(null);
-      const out = {};
-      $$("[name]", $("#dlg-body")).forEach((el) => {
-        if (el.type === "checkbox") { out[el.name] = out[el.name] || []; if (el.checked) out[el.name].push(el.value); }
-        else out[el.name] = el.value;
+    body.innerHTML = bodyHtml;
+    okBtn.textContent = okLabel;
+    okBtn.disabled = false;
+    dlgError("");
+    const typed = (v) => Object.values(v).some((x) => typeof x === "string" && x.trim());
+    const initial = JSON.stringify(dlgValues());
+    const d = drafts.get(key);
+    if (d && typed(d.values) && JSON.stringify(d.values) !== initial) {
+      $$("[name]", body).forEach((el) => {
+        if (!(el.name in d.values)) return;
+        if (el.type === "checkbox") el.checked = (d.values[el.name] || []).includes(el.value);
+        else el.value = d.values[el.name];
       });
-      resolve(out);
+      body.insertAdjacentHTML("afterbegin", `<div class="fnote draft-note">Restored what you typed here earlier (${fmtTs(d.ts)}), which was never saved. <a href="#" data-discard>Discard it</a></div>`);
+      $("[data-discard]", body).onclick = (e) => {
+        e.preventDefault(); drafts.del(key);
+        const v0 = JSON.parse(initial);
+        $$("[name]", body).forEach((el) => {
+          if (el.type === "checkbox") el.checked = (v0[el.name] || []).includes(el.value); else el.value = v0[el.name];
+        });
+        e.target.closest(".draft-note").remove();
+      };
+    }
+    const keep = () => { const v = dlgValues(); if (JSON.stringify(v) !== initial && typed(v)) drafts.set(key, { values: v, ts: new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString() }); };
+    body.oninput = keep; body.onchange = keep;
+    let done = false;
+    const finish = (v) => { if (done) return; done = true; body.oninput = body.onchange = null; form.onsubmit = null; resolve(v); };
+    let pressed = "ok", busy = false;
+    $$("menu button", form).forEach((b) => b.onclick = () => { pressed = b.value; });
+    form.onsubmit = async (e) => {
+      const which = (e.submitter && e.submitter.value) || pressed;
+      pressed = "ok";
+      if (which !== "ok") return;                         // Cancel: let the dialog close natively
+      e.preventDefault();
+      if (busy) return;                                   // a request is already on its way
+      keep();
+      const vals = dlgValues();
+      const problem = opts.check && opts.check(vals);
+      if (problem) return dlgError(problem);
+      let res;
+      if (opts.submit) {
+        okBtn.disabled = busy = true;
+        dlgError("");
+        try { res = await opts.submit(vals); } catch (err) { okBtn.disabled = busy = false; return dlgError(err.message || String(err)); }
+        okBtn.disabled = busy = false;
+      }
+      drafts.del(key);
+      dlg.returnValue = "ok";
+      finish({ ...vals, $res: res });
+      dlg.close();
     };
+    dlg.onclose = () => { if (!done) keep(); finish(null); };
     dlg.returnValue = "";
     dlg.showModal();
-    const f = $("textarea, input", $("#dlg-body"));
+    const f = $("textarea, input", body);
     if (f) f.focus();
   });
 }
@@ -227,19 +294,17 @@ async function organizeDs(d) {
   const r = await ask(`Organize ${d.id}`, field("Title", "title", d.title, "only the label changes; the transcript keeps its history") +
     `<label>Group <span class="hint">— a label; leave empty for none</span></label><input name="group" list="grp-list" value="${esc(d.group || "")}">
      <datalist id="grp-list">${groups.map((g) => `<option value="${esc(g)}">`).join("")}</datalist>
-     <div class="checks"><label><input type="checkbox" name="pinned" value="1" ${d.pinned ? "checked" : ""}><span>Pin to the top</span></label></div>`, "Save");
+     <div class="checks"><label><input type="checkbox" name="pinned" value="1" ${d.pinned ? "checked" : ""}><span>Pin to the top</span></label></div>`, "Save",
+    { check: (v) => (v.title || "").trim() ? "" : "The title can't be empty.",
+      submit: (v) => api("POST", `/api/discussions/${d.id}/meta`, { title: v.title, group: v.group, pinned: (v.pinned || []).length > 0 }) });
   if (!r) return;
-  try {
-    await api("POST", `/api/discussions/${d.id}/meta`, { title: r.title, group: r.group, pinned: (r.pinned || []).length > 0 });
-  } catch (err) { fail(err); }
   loadDiscussions(); if (d.id === S.ds) refreshDs();
 }
 
 async function renameGroup(g) {
   const r = await ask(`Group “${g}”`, `<p>A group is just a label on its discussions. Renaming relabels them all; an empty name ungroups them.</p>` +
-    field("New name", "to", g), "Save");
+    field("New name", "to", g), "Save", { submit: (v) => api("POST", "/api/discussion-groups/rename", { from: g, to: v.to }) });
   if (!r) return;
-  try { await api("POST", "/api/discussion-groups/rename", { from: g, to: r.to }); } catch (err) { fail(err); }
   loadDiscussions();
 }
 
@@ -335,14 +400,18 @@ $("#composer").onsubmit = async (e) => {
 async function newDiscussion() {
   const f = await ask("New discussion",
     field("Title", "title", "", "a label for the list; not sent to the AI") +
-    field("First message", "text", "", "optional — you can also write it in the chat", 4), "Create");
+    field("First message", "text", "", "optional — you can also write it in the chat", 4), "Create",
+    { submit: async (f) => {
+      const r = await api("POST", "/api/discussions", { title: f.title || (f.text || "").slice(0, 40) || "Untitled" });
+      if (f.text && f.text.trim()) {
+        try { await api("POST", `/api/discussions/${r.id}/messages`, { text: f.text.trim() }); }
+        catch (err) { input.value = f.text; fail(err); }          // the discussion exists; keep the message in the composer
+      }
+      return r;
+    } });
   if (!f) return;
-  try {
-    const r = await api("POST", "/api/discussions", { title: f.title || (f.text || "").slice(0, 40) || "Untitled" });
-    if (f.text && f.text.trim()) await api("POST", `/api/discussions/${r.id}/messages`, { text: f.text.trim() });
-    go(`#/chat/${r.id}`);
-    setTimeout(() => input.focus(), 50);
-  } catch (err) { fail(err); }
+  go(`#/chat/${f.$res.id}`);
+  setTimeout(() => input.focus(), 50);
 }
 $("#new-ds").onclick = newDiscussion;
 $("#distill-btn").onclick = async () => {
@@ -353,9 +422,9 @@ $("#distill-btn").onclick = async () => {
   } catch (err) { fail(err); }
 };
 $("#close-ds-btn").onclick = async () => {
-  const r = await ask("End this discussion?", `<p>Anything not yet distilled will be distilled one last time. The transcript stays in the research state.</p>`, "End discussion");
+  const r = await ask("End this discussion?", `<p>Anything not yet distilled will be distilled one last time. The transcript stays in the research state.</p>`, "End discussion",
+    { submit: () => api("POST", `/api/discussions/${S.ds}/status`, { status: "closed" }) });
   if (!r) return;
-  try { await api("POST", `/api/discussions/${S.ds}/status`, { status: "closed" }); } catch (err) { fail(err); }
   refreshDs(); loadDiscussions();
 };
 
@@ -582,19 +651,23 @@ async function acceptResolve(c) {
     (c.resolution === "decided" ? field("The decision", "decision", c.statement, "what you chose, why, and what would make you revisit it — recorded as a research decision", 6) : "") +
     (c.origin === "unclear" ? select("Who proposed closing it?", "origin", { human: "Me", ai: "The AI" }, "human") : "") +
     `<details class="why"><summary>Why it can be closed</summary><div class="md small">${md(c.rationale)}</div></details>`;
-  const r = await ask(`Close ${c.target} — ${c.id}`, html, refCands.length ? "Accept both & close" : "Close question", { wide: true });
-  if (!r) return;
-  try {
-    for (const ref of refCands) {
-      const x = await api("POST", `/api/candidates/${ref.id}/accept`, r["origin_" + ref.id] ? { origin: r["origin_" + ref.id] } : {});
-      toast(`Accepted ${ref.id} as ${x.id}.`);
-    }
-    const body = {};
-    if (r.decision !== undefined) body.decision = r.decision;
-    if (r.origin) body.origin = r.origin;
-    await api("POST", `/api/candidates/${c.id}/accept`, body);
-    toast(`${c.target} closed as ${c.resolution}.`);
-  } catch (err) { fail(err); }
+  const accepted = new Set();          // on a retry, don't accept the referenced candidates twice
+  const r = await ask(`Close ${c.target} — ${c.id}`, html, refCands.length ? "Accept both & close" : "Close question", {
+    wide: true,
+    check: (v) => c.resolution === "decided" && !(v.decision || "").trim() ? "Write the decision." : "",
+    submit: async (v) => {
+      for (const ref of refCands) {
+        if (accepted.has(ref.id)) continue;
+        const x = await api("POST", `/api/candidates/${ref.id}/accept`, v["origin_" + ref.id] ? { origin: v["origin_" + ref.id] } : {});
+        accepted.add(ref.id);
+        toast(`Accepted ${ref.id} as ${x.id}.`);
+      }
+      const body = {};
+      if (v.decision !== undefined) body.decision = v.decision;
+      if (v.origin) body.origin = v.origin;
+      return api("POST", `/api/candidates/${c.id}/accept`, body);
+    } });
+  if (r) toast(`${c.target} closed as ${c.resolution}.`);
   after();
 }
 
@@ -608,17 +681,18 @@ async function acceptMerge(c) {
     firmSel(c.firmness || "hunch") +
     (c.origin === "unclear" ? select("Who raised it first?", "origin", { human: "Me", ai: "The AI" }, "human") : "") +
     `<details class="why"><summary>Why merge</summary><div class="md small">${md(c.rationale)}</div></details>`;
-  const r = await ask(`Merge ${fmtv(c.supersedes)} — ${c.id}`, html, "Merge", { wide: true });
-  if (!r) return;
-  const changes = { firmness: r.firmness };
-  if ((r.statement || "").trim() !== (c.statement || "").trim()) changes.statement = r.statement;
-  try {
-    const x = await api("POST", `/api/candidates/${c.id}/accept`, { changes, ...(r.origin ? { origin: r.origin } : {}) });
-    toast(`Merged into ${x.id}.`);
-    after();
-    return x.id;
-  } catch (err) { fail(err); }
+  const r = await ask(`Merge ${fmtv(c.supersedes)} — ${c.id}`, html, "Merge", {
+    wide: true,
+    check: (v) => (v.statement || "").trim() ? "" : "The merged insight can't be empty.",
+    submit: (v) => {
+      const changes = { firmness: v.firmness };
+      if ((v.statement || "").trim() !== (c.statement || "").trim()) changes.statement = v.statement;
+      return api("POST", `/api/candidates/${c.id}/accept`, { changes, ...(v.origin ? { origin: v.origin } : {}) });
+    } });
   after();
+  if (!r) return;
+  toast(`Merged into ${r.$res.id}.`);
+  return r.$res.id;
 }
 
 // A revision changes an existing object in place: same id, version +1, old wording kept (§5.15.3)
@@ -690,9 +764,9 @@ function bindRequests(body) {
   });
   $$("[data-request] [data-act=dismiss]", body).forEach((b) => b.onclick = async () => {
     const id = b.closest(".card").dataset.request;
-    const f = await ask(`${id}: can't get it`, field("Why not?", "reason", "", "the waiting task is told to work from the abstract", 3), "Save");
+    const f = await ask(`${id}: can't get it`, field("Why not?", "reason", "", "the waiting task is told to work from the abstract", 3), "Save",
+      { check: (v) => (v.reason || "").trim() ? "" : "Say why — the waiting task is told.", submit: (v) => api("POST", `/api/requests/${id}/dismiss`, v) });
     if (!f) return;
-    try { await api("POST", `/api/requests/${id}/dismiss`, f); } catch (e) { fail(e); }
     loadInbox();
   });
 }
@@ -872,9 +946,10 @@ async function candAct(act, c) {
 async function reviewAct(act, r) {
   if (act === "goto") return go(`#/obj/${r.target}`);
   const f = await ask(act === "resolved" ? `${r.target}: adjusted` : `${r.target}: not affected`,
-    field(act === "resolved" ? "What did you change?" : "Why does it still stand?", "note", "", "kept as a record", 3), "Save");
+    field(act === "resolved" ? "What did you change?" : "Why does it still stand?", "note", "", "kept as a record", 3), "Save",
+    { check: (v) => (v.note || "").trim() ? "" : "Write a line — it's the record of why this still stands.",
+      submit: (v) => api("POST", `/api/reviews/${r.id}/resolve`, { status: act, note: v.note }) });
   if (!f) return;
-  try { await api("POST", `/api/reviews/${r.id}/resolve`, { status: act, note: f.note }); } catch (err) { fail(err); }
   loadInbox();
 }
 
@@ -972,10 +1047,9 @@ function renderResearch() {
     : `<div class="empty">No hypotheses yet.</div>`;
 
   $("#research-body").innerHTML = top + convergeBanners(tree, ins.length, o.tidy) +
-    section("sec-question", "Research questions", tree.open.length, "The question tree. Closed questions fade and fold away with their answer on the node. ★ marks what you're thinking about now — the AI sees those in full and the rest as one line each.", q,
-      `<button class="btn ghost small" data-act="tidy" title="Ask the AI to propose merging overlapping insights and closing answered or duplicate questions">Tidy up</button>`) +
+    section("sec-question", "Research questions", tree.open.length, "The question tree. Closed questions fade and fold away with their answer on the node. ★ marks what you're thinking about now — the AI sees those in full and the rest as one line each.", q) +
     section("sec-insights", "Understanding", ins.length, "What we've come to think so far. Understanding, not evidence — it can be a feel, but it must say where it comes from.", insHtml,
-      `<span class="acts-inline">${ins.length >= 2 ? `<button class="btn ghost small" data-act="merge-insights" title="Pick two or more insights and write the merged one yourself">Merge…</button>` : ""}<button class="btn small" data-act="new-insight">Add insight</button></span>`) +
+      `<span class="acts-inline">${ins.length >= 2 ? `<button class="btn ghost small" data-act="tidy" title="Ask the AI to group insights that say the same thing and propose merging each group — proposals wait in the Inbox">Tidy up</button><button class="btn ghost small" data-act="merge-insights" title="Pick two or more insights and write the merged one yourself">Merge…</button>` : ""}<button class="btn small" data-act="new-insight">Add insight</button></span>`) +
     section("sec-assumptions", "Assumptions", as.filter((x) => !x.withdrawn).length, "Premises the research relies on. Unexamined ones come first — they're the dangerous ones.", asHtml) +
     section("sec-hypotheses", "Hypotheses", hs.filter((x) => !x.withdrawn).length, "Claims with an arranged test. Status only changes with evidence attached.", hsHtml) +
     section("sec-uncertainties", "Uncertainties", usLive.length, "Unknowns that discount our conclusions.", usHtml) +
@@ -1054,10 +1128,7 @@ function convergeBanners(t, activeInsights, tidy) {
     Since this update, only the main question and questions you mark active (☆ → ★) reach the AI in full; the others appear as one line each, so each discussion stays focused.
     <div class="acts"><button class="btn ghost small" data-dismiss="active">Got it</button></div></div>`);
   if (t.active.length > 3) out.push(`<div class="banner warn"><strong>${t.active.length} questions are active.</strong> When everything is active, nothing is — consider unmarking the ones you aren't working on this week.</div>`);
-  if (activeInsights > 12 || t.open.length > 8) out.push(`<div class="banner info"><strong>It's getting crowded</strong> — ${activeInsights} active insights, ${t.open.length} open questions.
-    Tidy up asks the AI to propose merging overlapping insights and closing questions that are already answered or duplicated. It doesn't add anything new, and every proposal waits for you in the Inbox.
-    <div class="acts"><button class="btn small" data-act="tidy">Tidy up</button></div></div>`);
-  if (tidy && ["queued", "running"].includes(tidy.status)) out.push(`<div class="banner info"><span class="thinking">Tidying up (${tidy.id})</span> — proposals will land in the Inbox.</div>`);
+  if (tidy && ["queued", "running"].includes(tidy.status)) out.push(`<div class="banner info"><span class="thinking">Looking for insights to merge (${tidy.id})</span> — proposals will land in the Inbox.</div>`);
   else if (tidy && tidy.status === "done" && tidy.result_brief) out.push(`<div class="meta tidy-last">Last tidy-up ${esc(tidy.id)} · ${fmtTs(tidy.ended)}: ${linkIds(esc(tidy.result_brief))}</div>`);
   return out.join("");
 }
@@ -1077,13 +1148,10 @@ function bindTree(root) {
 }
 
 async function tidyUp() {
-  const r = await ask("Tidy up?", `<p>A separate task reads every active insight and every open question in full, and proposes only two things: <b>merging</b> insights that say the same thing, and <b>closing</b> questions that are already answered or duplicate another. It adds nothing new, and it's fine for it to find nothing.</p>
-    <p class="meta">Every proposal waits in the Inbox for you. Costs about one distill.</p>`, "Tidy up");
-  if (!r) return;
-  try {
-    const x = await api("POST", "/api/tidy", {});
-    toast(x.task ? `Tidy-up queued (${x.task.id}).` : "A tidy-up is already queued or running.");
-  } catch (err) { fail(err); }
+  const r = await ask("Tidy up?", `<p>A separate task reads every active insight in full, groups the ones that say the same thing or complete each other, and proposes <b>merging</b> each group into one. That's all it does — no new insights, no rewrites. Finding nothing to merge is fine.</p>
+    <p class="meta">Every proposal waits in the Inbox; you edit the wording and pick the firmness when you accept. It also runs once on its own while you're away. Costs about one distill.</p>`, "Tidy up",
+    { submit: () => api("POST", "/api/tidy", {}) });
+  if (r) toast(r.$res.task ? `Tidy-up queued (${r.$res.task.id}).` : "A tidy-up is already queued or running.");
   loadOverview();
 }
 
@@ -1097,9 +1165,12 @@ async function newInsight() {
     field("Grounded in", "basis", "", "ids from the state, comma-separated, e.g. DS001, H002") +
     field("Or a grounding note", "basis_note", "", "a source outside the state, e.g. years of assembly work") +
     field("Informs", "informs", "", "optional · ids it shapes") +
-    field("Would change if", "change_mind", "", "optional"), "Add");
+    field("Would change if", "change_mind", "", "optional"), "Add",
+    { check: (v) => !(v.statement || "").trim() ? "Write the insight."
+        : !(v.basis || "").trim() && !(v.basis_note || "").trim() ? "Say where it comes from: fill “Grounded in” (ids like DS001, Q001) or “Or a grounding note” (e.g. hands-on experience) — at least one." : "",
+      submit: (v) => api("POST", "/api/insights", v) });
   if (!r) return;
-  try { const x = await api("POST", "/api/insights", r); toast(`Added ${x.id}.`); } catch (err) { fail(err); }
+  toast(`Added ${r.$res.id}.`);
   loadOverview();
 }
 async function starInsight(id, on) {
@@ -1115,32 +1186,31 @@ async function mergeInsights(pre) {
   const r = await ask("Merge insights", `<p>Pick two or more and write the merged insight. The picked ones are marked as merged into the new one — nothing is withdrawn, and assumptions derived from them still stand. Grounding and “informs” are combined automatically.</p>
     <div class="checks">${act.map((i) => `<label><input type="checkbox" name="supersedes" value="${i.id}" ${pre.includes(i.id) ? "checked" : ""}><span><span class="id">${i.id}</span> <span class="tag insight">${FIRM[i.firmness] || i.firmness}</span>${i.starred === "true" ? " ★" : ""}<br>${esc(mainText(i.body).replace(/（来由见候选 C\d+。?）/g, "").slice(0, 400))}</span></label>`).join("")}</div>` +
     field("The merged insight", "statement", "", "write it so it reads on its own — someone who wasn't in the discussion should get it", 6) + firmSel("working") +
-    field("Would change if", "change_mind", "", "optional") + field("Why merge", "note", "", "optional"), "Merge", { wide: true });
-  if (!r) return;
-  if ((r.supersedes || []).length < 2) return toast("Pick at least two insights to merge.", "warn");
-  if (!(r.statement || "").trim()) return toast("Write the merged insight.", "warn");
-  try {
-    const x = await api("POST", "/api/insights/merge", r);
-    toast(`Merged ${r.supersedes.join(", ")} into ${x.id}.`);
-    go(`#/obj/${x.id}`);
-  } catch (err) { fail(err); }
+    field("Would change if", "change_mind", "", "optional") + field("Why merge", "note", "", "optional"), "Merge", {
+    wide: true,
+    check: (v) => (v.supersedes || []).length < 2 ? "Pick at least two insights to merge." : !(v.statement || "").trim() ? "Write the merged insight." : "",
+    submit: (v) => api("POST", "/api/insights/merge", v) });
   after();
+  if (!r) return;
+  toast(`Merged ${r.supersedes.join(", ")} into ${r.$res.id}.`);
+  go(`#/obj/${r.$res.id}`);
 }
 
 async function reviseInsight(x) {
   const r = await ask(`Revise ${x.id}`, `<p>Nothing is overwritten. A new insight replaces this one; the old one stays in the history and becomes part of the new one's grounding.</p>` +
     field("Revised insight", "statement", mainText(x.body), "", 4) + firmSel(x.meta.firmness) +
     field("Would change if", "change_mind", x.meta.change_mind || "") +
-    field("Why revise", "note", ""), "Revise");
-  if (!r) return;
-  try { const n = await api("POST", `/api/insights/${x.id}/revise`, r); toast(`Revised as ${n.id}.`); go(`#/obj/${n.id}`); } catch (err) { fail(err); }
+    field("Why revise", "note", ""), "Revise",
+    { check: (v) => (v.statement || "").trim() ? "" : "The revised insight can't be empty.", submit: (v) => api("POST", `/api/insights/${x.id}/revise`, v) });
   after();
+  if (!r) return;
+  toast(`Revised as ${r.$res.id}.`); go(`#/obj/${r.$res.id}`);
 }
 async function setMaturity(x) {
   const r = await ask(`Maturity of ${x.id}`, `<p><b>Vague</b>: a direction, but you can't yet say what's outside it. <b>Scoped</b>: you can say what's studied, what isn't, and what's taken as given. <b>Formalized</b>: you can say what's measured, in what setting, and what result would answer it — and the vaguer a question is, the more it helps to Evolve it.</p>` +
-    select("Maturity", "maturity", { vague: "Vague", scoped: "Scoped — boundaries are clear", formalized: "Formalized — measurable definition" }, x.meta.maturity), "Save");
-  if (!r) return;
-  try { await api("POST", `/api/questions/${x.id}/maturity`, r); toast(`${x.id} is now ${r.maturity}.`); } catch (err) { fail(err); }
+    select("Maturity", "maturity", { vague: "Vague", scoped: "Scoped — boundaries are clear", formalized: "Formalized — measurable definition" }, x.meta.maturity), "Save",
+    { submit: (v) => api("POST", `/api/questions/${x.id}/maturity`, v) });
+  if (r) toast(`${x.id} is now ${r.maturity}.`);
   after(); loadMode();
 }
 async function groundCheck(id) {
@@ -1150,41 +1220,40 @@ async function groundCheck(id) {
 }
 async function invalidate(id) {
   const r = await ask(`Invalidate ${id}`, `<p>Use this when the premise doesn't hold. Everything linked to it goes to the Inbox for re-examination. Nothing is changed automatically. (If it's merely no longer relevant, withdraw it instead.)</p>` +
-    field("Why doesn't this premise hold anymore?", "reason", "", "", 4), "Invalidate");
-  if (!r) return;
-  try {
-    const x = await api("POST", `/api/assumptions/${id}/invalidate`, r);
+    field("Why doesn't this premise hold anymore?", "reason", "", "", 4), "Invalidate",
+    { check: (v) => (v.reason || "").trim() ? "" : "Say why it no longer holds.", submit: (v) => api("POST", `/api/assumptions/${id}/invalidate`, v) });
+  if (r) {
+    const x = r.$res;
     toast(x.reviews.length ? `Invalidated. ${x.reviews.length} linked object(s) need re-examination.` : "Invalidated. Nothing depended on it.", x.reviews.length ? "warn" : "info");
-  } catch (err) { fail(err); }
+  }
   after();
 }
 async function withdrawObj(x) {
   const t = x.meta.type;
   if (t === "insight") {
-    const r = await ask(`Abandon ${x.id}`, `<p>Assumptions derived from it will be flagged for re-examination.</p>` + field("Reason", "reason", "", "", 3), "Abandon");
-    if (!r) return;
-    try { await api("POST", `/api/insights/${x.id}/abandon`, r); } catch (err) { fail(err); }
+    await ask(`Abandon ${x.id}`, `<p>Assumptions derived from it will be flagged for re-examination.</p>` + field("Reason", "reason", "", "", 3), "Abandon",
+      { check: (v) => (v.reason || "").trim() ? "" : "Write a reason.", submit: (v) => api("POST", `/api/insights/${x.id}/abandon`, v) });
     return after();
   }
   const to = { question: "withdrawn", assumption: "retired", hypothesis: "abandoned", uncertainty: "withdrawn" }[t];
   const r = await ask(`Withdraw ${x.id}`, `<p>For things that are <b>no longer relevant</b> — not wrong. ${x.id} becomes <i>${to}</i>; every link to it stays, nothing is sent for re-examination, and you can restore it later. The AI stops seeing it, except for one line that keeps it from being proposed again.</p>` +
-    field("Why is it no longer relevant?", "reason", "", "required · recorded as a decision", 3), "Withdraw");
-  if (!r) return;
-  try { const d = await api("POST", `/api/objects/${x.id}/withdraw`, r); toast(`${x.id} withdrawn (${d.decision}).`); } catch (err) { fail(err); }
+    field("Why is it no longer relevant?", "reason", "", "required · recorded as a decision", 3), "Withdraw",
+    { check: (v) => (v.reason || "").trim() ? "" : "Say why it's no longer relevant.", submit: (v) => api("POST", `/api/objects/${x.id}/withdraw`, v) });
+  if (r) toast(`${x.id} withdrawn (${r.$res.decision}).`);
   after();
 }
 async function restoreObj(x) {
-  const r = await ask(`Restore ${x.id}`, `<p>It goes back to <i>${esc(x.withdrawn.from)}</i>. Recorded as a decision.</p>` + field("Why bring it back?", "reason", "", "optional", 2), "Restore");
-  if (!r) return;
-  try { await api("POST", `/api/objects/${x.id}/restore`, r); toast(`${x.id} restored.`); } catch (err) { fail(err); }
+  const r = await ask(`Restore ${x.id}`, `<p>It goes back to <i>${esc(x.withdrawn.from)}</i>. Recorded as a decision.</p>` + field("Why bring it back?", "reason", "", "optional", 2), "Restore",
+    { submit: (v) => api("POST", `/api/objects/${x.id}/restore`, v) });
+  if (r) toast(`${x.id} restored.`);
   after();
 }
 async function undoAccept(x) {
   const src = (x.provenance || {}).source;
   const r = await ask(`Undo accepting ${x.id}?`, `<p>Nothing uses ${x.id} yet, so it can be taken back: ${x.id} is deleted, ${esc(src)} returns to the Inbox as pending, and the undo is recorded as a decision. The id ${x.id} won't be reused.</p>` +
-    field("Why?", "reason", "", "optional", 2), "Undo accept");
-  if (!r) return;
-  try { const d = await api("POST", `/api/objects/${x.id}/undo-accept`, r); toast(`${x.id} removed; ${d.candidate} is pending again.`); go("#/inbox"); } catch (err) { fail(err); }
+    field("Why?", "reason", "", "optional", 2), "Undo accept",
+    { submit: (v) => api("POST", `/api/objects/${x.id}/undo-accept`, v) });
+  if (r) { toast(`${x.id} removed; ${r.$res.candidate} is pending again.`); go("#/inbox"); }
   loadOverview(); loadInbox();
 }
 async function discussThis(id) {
@@ -1222,9 +1291,9 @@ async function moveQuestion(x) {
   const q = x.question;
   const opts = Object.fromEntries([["", "— Not placed (no parent) —"], ...questionOptions([x.id])]);
   const r = await ask(`Move ${x.id} in the tree`, `<p>Pick the question ${x.id} is a sub-question of. <i>Related</i> links stay as they are — only the tree changes.</p>` +
-    select("Parent question", "parent", opts, q.parent || q.suggest_parent || ""), "Move");
-  if (!r) return;
-  try { await api("POST", `/api/questions/${x.id}/parent`, { parent: r.parent }); toast(r.parent ? `${x.id} is now under ${r.parent}.` : `${x.id} is no longer placed.`); } catch (err) { fail(err); }
+    select("Parent question", "parent", opts, q.parent || q.suggest_parent || ""), "Move",
+    { submit: (v) => api("POST", `/api/questions/${x.id}/parent`, { parent: v.parent }) });
+  if (r) toast(r.parent ? `${x.id} is now under ${r.parent}.` : `${x.id} is no longer placed.`);
   after();
 }
 
@@ -1239,10 +1308,15 @@ async function resolveQuestion(x) {
     `<div class="res-part" data-res="answered"><label>Answered by <span class="hint">— the insights or hypotheses that answer it</span></label><div class="checks">${answers || `<div class="meta">No active insights or hypotheses yet. Record the answer as an insight first.</div>`}</div></div>` +
     `<div class="res-part" data-res="decided" hidden>${field("The decision", "decision", "", "what you chose, why, and what would make you revisit it — recorded as a research decision", 5)}</div>` +
     `<div class="res-part" data-res="merged" hidden>${select("Merge into", "merged_into", targets, Object.keys(targets)[0])}<p class="meta">Its discussions and links will show up on that question's page.</p></div>` +
-    field("Why can it be closed now?", "reason", "", "required", 3), "Close question", { wide: true });
-  if (!r) return;
-  const body = { resolution: r.resolution, reason: r.reason, answered_by: r.answered_by || [], merged_into: r.merged_into, decision: r.decision };
-  try { const d = await api("POST", `/api/questions/${x.id}/resolve`, body); toast(`${x.id} closed as ${r.resolution} (${d.decision}).`); } catch (err) { fail(err); }
+    field("Why can it be closed now?", "reason", "", "required", 3), "Close question", {
+    wide: true,
+    check: (v) => v.resolution === "answered" && !(v.answered_by || []).length ? "Tick what answers it."
+      : v.resolution === "decided" && !(v.decision || "").trim() ? "Write the decision."
+        : v.resolution === "merged" && !v.merged_into ? "Pick the question to merge into."
+          : !(v.reason || "").trim() ? "Say why it can be closed now." : "",
+    submit: (v) => api("POST", `/api/questions/${x.id}/resolve`,
+      { resolution: v.resolution, reason: v.reason, answered_by: v.answered_by || [], merged_into: v.merged_into, decision: v.decision }) });
+  if (r) toast(`${x.id} closed as ${r.resolution} (${r.$res.decision}).`);
   after();
 }
 // Show only the part of the close dialog that matches the chosen resolution.
@@ -1253,9 +1327,9 @@ document.addEventListener("change", (e) => {
 
 async function reopenQuestion(x) {
   const r = await ask(`Reopen ${x.id}`, `<p>It goes back to open. The earlier conclusion stays in its history and in the decision log.</p>` +
-    field("Why reopen it?", "reason", "", "required", 3), "Reopen");
-  if (!r) return;
-  try { await api("POST", `/api/questions/${x.id}/reopen`, r); toast(`${x.id} reopened.`); } catch (err) { fail(err); }
+    field("Why reopen it?", "reason", "", "required", 3), "Reopen",
+    { check: (v) => (v.reason || "").trim() ? "" : "Say why you're reopening it.", submit: (v) => api("POST", `/api/questions/${x.id}/reopen`, v) });
+  if (r) toast(`${x.id} reopened.`);
   after();
 }
 
@@ -1281,19 +1355,24 @@ async function reviewRevision(cid) {
       suggested || cur.maturity) + `<p class="meta">Only you set this. Staying at the same level is a perfectly good revision.</p>` : "") +
     (c.origin === "unclear" ? select("Who raised this revision first?", "origin", { human: "Me", ai: "The AI" }, "human") : "") +
     `<details class="why"><summary>Why the revision</summary><div class="md small">${md(pv.proposed.rationale)}</div></details>`;
-  const r = await ask(`Revise ${pv.target} — ${cid}`, html, pv.stale ? "Confirm anyway" : "Confirm revision", { wide: true });
+  let force = !!pv.stale;
+  const r = await ask(`Revise ${pv.target} — ${cid}`, html, pv.stale ? "Confirm anyway" : "Confirm revision", {
+    wide: true,
+    check: (v) => (v.statement || "").trim() ? "" : "The revised text can't be empty.",
+    submit: async (v) => {
+      const body = { force };
+      if (isQ) body.maturity = v.maturity;
+      if (v.origin) body.origin = v.origin;
+      if ((v.statement || "").trim() !== (pv.proposed.statement || "").trim()) body.changes = { statement: v.statement };
+      try { return await api("POST", `/api/candidates/${cid}/accept`, body); } catch (err) {
+        if (err.status !== 409) throw err;
+        force = true;                           // your text stays here; a second confirm replaces the newer version
+        throw new Error(`${pv.target} was revised by something else while you were reviewing (it's now v${err.data.current.revision}). Your text is kept — press Confirm again to replace that version, or Cancel and compare.`);
+      }
+    } });
   if (!r) return false;
-  const body = { force: !!pv.stale };
-  if (isQ) body.maturity = r.maturity;
-  if (r.origin) body.origin = r.origin;
-  if ((r.statement || "").trim() !== (pv.proposed.statement || "").trim()) body.changes = { statement: r.statement };
-  try {
-    const x = await api("POST", `/api/candidates/${cid}/accept`, body);
-    toast(x.id === pv.target ? `${pv.target} is now v${pv.revision + 1}.` : `${pv.target} superseded by ${x.id}.`);
-  } catch (err) {
-    if (err.status === 409) { toast(`${pv.target} changed while you were reviewing — compare again.`, "warn"); return reviewRevision(cid); }
-    fail(err); return false;
-  }
+  const x = r.$res;
+  toast(x.id === pv.target ? `${pv.target} is now v${pv.revision + 1}.` : `${pv.target} superseded by ${x.id}.`);
   after();
   return true;
 }
@@ -1460,9 +1539,9 @@ async function renderObject(id) {
   $$("[data-cand] [data-act=review]", body).forEach((b) => b.onclick = () => reviewRevision(b.closest(".card").dataset.cand));
   $$("[data-cand] [data-act=reject-cand]", body).forEach((b) => b.onclick = async () => {
     const cid = b.closest(".card").dataset.cand;
-    const r = await ask(`Reject ${cid}`, field("Why not?", "reason", "", "kept, so future distills won't propose this again", 3), "Reject");
-    if (!r) return;
-    try { await api("POST", `/api/candidates/${cid}/reject`, r); toast(`Rejected ${cid}.`); } catch (err) { fail(err); }
+    const r = await ask(`Reject ${cid}`, field("Why not?", "reason", "", "kept, so future distills won't propose this again", 3), "Reject",
+      { check: (v) => (v.reason || "").trim() ? "" : "Write a reason — it stops future distills from proposing this again.", submit: (v) => api("POST", `/api/candidates/${cid}/reject`, v) });
+    if (r) toast(`Rejected ${cid}.`);
     after();
   });
   $$(".card[data-review] button", body).forEach((b) => b.onclick = () => reviewAct(b.dataset.act, x.reviews.find((r) => r.id === b.closest(".card").dataset.review)));
@@ -1544,27 +1623,24 @@ async function handoffDialog() {
       ${as.length ? `<h4>Assumptions</h4>` + as.map((x) => item(x.id, mainText(x.body), ` <span class="tag assumption">${A_STATUS[x.status]}</span>`)).join("") : ""}
       ${pend.length ? `<h4>From the Inbox (accepted on hand-off)</h4>` + pend.map((c) => item(c.id, c.statement, ` <span class="tag ${c.kind}">${KIND[c.kind]}</span>`)).join("") : ""}
     </div>` + field("What do you want to find out?", "note", "", "optional — goes into the hand-off decision", 2);
-  const r = await ask("Hand off to validation", body, "Hand off");
-  if (!r) return;
-  if (!(r.items || []).length) return toast("Pick at least one item.", "warn");
-  try {
-    const x = await api("POST", "/api/mode/handoff", { items: r.items, note: r.note });
-    toast(`Handed off (${x.decision}): ${x.batch.join(", ")}.`);
-  } catch (err) { fail(err); }
+  const r = await ask("Hand off to validation", body, "Hand off", {
+    check: (v) => (v.items || []).length ? "" : "Pick at least one item.",
+    submit: (v) => api("POST", "/api/mode/handoff", { items: v.items, note: v.note }) });
+  if (r) toast(`Handed off (${r.$res.decision}): ${r.$res.batch.join(", ")}.`);
   loadMode(); loadOverview(); loadInbox();
 }
 
 async function recallMode() {
-  const r = await ask("Back to discussion?", `<p>Queued validation work is cancelled; anything running finishes and commits. The switch is recorded as a decision.</p>` + field("Why now?", "reason", "", "optional", 2), "Back to discussion");
-  if (!r) return;
-  try { await api("POST", "/api/mode/recall", r); toast("Back in discussion mode."); } catch (err) { fail(err); }
+  const r = await ask("Back to discussion?", `<p>Queued validation work is cancelled; anything running finishes and commits. The switch is recorded as a decision.</p>` + field("Why now?", "reason", "", "optional", 2), "Back to discussion",
+    { submit: (v) => api("POST", "/api/mode/recall", v) });
+  if (r) toast("Back in discussion mode.");
   loadMode(); loadOverview();
 }
 
 async function continueMode() {
-  const r = await ask("Keep validating?", `<p>The system suggested coming back because: <em>${esc(S.mode.hold.reason)}</em>. Continuing is recorded as a decision — say why.</p>` + field("Why continue?", "reason", "", "required", 3), "Keep validating");
-  if (!r) return;
-  try { await api("POST", "/api/mode/continue", r); toast("Validation continues."); } catch (err) { fail(err); }
+  const r = await ask("Keep validating?", `<p>The system suggested coming back because: <em>${esc(S.mode.hold.reason)}</em>. Continuing is recorded as a decision — say why.</p>` + field("Why continue?", "reason", "", "required", 3), "Keep validating",
+    { check: (v) => (v.reason || "").trim() ? "" : "Say why.", submit: (v) => api("POST", "/api/mode/continue", v) });
+  if (r) toast("Validation continues.");
   loadMode();
 }
 
@@ -1862,15 +1938,11 @@ async function setupProject() {
       field("Main question", "question", v.question, "becomes Q001; it can stay vague", 5) +
       select("How clear is the question?", "maturity",
         { vague: "Vague — still exploring", scoped: "Scoped — boundaries are clear", formalized: "Formalized — measurable" }, v.maturity),
-      "Create project");
+      "Create project", { submit: (x) => api("POST", "/api/project/setup", x) });
     if (!r) { toast("A project is needed before anything else can run.", "warn"); continue; }
-    v = r;
-    try {
-      await api("POST", "/api/project/setup", r);
-      toast("Project created.");
-      await Promise.all([loadOverview(), loadMode()]);
-      return;
-    } catch (err) { fail(err); }
+    toast("Project created.");
+    await Promise.all([loadOverview(), loadMode()]);
+    return;
   }
 }
 

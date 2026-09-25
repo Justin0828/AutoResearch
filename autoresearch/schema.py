@@ -299,6 +299,7 @@ def check_object(meta, kind, ids, rel):
                 errs.append(f"{rel}: 出自讨论的候选必须带 turns")
         elif TASK_ID.match(src):
             # 整理任务（Tidy up，§5.16.3）的候选只有合并与结问题两种，根基是被合并 / 被引用的对象本身
+            # 早期（v1.6–v1.8）的整理任务还提过 resolve 与改写候选，历史记录照样合法
             tidy = meta.get("kind") in ("resolve", "revision") or bool(_as_list(meta.get("supersedes")))
             if not tidy and not _as_list(meta.get("basis")):
                 errs.append(f"{rel}: 出自验证任务的候选必须带 basis（E### / P###）")
