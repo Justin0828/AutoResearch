@@ -15,7 +15,7 @@ import threading
 import time
 import traceback
 
-from . import bootstrap, discussion, frontmatter, incubation, modes, papers, planner, protocol, reviews, schema
+from . import bootstrap, discussion, evolution, frontmatter, modes, papers, planner, protocol, reviews, schema
 from .briefing import Assembler
 from .quota import Quota
 from .runner import Runner
@@ -50,7 +50,7 @@ def instance_lock(cfg):
     fh.flush()
     return fh
 JUDGE_KINDS = {k for k, v in KINDS.items() if v["profile"] == "judge"}
-UNATTENDED_KINDS = JUDGE_KINDS | {"incubate"}
+UNATTENDED_KINDS = JUDGE_KINDS       # 另：带 auto 标记的任务（空闲自动的自演进）同样受份额约束
 NOTE_REASON = {"quota_5h": "5-hour limit", "quota_7d": "weekly limit", "cutoff": "cut off",
                "manual": "stopped", "crash": "the previous run crashed", "normal": "normal"}
 
@@ -327,7 +327,7 @@ class Daemon:
                 if reason:
                     self._pause(reason, resume_at=at)
                     return
-                if task["kind"] in UNATTENDED_KINDS and not self._unattended_ok():
+                if (task["kind"] in UNATTENDED_KINDS or task.get("auto")) and not self._unattended_ok():
                     continue
                 self._launch(task)
 
@@ -379,8 +379,6 @@ class Daemon:
             task.update(status="failed", ended=now(), error=traceback.format_exc()[-2000:])
         finally:
             task["q5_end"] = self.quota.data.get("five_hour")
-            if task["kind"] == "incubate":
-                self._chain_record(task, out)
             with self.lock:
                 self.ledger.save(task)
                 self.runners.pop(task["id"], None)
@@ -402,8 +400,8 @@ class Daemon:
                                     task=task["id"])
 
     def _prompt(self, task):
-        if task["kind"] == "incubate":
-            return protocol.incubate_prompt(task)
+        if task["kind"] == "evolve":
+            return protocol.evolve_prompt(task)
         if task["kind"] == "tidy":
             return protocol.tidy_prompt()
         if task["kind"] in JUDGE_KINDS:
@@ -445,10 +443,15 @@ class Daemon:
                                                           if made else "nothing worth merging or closing."),
                             task=task["id"])
             return
-        if task["kind"] == "incubate":
-            task["result"] = (out.result or "")[:4000]
-            task["result_brief"] = " ".join((out.result or "").split())[:160]
-            self.bus.publish("state", {"task": task["id"]})
+        if task["kind"] == "evolve":
+            try:
+                eid = evolution.record(self.store, task, out.result)
+            except ValueError as e:
+                task.update(status="failed", error=str(e))
+                return
+            task.update(evolution=eid, result_brief=f"写成演进文档 {eid}")
+            self.bus.publish("state", {"evolution": eid})
+            self.bus.notify("info", f"Evolution {eid} is ready (from {task['seed']}).", evolution=eid)
             return
         if task["kind"] in JUDGE_KINDS:
             return self._finish_judge(task, out)
@@ -519,12 +522,8 @@ class Daemon:
             return
         self.st["hold"] = {"reason": reason, "since": now(), "kind": kind, **extra}
         self._save_state()
-        if kind == "incubation_done":
-            self.bus.notify("info", f"Incubation finished: {reason}. Ideas are waiting in the Inbox — "
-                            "suggest going back to discussion mode to triage them.", hold=True)
-        else:
-            self.bus.notify("warn", f"Validation paused: {reason}. Suggest going back to discussion mode — "
-                            "or choose to continue validation.", hold=True)
+        self.bus.notify("warn", f"Validation paused: {reason}. Suggest going back to discussion mode — "
+                        "or choose to continue validation.", hold=True)
         self.bus.publish("mode", self.mode_view())
 
     def _unattended_ok(self):
@@ -566,100 +565,51 @@ class Daemon:
                            "stopping to leave quota", kind="saturated")
         elif m == "discussion":
             self._plan_prep()
-        elif m == "incubation":
-            self._plan_incubation()
+            self._plan_evolve()
 
-    # ------------------------------------------------------------ Phase 2.5：自演进（§5.13）
+    # ------------------------------------------------------------ 自演进（M11 v1.8，§5.18）
 
-    def _plan_incubation(self):
-        """一轮：若干条推演链 → 每条新 Idea 一个接地（优先）→ 全部结束后由外部证据更新基本盘 → 下一轮。
-        停止条件只在轮与轮之间、开新链之前检查（3 条过关 / 30% 窗口 / 连续两轮没东西 / 轮数上限）。"""
-        did = incubation.session(self.store)
-        if not did or self.st.get("hold"):
-            return
-        inc = self.st.get("inc") or {}
-        if inc.get("session") != did:
-            inc = {"session": did, "round": 0, "finalized": 0, "empty": 0}
-            self.st["inc"] = inc
-            self._save_state()
-        tasks = [t for t in self.ledger.all() if t.get("incubation") == did]
-        # 被切断的推演 / 接地会在下一班重新入队（半条链是合法的可恢复状态，M11.12），这一轮还没完
-        live = [t for t in tasks if t["status"] in planner.LIVE | {"interrupted"}]
-        # 接地先于下一条推演：Idea 悬在 grounding 状态就没法进基本盘，也没法分诊
-        for m, _ in incubation.session_ideas(self.store, did):
-            if m.get("status") != "grounding":
-                continue
-            gts = [t for t in tasks if t["kind"] == "ground_idea" and t.get("target") == m["id"]]
-            if any(t["status"] in planner.LIVE | {"blocked_on_human"} for t in gts):
-                continue
-            if len(gts) < 2:
-                self._create({"kind": "ground_idea", "target": m["id"], "priority": 3,
-                              "round": int(m.get("round") or 0),
-                              "goal": f"对想法 {m['id']} 做外部核查：有没有直接反驳、有哪些相近的工作（只标注，不改写）",
-                              "why": f"{m['id']} 由推演 {m.get('chain')} 登记，每条想法都要经过接地"
-                                     + ("（上一次核查没有给出结论，重试）" if gts else "")},
-                             incubation=did)
-                return
-        if live or any(t["status"] == "blocked_on_human" for t in tasks):
-            return
-        r = inc["round"]
-        if r and r > inc["finalized"]:
-            delta = []
-            for t in tasks:
-                if t["kind"] == "ground_idea" and t.get("round") == r:
-                    for c in planner.tool_calls(self.ledger, t["id"]):
-                        if c.get("tool") in ("record_evidence", "annotate_grounding") and c.get("id"):
-                            delta.append(c["id"])
-            fid = incubation.next_foundation(self.store, did, r, delta)
-            got = [m for m, _ in incubation.session_ideas(self.store, did)
-                   if int(m.get("round") or 0) == r]
-            inc.update(finalized=r, empty=0 if got else inc.get("empty", 0) + 1)
-            self._save_state()
-            if fid:
-                self.bus.notify("info", f"Foundation updated to {fid} from external evidence ({', '.join(delta)}).")
-        reason = incubation.stop_reason(self.store, did, tasks, inc.get("empty", 0), r,
-                                        self.cfg.incubate_max_rounds) if r else None
-        if reason:
-            chains = len([t for t in tasks if t["kind"] == "incubate"])
-            dec, n_ok = incubation.conclude(self.store, did, reason, r, chains)
-            self._hold(reason, kind="incubation_done", summary=dec, shortlisted=n_ok)
-            self.bus.publish("state", {"decision": dec})
-            return
-        fid = incubation.current_foundation(self.store, did)
-        r += 1
-        for k in range(self.cfg.incubate_chains):
-            self._create({"kind": "incubate", "round": r, "foundation": fid, "priority": 4,
-                          "goal": f"从基本盘 {fid} 出发做一条短推演（第 {r} 轮第 {k + 1} 条）：自己选切入角度，"
-                                  "推出站得住的想法就登记，推不出就交白卷",
-                          "why": f"自演进 {did} 第 {r} 轮" + (f"（基本盘已由外部证据更新为 {fid}）"
-                                                             if r > 1 and fid else "")},
-                         incubation=did)
-        inc["round"] = r
-        self._save_state()
-
-    def _chain_record(self, task, out):
-        """推演记录进 State（§5.10）：每次结束都写，被切断的下一次续推后会覆盖。"""
-        try:
-            ideas = [m["id"] for m, _ in self.store.list("idea") if m.get("chain") == task["id"]]
-            status = "done" if ideas else ("empty" if task["status"] == "done" else "interrupted")
-            task["angle"] = incubation.write_chain(self.store, task, status,
-                                                   (out.result if out else "") or task.get("error") or "",
-                                                   self.ledger.checkpoints(task["id"]), ideas)
-        except Exception:
-            self.bus.notify("error", "Chain record error: " + traceback.format_exc()[-600:])
-
-    def enter_incubation(self, note=""):
+    def request_evolve(self, seed=None, auto=False):
+        """手动（seed 为空时系统挑）或空闲自动。同一出发点已有一篇在排队 / 在跑时不重复建。"""
         with self.lock:
-            did, fid = incubation.enter(self.store, note)
-            self._cancel(lambda t: t.get("prep"), "进入自演进，夜间预习只在讨论模式进行")
-            if (self.st.get("prep") or {}).get("active"):
-                self._end_prep("进入自演进")
-            self.st.pop("hold", None)
-            self.st["inc"] = {"session": did, "round": 0, "finalized": 0, "empty": 0}
-            self._save_state()
-            self.bus.publish("mode", self.mode_view())
-            self.bus.notify("info", f"Incubation started ({did}); foundation {fid} frozen.", decision=did)
-            return did, fid
+            if bootstrap.needs_setup(self.store):
+                raise ValueError("还没有项目：先建立项目与主问题")
+            why = "研究者点名"
+            if seed:
+                evolution.check_seed(self.store, seed)
+            else:
+                seed, why = evolution.pick_seed(self.store)
+                if not seed:
+                    raise ValueError("没有可以演进的出发点：没有开放问题，也没有 active 的理解")
+                why = ("空闲时自动选题：" if auto else "系统挑的：") + why
+            if any(t["kind"] == "evolve" and t.get("seed") == seed and t["status"] in ("queued", "running")
+                   for t in self.ledger.all()):
+                return None
+            t = self._create({"kind": "evolve", "seed": seed, "why": why, "priority": 6 if auto else 4,
+                              "goal": f"从 {seed} 出发做一次自演进，写成演进文档"},
+                             trigger="auto" if auto else "manual", auto=auto)
+            return t
+
+    def _plan_evolve(self):
+        """空闲自动（§5.18.2）：条件同夜间预习，排在预习之后，每个空闲期至多一篇。"""
+        if not self.cfg.evolve_auto or (self.st.get("prep") or {}).get("active") or self.runners:
+            return
+        last = self._last_human_ts()
+        if not last or self.st.get("evolve_after") == last:
+            return
+        try:
+            idle = (datetime.datetime.now() - datetime.datetime.fromisoformat(last)).total_seconds()
+        except ValueError:
+            return
+        if idle < self.cfg.prep_idle_minutes * 60 or not self._unattended_ok():
+            return
+        self.st["evolve_after"] = last
+        self._save_state()
+        seed, _ = evolution.pick_seed(self.store)
+        if seed:
+            t = self.request_evolve(auto=True)      # self.lock 是 RLock，可重入
+            if t:
+                self.bus.notify("info", f"You've been away, so I'm evolving {t['seed']} ({t['id']}). {t['why']}")
 
     def _create(self, step, **extra):
         step = dict(step)
@@ -795,17 +745,6 @@ class Daemon:
 
     def recall(self, reason=""):
         with self.lock:
-            if modes.mode(self.store) == "incubation":
-                prev = incubation.session(self.store)
-                did = incubation.leave(self.store, reason)
-                n = self._cancel(lambda t: t.get("incubation") == prev, "研究者回到讨论模式")
-                self.st.pop("hold", None)
-                self.st.pop("inc", None)
-                self._save_state()
-                self.bus.publish("mode", self.mode_view())
-                self.bus.notify("info", f"Back to discussion mode ({did})." +
-                                (f" Cancelled {n} queued incubation task(s)." if n else ""), decision=did)
-                return did
             did = modes.recall(self.store, reason)
             n = self._cancel(lambda t: t.get("batch"), "研究者收回讨论模式")
             self.st.pop("hold", None)
@@ -881,9 +820,6 @@ class Daemon:
         return {"mode": pm.get("mode", "discussion"), "batch_decision": pm.get("batch"),
                 "batch": modes.batch(self.store), "hold": self.st.get("hold"),
                 "prep": self.st.get("prep"), "prep_request": self.st.get("prep_request"),
-                "incubation": pm.get("incubation"), "inc": self.st.get("inc"),
-                "entry_problems": incubation.entry_problems(self.store)
-                if pm.get("mode", "discussion") == "discussion" else [],
                 "cap": self.cfg.unattended_cap, "cap_note": self.st.get("cap_note")}
 
     # ------------------------------------------------------------ 人在编辑器里的直接修改

@@ -12,7 +12,7 @@ const S = {
   overview: null, cands: [], reviews: [], activity: [], notes: [], unread: 0,
   inboxView: "cands", sysView: "status", editing: null, inboxStale: false, dsList: [],
   mode: null, prep: null, requests: [], readingView: "now", chainTarget: null, reading: null, paperOpen: null,
-  ideas: [], ideasView: "rounds",
+  evolutions: null,
 };
 
 async function api(method, path, body) {
@@ -36,25 +36,23 @@ const fail = (err) => toast(err.message || String(err), "error", 7000);
 
 // ---------------------------------------------------------------- labels
 const KIND = { assumption: "Assumption", hypothesis: "Hypothesis", question: "Question", uncertainty: "Uncertainty", insight: "Insight", revision: "Revision", resolve: "Close question" };
-const TYPE = { question: "Question", assumption: "Assumption", hypothesis: "Hypothesis", uncertainty: "Uncertainty", insight: "Insight", evidence: "Evidence", "dead-end": "Dead end", decision: "Decision", candidate: "Candidate", review: "Re-examination", paper: "Paper", idea: "Idea", grounding: "Ground check", discussion: "Discussion" };
+const TYPE = { question: "Question", assumption: "Assumption", hypothesis: "Hypothesis", uncertainty: "Uncertainty", insight: "Insight", evolution: "Evolution", evidence: "Evidence", "dead-end": "Dead end", decision: "Decision", candidate: "Candidate", review: "Re-examination", paper: "Paper", grounding: "Ground check", discussion: "Discussion" };
 const U_STATUS = { open: "Open", reduced: "Reduced", resolved: "Resolved", withdrawn: "Withdrawn" };
 const Q_STATUS = { open: "Open", answered: "Answered", decided: "Decided", merged: "Merged", withdrawn: "Withdrawn" };
 const Q_CLOSED = ["answered", "decided", "merged"];
 const RESOLUTION = { answered: "Answered — something we have now answers it", decided: "Decided — it was a choice, and you've made it", merged: "Merged — it's the same question as another one" };
 const MATURITY = { vague: "Vague", scoped: "Scoped", formalized: "Formalized" };
-const FOCUSABLE = ["question", "assumption", "hypothesis", "uncertainty", "insight"];
+const FOCUSABLE = ["question", "assumption", "hypothesis", "uncertainty", "insight", "evolution"];
+const CURATABLE = ["question", "assumption", "hypothesis", "uncertainty", "insight"];   // can be withdrawn / un-accepted
 const FIRM = { hunch: "Hunch", working: "Working", settled: "Settled" };
 const ORIGIN = { human: "you", ai: "AI", unclear: "unclear" };
 const H_STATUS = { proposed: "Proposed", investigating: "Investigating", supported: "Supported", refuted: "Refuted", inconclusive: "Inconclusive", abandoned: "Abandoned" };
 const A_STATUS = { unexamined: "Unexamined", examined: "Examined", promoted: "Promoted", retired: "Retired", invalidated: "Invalidated" };
 const T_STATUS = { queued: "Queued", running: "Running", done: "Done", failed: "Failed", interrupted: "Interrupted", cancelled: "Cancelled", blocked_on_human: "Waiting on you" };
-const T_KIND = { discuss_turn: "Reply", distill: "Distill", lit_search: "Search", read_paper: "Read", assess: "Assess", contradiction_scan: "Contradiction scan", grounding: "Ground check", incubate: "Incubate", ground_idea: "Idea check" };
-const I_STATUS = { grounding: "Being checked", shortlisted: "Passed", screened_out: "Contradicted", accepted: "Accepted", rejected: "Rejected" };
-// For ideas, related work is a lead, not a strike: it's the thought that matters, not whether someone implemented it (§5.14)
-const I_VERDICT = { novel: "No related work found", prior_work: "Related work exists", contradicted: "Directly contradicted", mixed: "Partly contradicted" };
+const T_KIND = { discuss_turn: "Reply", distill: "Distill", lit_search: "Search", read_paper: "Read", assess: "Assess", contradiction_scan: "Contradiction scan", grounding: "Ground check", evolve: "Evolve", tidy: "Tidy up" };
 const STANCE = { support: "Supports", contradict: "Contradicts", neutral: "Neutral" };
 const VERDICT = { novel: "No prior work found", prior_work: "Already done", contradicted: "Directly contradicted", mixed: "Mixed" };
-const MODE = { discussion: "Discussion mode", incubation: "Incubation mode", validation: "Validation mode" };
+const MODE = { discussion: "Discussion mode", validation: "Validation mode" };
 const PAUSE = { quota_5h: "5h limit", quota_7d: "weekly limit", cutoff: "cut off", manual: "paused", crash: "crash", normal: "normal" };
 const FIELDS = {
   assumption: [["relied_on_by", "Supports"], ["derived_from", "Derived from insight"]],
@@ -66,7 +64,7 @@ const FIELDS = {
 const fmtv = (v) => Array.isArray(v) ? v.join(", ") : (v ?? "");
 
 // Every object id on screen is a link to its page (DESIGN §5.15.4). Works on already-escaped text.
-const ID_RE = /(^|[^\w#/=".-])((?:DS|DEC|IN|GR|RQ|Q|A|H|U|E|P|D|I|C|R)\d{3,})(?![\w])/g;
+const ID_RE = /(^|[^\w#/=".-])((?:DS|DEC|IN|GR|RQ|EV|Q|A|H|U|E|P|D|C|R)\d{3,})(?![\w])/g;
 function idHref(id) {
   if (/^P\d/.test(id)) return `#/reading/${id}`;
   if (/^DS\d/.test(id)) return `#/chat/${id}`;
@@ -129,7 +127,7 @@ const soon = (key, fn, ms = 150) => { clearTimeout(tmr[key]); tmr[key] = setTime
 // ---------------------------------------------------------------- router
 function route() {
   const [, page = "chat", arg] = (location.hash || "#/chat").split("/");
-  S.page = ["chat", "inbox", "research", "ideas", "reading", "system", "obj"].includes(page) ? page : "chat";
+  S.page = ["chat", "inbox", "research", "evolution", "reading", "system", "obj"].includes(page) ? page : "chat";
   $$(".page").forEach((p) => p.classList.toggle("on", p.id === "page-" + S.page));
   $$(".rail nav a").forEach((a) => a.classList.toggle("on", a.dataset.page === (S.page === "obj" ? "research" : S.page)));
   if (S.page === "obj") { if (arg) renderObject(arg); $("#page-obj").scrollTop = 0; }
@@ -139,7 +137,7 @@ function route() {
   }
   if (S.page === "inbox") renderInbox();
   if (S.page === "research") loadOverview();
-  if (S.page === "ideas") renderIdeas();
+  if (S.page === "evolution") renderEvolution(arg);
   if (S.page === "reading") {
     if (arg && /^[HA]\d+$/.test(arg)) { S.readingView = "chain"; S.chainTarget = arg; }
     if (arg && /^P\d+$/.test(arg)) { S.readingView = "papers"; S.paperOpen = arg; }
@@ -363,8 +361,8 @@ $("#close-ds-btn").onclick = async () => {
 
 // ================================================================ INBOX
 async function loadInbox() {
-  const [cands, revs, reqs, ideas] = await Promise.all([api("GET", "/api/candidates"), api("GET", "/api/reviews"), api("GET", "/api/requests"), api("GET", "/api/ideas")]);
-  S.cands = cands; S.reviews = revs; S.requests = reqs; S.ideas = ideas.ideas;
+  const [cands, revs, reqs] = await Promise.all([api("GET", "/api/candidates"), api("GET", "/api/reviews"), api("GET", "/api/requests")]);
+  S.cands = cands; S.reviews = revs; S.requests = reqs;
   renderBadges();
   if (S.page === "inbox") renderInbox();
 }
@@ -373,10 +371,7 @@ function renderBadges() {
   const pc = S.cands.filter((c) => c.status === "pending").length;
   const pr = S.reviews.filter((r) => r.status === "open").length;
   const rq = S.requests.filter((r) => r.status === "open").length;
-  const ic = S.ideas.filter((i) => i.status === "shortlisted").length;
-  $("#inbox-badge").textContent = pc + pr + rq + ic || "";
-  $("#seg-ideas").textContent = ic || "";
-  $("#ideas-badge").textContent = ic || "";
+  $("#inbox-badge").textContent = pc + pr + rq || "";
   $("#seg-requests").textContent = rq || "";
   $("#seg-cands").textContent = pc || "";
   $("#seg-reviews").textContent = pr || "";
@@ -633,7 +628,7 @@ function revisionCard(c) {
     : c.status === "rejected" ? `<span class="tag plain">Rejected</span>` : "";
   return `<div class="card ${pending ? "" : "dim"} ${c.stale && pending ? "flagged" : ""}" data-id="${c.id}">
     <div class="card-top"><span class="tag plain">Revision</span><span class="id">${c.id}</span>
-      <span>revises ${idl(c.target)}${c.target_type ? ` (${TYPE[c.target_type] || c.target_type})` : ""} · drafted on v${esc(c.base_revision)} · from ${idl(c.source)} turn ${fmtv(c.turns)} · proposed by ${ORIGIN[c.origin] || c.origin}</span>
+      <span>revises ${idl(c.target)}${c.target_type ? ` (${TYPE[c.target_type] || c.target_type})` : ""} · drafted on v${esc(c.base_revision)} · ${srcLine(c)} · proposed by ${ORIGIN[c.origin] || c.origin}</span>
       ${c.stale && pending ? `<span class="tag warn" title="Another revision of ${c.target} was accepted after this was drafted">Drafted on an old version (now v${c.target_revision})</span>` : ""}${state}</div>
     <div class="statement md">${md(c.statement)}</div>
     ${c.maturity ? `<dl><dt>Suggested maturity</dt><dd>${esc(MATURITY[c.maturity] || c.maturity)} — you decide when confirming</dd></dl>` : ""}
@@ -716,15 +711,6 @@ function renderInbox(force) {
     const open = S.reviews.filter((r) => r.status === "open");
     body.innerHTML = (open.length ? `<p class="lede" style="margin:0 0 16px">These objects are linked to something that was overturned. Nothing was changed automatically — decide for each one.</p>` : "") +
       (open.map(reviewCard).join("") || `<div class="empty">Nothing to re-examine. When a hypothesis is refuted or an assumption invalidated, everything linked to it shows up here.</div>`);
-  } else if (S.inboxView === "ideas") {
-    const pass = S.ideas.filter((i) => i.status === "shortlisted");
-    const out = S.ideas.filter((i) => i.status === "screened_out");
-    const wait = S.ideas.filter((i) => i.status === "grounding");
-    body.innerHTML = (pass.length ? `<p class="lede" style="margin:0 0 16px">Ideas from incubation that passed the gates: they say when they'd be wrong, their invented premises are listed, and the outside check found nothing that directly contradicts them. Fewest invented premises first. Only you can judge whether one is worth it.</p>` : "") +
-      (pass.map(ideaCard).join("") || `<div class="empty">No ideas waiting. Start incubation from Chat once the research question is formalized.</div>`) +
-      (wait.length ? `<h2 style="margin:28px 0 12px">Still being checked</h2>` + wait.map(ideaCard).join("") : "") +
-      (out.length ? `<details class="history"><summary>Contradicted by the outside check · ${out.length} — kept, and you can still take one</summary>${out.map(ideaCard).join("")}</details>` : "");
-    bindIdeas(body);
   } else if (S.inboxView === "requests") {
     const open = S.requests.filter((r) => r.status === "open");
     const done = S.requests.filter((r) => r.status !== "open").reverse();
@@ -923,13 +909,14 @@ const bindFolds = (root) => $$("details[data-fold]", root).forEach((d) => d.onto
 
 function statusTag(x) {
   const t = x.type;
+  if (t === "evolution") return `<span class="tag insight">Evolution</span><span class="tag plain">${TRIGGER[x.trigger] || esc(x.trigger || "")}</span>`;
   if (t === "question") return `<span class="tag question">${MATURITY[x.maturity] || x.maturity}</span>` +
     (x.status && x.status !== "open" && x.status !== "withdrawn" ? `<span class="tag ${x.status === "merged" ? "plain" : "hypothesis"}">${Q_STATUS[x.status] || esc(x.status)}</span>` : "") +
     (x.active === "true" || x.active === true ? `<span class="tag insight" title="You marked it as something you're thinking about now">Active</span>` : "");
   if (t === "assumption") return `<span class="tag assumption">${A_STATUS[x.status] || x.status}</span>${x.fragile === "true" || x.fragile === true ? `<span class="tag warn">Fragile</span>` : ""}`;
   if (t === "hypothesis") return `<span class="tag hypothesis">${H_STATUS[x.status] || x.status}</span>`;
   if (t === "uncertainty") return `<span class="tag uncertainty">${esc(x.importance)} importance</span>${x.status !== "open" ? `<span class="tag plain">${U_STATUS[x.status] || x.status}</span>` : ""}`;
-  if (t === "insight") return `<span class="tag insight">${FIRM[x.firmness] || x.firmness}</span>${x.status !== "active" ? `<span class="tag plain">${x.status === "superseded" ? "Superseded by " + x.superseded_by : "Abandoned"}</span>` : ""}`;
+  if (t === "insight") return `<span class="tag insight">${FIRM[x.firmness] || x.firmness}</span>${x.starred === "true" && x.status === "active" ? `<span class="tag insight" title="Starred: the AI sees it in full">★</span>` : ""}${x.status !== "active" ? `<span class="tag plain">${x.status === "superseded" ? "Superseded by " + x.superseded_by : "Abandoned"}</span>` : ""}`;
   return x.status ? `<span class="tag plain">${esc(x.status)}</span>` : "";
 }
 
@@ -960,9 +947,16 @@ function renderResearch() {
 
   const ord = { settled: 0, working: 1, hunch: 2 };
   const insAll = o.insights || [];
-  const ins = insAll.filter((x) => x.status === "active").sort((a, b) => ord[a.firmness] - ord[b.firmness]);
-  const insHtml = listWithFolded("ins", ins, insAll.filter((x) => x.status !== "active"),
-    "No insights yet. An insight can be just a feel for the problem — as long as you say where it comes from.", "How our understanding changed");
+  const starred = (x) => x.starred === "true" || x.starred === true;
+  const ins = insAll.filter((x) => x.status === "active").sort((a, b) => starred(b) - starred(a) || ord[a.firmness] - ord[b.firmness]);
+  const nStar = ins.filter(starred).length;
+  const insHints = (ins.length && !nStar && !hint.seen("star") ? `<div class="banner info" data-hint="star"><strong>Star the insights that matter most.</strong>
+      Only starred insights reach the AI in full now; the others appear as one line each (it can still open them). <div class="acts"><button class="btn ghost small" data-dismiss="star">Got it</button></div></div>` : "") +
+    (nStar > 5 ? `<div class="banner warn"><strong>${nStar} insights are starred.</strong> When everything is starred, nothing is.</div>` : "");
+  const insRows = ins.length ? `<div class="olist">${ins.map((x) => `<div class="starrow"><button class="star ${starred(x) ? "on" : ""}" data-istar="${x.id}" data-on="${starred(x) ? 1 : 0}" title="${starred(x) ? "Starred — click to unstar" : "Star it: the AI sees starred insights in full"}">${starred(x) ? "★" : "☆"}</button>${orow(x)}</div>`).join("")}</div>`
+    : `<div class="empty">No insights yet. An insight can be just a feel for the problem — as long as you say where it comes from.</div>`;
+  const insFolded = insAll.filter((x) => x.status !== "active");
+  const insHtml = insHints + insRows + (insFolded.length ? `<details class="history" data-fold="research.ins" ${fold.get("research.ins", false) ? "open" : ""}><summary>How our understanding changed · ${insFolded.length}</summary>${olist(insFolded)}</details>` : "");
 
   const as = o.assumptions.slice().sort((a, b) => (a.status !== "unexamined") - (b.status !== "unexamined"));
   const asHtml = listWithFolded("a", as.filter((x) => !x.withdrawn), as.filter((x) => x.withdrawn), "No assumptions recorded.");
@@ -981,7 +975,7 @@ function renderResearch() {
     section("sec-question", "Research questions", tree.open.length, "The question tree. Closed questions fade and fold away with their answer on the node. ★ marks what you're thinking about now — the AI sees those in full and the rest as one line each.", q,
       `<button class="btn ghost small" data-act="tidy" title="Ask the AI to propose merging overlapping insights and closing answered or duplicate questions">Tidy up</button>`) +
     section("sec-insights", "Understanding", ins.length, "What we've come to think so far. Understanding, not evidence — it can be a feel, but it must say where it comes from.", insHtml,
-      `<button class="btn small" data-act="new-insight">Add insight</button>`) +
+      `<span class="acts-inline">${ins.length >= 2 ? `<button class="btn ghost small" data-act="merge-insights" title="Pick two or more insights and write the merged one yourself">Merge…</button>` : ""}<button class="btn small" data-act="new-insight">Add insight</button></span>`) +
     section("sec-assumptions", "Assumptions", as.filter((x) => !x.withdrawn).length, "Premises the research relies on. Unexamined ones come first — they're the dangerous ones.", asHtml) +
     section("sec-hypotheses", "Hypotheses", hs.filter((x) => !x.withdrawn).length, "Claims with an arranged test. Status only changes with evidence attached.", hsHtml) +
     section("sec-uncertainties", "Uncertainties", usLive.length, "Unknowns that discount our conclusions.", usHtml) +
@@ -994,6 +988,8 @@ function renderResearch() {
   const nb = $('[data-act="new-insight"]', $("#research-body"));
   if (nb) nb.onclick = newInsight;
   bindTree($("#research-body"));
+  $$("[data-istar]", $("#research-body")).forEach((b) => b.onclick = () => starInsight(b.dataset.istar, b.dataset.on !== "1"));
+  $$('[data-act="merge-insights"]', $("#research-body")).forEach((b) => b.onclick = () => mergeInsights([]));
   spyChips();
 }
 
@@ -1106,6 +1102,31 @@ async function newInsight() {
   try { const x = await api("POST", "/api/insights", r); toast(`Added ${x.id}.`); } catch (err) { fail(err); }
   loadOverview();
 }
+async function starInsight(id, on) {
+  try { await api("POST", `/api/insights/${id}/star`, { starred: on }); hint.done("star"); } catch (err) { fail(err); }
+  after();
+}
+
+// Manual merge (§5.17.3): you pick the insights and write the merged one yourself. No candidate, no quota.
+async function mergeInsights(pre) {
+  if (!S.overview) await loadOverview();
+  const act = (S.overview.insights || []).filter((i) => i.status === "active");
+  if (act.length < 2) return toast("Merging needs at least two active insights.", "warn");
+  const r = await ask("Merge insights", `<p>Pick two or more and write the merged insight. The picked ones are marked as merged into the new one — nothing is withdrawn, and assumptions derived from them still stand. Grounding and “informs” are combined automatically.</p>
+    <div class="checks">${act.map((i) => `<label><input type="checkbox" name="supersedes" value="${i.id}" ${pre.includes(i.id) ? "checked" : ""}><span><span class="id">${i.id}</span> <span class="tag insight">${FIRM[i.firmness] || i.firmness}</span>${i.starred === "true" ? " ★" : ""}<br>${esc(mainText(i.body).replace(/（来由见候选 C\d+。?）/g, "").slice(0, 400))}</span></label>`).join("")}</div>` +
+    field("The merged insight", "statement", "", "write it so it reads on its own — someone who wasn't in the discussion should get it", 6) + firmSel("working") +
+    field("Would change if", "change_mind", "", "optional") + field("Why merge", "note", "", "optional"), "Merge", { wide: true });
+  if (!r) return;
+  if ((r.supersedes || []).length < 2) return toast("Pick at least two insights to merge.", "warn");
+  if (!(r.statement || "").trim()) return toast("Write the merged insight.", "warn");
+  try {
+    const x = await api("POST", "/api/insights/merge", r);
+    toast(`Merged ${r.supersedes.join(", ")} into ${x.id}.`);
+    go(`#/obj/${x.id}`);
+  } catch (err) { fail(err); }
+  after();
+}
+
 async function reviseInsight(x) {
   const r = await ask(`Revise ${x.id}`, `<p>Nothing is overwritten. A new insight replaces this one; the old one stays in the history and becomes part of the new one's grounding.</p>` +
     field("Revised insight", "statement", mainText(x.body), "", 4) + firmSel(x.meta.firmness) +
@@ -1116,7 +1137,7 @@ async function reviseInsight(x) {
   after();
 }
 async function setMaturity(x) {
-  const r = await ask(`Maturity of ${x.id}`, `<p><b>Vague</b>: a direction, but you can't yet say what's outside it. <b>Scoped</b>: you can say what's studied, what isn't, and what's taken as given. <b>Formalized</b>: you can say what's measured, in what setting, and what result would answer it — incubation only starts from a formalized main question.</p>` +
+  const r = await ask(`Maturity of ${x.id}`, `<p><b>Vague</b>: a direction, but you can't yet say what's outside it. <b>Scoped</b>: you can say what's studied, what isn't, and what's taken as given. <b>Formalized</b>: you can say what's measured, in what setting, and what result would answer it — and the vaguer a question is, the more it helps to Evolve it.</p>` +
     select("Maturity", "maturity", { vague: "Vague", scoped: "Scoped — boundaries are clear", formalized: "Formalized — measurable definition" }, x.meta.maturity), "Save");
   if (!r) return;
   try { await api("POST", `/api/questions/${x.id}/maturity`, r); toast(`${x.id} is now ${r.maturity}.`); } catch (err) { fail(err); }
@@ -1304,6 +1325,7 @@ function objFields(m) {
     candidate: [["Kind", m.kind], ["Status", m.status], ["Target", m.target], ["Resolution", m.resolution], ["Answered by", m.answered_by], ["Merge into", m.merged_into], ["Merges", m.supersedes], ["Parent", m.parent], ["Became", m.promoted_to], ["From", m.source]],
     review: [["Target", m.target], ["Because of", m.trigger], ["Status", m.status]],
     decision: [["Kind", m.kind], ["Refs", m.refs]],
+    evolution: [["Started from", m.seeds], ["Why", TRIGGER[m.trigger] || m.trigger]],
   }[t] || [];
   return dl([...rows, ["Related to", m.relates_to]]);
 }
@@ -1337,10 +1359,18 @@ async function renderObject(id) {
   if (["assumption", "hypothesis"].includes(t)) acts.push(`<a class="btn ghost small" href="#/reading/${id}">Evidence chain</a>`);
   if (["assumption", "hypothesis"].includes(t) && !x.withdrawn && m.status !== "invalidated") acts.push(`<button class="btn ghost small" data-act="ground">Ground check</button>`);
   if (t === "assumption" && !["invalidated", "retired"].includes(m.status)) acts.push(`<button class="btn ghost small danger" data-act="invalidate">Invalidate</button>`);
-  if (t === "insight" && m.status === "active") acts.push(`<button class="btn ghost small" data-act="revise-insight">Revise</button>`);
-  if (focusable && x.withdrawn) acts.push(`<button class="btn ghost small" data-act="restore">Restore</button>`);
-  else if (focusable) acts.push(`<button class="btn ghost small danger" data-act="withdraw" ${x.withdraw_code ? `disabled title="${esc(WITHDRAW_WHY[x.withdraw_code] || "")}"` : ""}>${t === "insight" ? "Abandon" : "Withdraw"}</button>`);
-  if (focusable) acts.push(`<button class="btn ghost small" data-act="undo" ${x.can_undo ? "" : `disabled title="Not available: ${esc(undoWhy(x).replace(/<[^>]+>/g, ""))}"`}>Undo accept</button>`);
+  if (t === "insight" && m.status === "active") {
+    const on = m.starred === "true";
+    acts.push(`<button class="btn ghost small" data-act="star-insight">${on ? "★ Starred — unstar" : "☆ Star"}</button>`);
+    acts.push(`<button class="btn ghost small" data-act="revise-insight">Revise</button>`);
+    acts.push(`<button class="btn ghost small" data-act="merge-with">Merge with…</button>`);
+  }
+  if ((t === "question" && !x.withdrawn && (qx || {}).status === "open") || (t === "insight" && m.status === "active"))
+    acts.push(`<button class="btn ghost small" data-act="evolve" title="Think onward from it with search switched off, into a document">Evolve ✦</button>`);
+  const curatable = CURATABLE.includes(t);
+  if (curatable && x.withdrawn) acts.push(`<button class="btn ghost small" data-act="restore">Restore</button>`);
+  else if (curatable) acts.push(`<button class="btn ghost small danger" data-act="withdraw" ${x.withdraw_code ? `disabled title="${esc(WITHDRAW_WHY[x.withdraw_code] || "")}"` : ""}>${t === "insight" ? "Abandon" : "Withdraw"}</button>`);
+  if (curatable) acts.push(`<button class="btn ghost small" data-act="undo" ${x.can_undo ? "" : `disabled title="Not available: ${esc(undoWhy(x).replace(/<[^>]+>/g, ""))}"`}>Undo accept</button>`);
 
   const pend = x.candidates.filter((c) => c.kind === "revision" && c.status === "pending");
   const others = x.candidates.filter((c) => !(c.kind === "revision" && c.status === "pending"));
@@ -1396,9 +1426,9 @@ async function renderObject(id) {
       ${closedBanner(x)}
       ${x.withdrawn ? `<div class="banner warn"><strong>Withdrawn</strong> ${esc(x.withdrawn.date || "")} (${idl(x.withdrawn.decision)}, was <i>${esc(x.withdrawn.from)}</i>): ${esc(x.withdrawn.reason)}. Every link to it is kept; nothing was sent for re-examination.</div>` : ""}
       <div class="acts">${acts.join("")}</div>
-      ${focusable && !x.can_undo ? `<div class="meta undo-why">Undo accept isn't available: ${undoWhy(x)}.${x.withdrawn || x.withdraw_code ? "" : " Withdraw it instead if it's no longer relevant."}</div>` : ""}
+      ${curatable && !x.can_undo ? `<div class="meta undo-why">Undo accept isn't available: ${undoWhy(x)}.${x.withdrawn || x.withdraw_code ? "" : " Withdraw it instead if it's no longer relevant."}</div>` : ""}
     </header>
-    ${focusable ? block("pending", "Revisions waiting", pend.length, pendHtml, true) : ""}
+    ${curatable ? block("pending", "Revisions waiting", pend.length, pendHtml, true) : ""}
     ${qx ? block("tree", "Place in the tree", qx.children.length + qx.merged_from.length + (qx.parent ? 1 : 0), treeHtmlObj, !!(qx.suggest_parent || strays.length)) : ""}
     ${block("history", "Revision history", x.revisions.length + x.decisions.length, hist)}
     ${block("discussions", "Discussions", x.discussions.length, dsBlock)}
@@ -1413,9 +1443,12 @@ async function renderObject(id) {
   on("ground", () => groundCheck(id));
   on("invalidate", () => invalidate(id));
   on("revise-insight", () => reviseInsight(x));
+  on("star-insight", () => starInsight(id, m.starred !== "true"));
+  on("merge-with", () => mergeInsights([id]));
   on("withdraw", () => withdrawObj(x));
   on("restore", () => restoreObj(x));
   on("undo", () => undoAccept(x));
+  on("evolve", () => evolveFrom(id));
   on("active", async () => { try { await api("POST", `/api/questions/${id}/active`, { active: !qx.active }); hint.done("active"); } catch (err) { fail(err); } after(); });
   on("move", () => moveQuestion(x));
   on("resolve", () => resolveQuestion(x));
@@ -1464,7 +1497,6 @@ function renderMode(m) {
   b.textContent = away ? "← Back to discussion" : "Hand off →";
   b.title = away ? "Take the lead back and return to discussion mode"
     : "Hand a batch of premises and hypotheses to the AI to check against the literature";
-  $("#incubate-btn").hidden = away;
   $("#mode-pill").className = "pill " + (m.mode === "discussion" ? "accent" : "ok");
   renderModeBanner();
 }
@@ -1479,14 +1511,6 @@ function renderModeBanner() {
     if (m.hold) parts.push(`<div class="banner warn"><strong>Suggest going back to discussion:</strong> ${esc(m.hold.reason)}.
       Validation has stopped starting new work until you decide.
       <div class="acts"><button class="btn small" data-mode="recall">Back to discussion</button><button class="btn ghost small" data-mode="continue">Keep validating</button></div></div>`);
-  } else if (m.mode === "incubation") {
-    const inc = m.inc || {};
-    parts.push(`<div class="banner info"><strong>Incubation mode.</strong> The AI is thinking on its own with search switched off, starting from a frozen foundation${inc.round ? ` — round ${inc.round}` : ""}.
-      Every idea gets an outside check that annotates but never rewrites it. You can still talk here; what you change now reaches the next incubation, not this one. <a href="#/ideas">Watch the rounds →</a></div>`);
-    if (m.hold) parts.push(`<div class="banner ${m.hold.shortlisted ? "info" : "warn"}"><strong>Incubation finished:</strong> ${esc(m.hold.reason)}.
-      ${m.hold.shortlisted ? `${m.hold.shortlisted} idea(s) passed — <a href="#/inbox" data-goideas>triage them in the Inbox</a>.` : "Nothing worth your time this round — see the summary for why each one fell out."}
-      ${m.hold.summary ? ` <a href="#/ideas">Summary (${m.hold.summary}) →</a>` : ""}
-      <div class="acts"><button class="btn small" data-mode="recall">Back to discussion</button></div></div>`);
   } else if (m.mode === "discussion") {
     const p = (S.prep || {}).prep || {}, dec = (S.prep || {}).decision;
     if (dec && (p.active || p.ended)) {
@@ -1501,7 +1525,6 @@ function renderModeBanner() {
   }
   el.innerHTML = parts.join("");
   $$("[data-mode]", el).forEach((b) => b.onclick = () => (b.dataset.mode === "recall" ? recallMode() : continueMode()));
-  $$("[data-goideas]", el).forEach((a) => a.onclick = () => { S.inboxView = "ideas"; });
   const ps = $("#prep-save", el);
   if (ps) ps.onclick = async () => {
     try { renderMode(await api("POST", "/api/prep-request", { text: $("#prep-input").value })); toast("Noted for tonight."); } catch (err) { fail(err); }
@@ -1532,8 +1555,7 @@ async function handoffDialog() {
 }
 
 async function recallMode() {
-  const what = S.mode && S.mode.mode === "incubation" ? "incubation" : "validation";
-  const r = await ask("Back to discussion?", `<p>Queued ${what} work is cancelled; anything running finishes and commits. The switch is recorded as a decision.</p>` + field("Why now?", "reason", "", "optional", 2), "Back to discussion");
+  const r = await ask("Back to discussion?", `<p>Queued validation work is cancelled; anything running finishes and commits. The switch is recorded as a decision.</p>` + field("Why now?", "reason", "", "optional", 2), "Back to discussion");
   if (!r) return;
   try { await api("POST", "/api/mode/recall", r); toast("Back in discussion mode."); } catch (err) { fail(err); }
   loadMode(); loadOverview();
@@ -1547,140 +1569,47 @@ async function continueMode() {
 }
 
 $("#handoff-btn").onclick = () => (S.mode && S.mode.mode !== "discussion" ? recallMode() : handoffDialog());
-$("#incubate-btn").onclick = () => incubateDialog();
+// ================================================================ EVOLUTION (M11 v1.8, DESIGN §5.18)
+// Thinking evolved from one question or insight with search switched off, kept as a document. It changes nothing in the research state.
+const TRIGGER = { manual: "you asked", auto: "while you were away" };
 
-async function incubateDialog() {
-  const m = await api("GET", "/api/mode");
-  const probs = m.entry_problems || [];
-  if (probs.length) {
-    await ask("Not ready to incubate", `<p>Incubation starts from a frozen foundation, and the foundation isn't formed yet:</p>` +
-      probs.map((p) => `<div class="banner warn md small">${md(p)}</div>`).join("") +
-      `<p class="meta">Set the maturity on the question card in <a href="#/research">Research</a> once it has a measurable definition.</p>`, "OK");
-    return;
+async function evolveFrom(seed) {
+  const pick = !seed;
+  let why = "";
+  if (pick) {
+    try { const v = await api("GET", "/api/evolutions"); seed = v.next.seed; why = v.next.why || ""; } catch (err) { return fail(err); }
+    if (!seed) return toast("Nothing to evolve from yet — there are no open questions or active insights.", "warn");
   }
-  const r = await ask("Start incubation", `<p>The AI thinks on its own with <b>search switched off</b> — no web, no papers, nothing but a frozen snapshot of the research state (the question, what we understand, established facts with their quotes, premises, dead ends). It works in short chains, and every idea gets an outside check that can annotate it but never rewrite it.</p>
-    <p>It stops when three ideas pass, when it has used 30% of the 5-hour window, or when two rounds in a row produce nothing — whichever comes first. Coming back empty-handed is a legitimate outcome.</p>` +
-    field("Anything you want to note?", "note", "", "optional — goes into the decision", 2), "Start incubation");
+  const r = await ask(`Evolve ${seed}?`, `<p>A separate task thinks onward from <b>${esc(seed)}</b> with <b>search switched off</b> — no web, no papers — and writes what it found into a document. The vaguer the question, the more there is to do: what it's really asking, other ways to ask it, hidden premises, how to split it.</p>
+    ${pick ? `<p class="meta">Picked by the system: ${esc(why)}. To choose yourself, press Evolve on a question's or insight's page.</p>` : ""}
+    <p class="meta">It changes nothing in the research state. You read it and keep what's worth keeping. About the cost of one distill.</p>`, "Evolve");
   if (!r) return;
-  try { const x = await api("POST", "/api/mode/incubate", r); toast(`Incubation started (${x.decision}); foundation ${x.foundation} frozen.`); } catch (err) { fail(err); }
-  loadMode(); loadOverview();
-}
-
-// ================================================================ IDEAS (incubation, DESIGN §5.10–5.14)
-$$("#ideas-seg button").forEach((b) => b.onclick = () => { S.ideasView = b.dataset.v; renderIdeas(); });
-
-function ideaCard(i, compact) {
-  const sg = i.signals || {}, g = (i.grounding || []).slice(-1)[0];
-  const n = sg.n ?? (i.premises || []).length;
-  const triage = ["shortlisted", "screened_out", "grounding"].includes(i.status);
-  const stTag = { shortlisted: "insight", screened_out: "warn", grounding: "plain", accepted: "hypothesis", rejected: "plain" }[i.status] || "plain";
-  return `<div class="card idea ${i.status === "rejected" ? "dim" : ""}" data-idea="${i.id}">
-    <div class="card-top"><span class="tag ${stTag}">${I_STATUS[i.status] || i.status}</span><a class="id idlink" href="#/obj/${i.id}">${i.id}</a>
-      <span class="tag ${n >= 3 ? "warn" : "plain"}" title="Premises this idea invented along the way. The fewer, the more it stands on what we already know.">${n} invented premise${n === 1 ? "" : "s"}</span>
-      ${g ? `<span class="tag ${g.verdict === "contradicted" ? "warn" : "plain"}">${I_VERDICT[g.verdict] || g.verdict}</span>` : ""}
-      ${sg.hidden_premises ? `<span class="tag warn" title="The outside check found premises it relies on but didn't list">+${sg.hidden_premises} unlisted premise(s)</span>` : ""}
-      ${sg.silent_challenges ? `<span class="tag warn" title="It contradicts the foundation somewhere without saying so">${sg.silent_challenges} silent challenge(s)</span>` : ""}
-      <span>round ${esc(i.round || "?")} · from ${esc(i.foundation)} · chain ${esc(i.chain)}</span></div>
-    <div class="statement md">${md(i.statement)}</div>
-    <dl><dt>Wrong if</dt><dd>${esc(i.falsifier)}</dd>
-      ${i.challenges.length ? `<dt>Challenges</dt><dd>${idl(i.challenges)} — ${linkIds(esc(i.challenge_note))}</dd>` : ""}
-      ${i.builds_on.length || i.relates_to.length ? `<dt>Relation</dt><dd>${idl([...i.builds_on, ...i.relates_to])}${i.relation && i.relation !== "（未写。）" ? " — " + linkIds(esc(i.relation)) : ""}</dd>` : ""}
-      ${i.promoted_to.length ? `<dt>Became</dt><dd>${idl(i.promoted_to)}</dd>` : ""}
-      ${i.rejected_because ? `<dt>Rejected because</dt><dd>${esc(i.rejected_because)}</dd>` : ""}</dl>
-    ${n ? `<div class="premises"><div class="flabel">Premises it invented</div><ol>${i.premises.map((p) => `<li><a class="id idlink" href="#/obj/${p.id}">${p.id}</a> ${esc(p.text)}${p.status !== "unexamined" ? ` <span class="meta">(${esc(p.status)})</span>` : ""}</li>`).join("")}</ol></div>` : ""}
-    ${compact ? "" : `${(i.grounding || []).map((x) => `<details class="why" ${i.status !== "grounding" ? "open" : ""}><summary>Outside check ${x.id} · ${I_VERDICT[x.verdict] || x.verdict}${x.refs.length ? " · " + esc(x.refs.join(", ")) : ""}</summary><div class="md small">${md(x.note)}</div></details>`).join("")}
-    <details class="why"><summary>How it got here</summary><div class="md small">${md(i.reasoning)}</div><div class="meta"><a href="#" data-chain="${esc(i.chain)}">Read the whole chain ${esc(i.chain)} →</a></div></details>`}
-    ${triage && !compact ? `<div class="acts"><button class="btn small" data-act="take">Take it…</button>
-      <button class="btn ghost small danger" data-act="reject">Reject</button></div>` : ""}
-  </div>`;
-}
-
-function bindIdeas(body) {
-  $$("[data-chain]", body).forEach((a) => a.onclick = (e) => { e.preventDefault(); showText(a.dataset.chain); });
-  $$("[data-foundation]", body).forEach((a) => a.onclick = (e) => { e.preventDefault(); showText(a.dataset.foundation); });
-  $$(".card[data-idea] [data-act=take]", body).forEach((b) => b.onclick = () => takeIdea(S.ideas.find((i) => i.id === b.closest(".card").dataset.idea)));
-  $$(".card[data-idea] [data-act=reject]", body).forEach((b) => b.onclick = async () => {
-    const id = b.closest(".card").dataset.idea;
-    const r = await ask(`Reject ${id}`, `<p>It's kept with your reason and treated like a dead end: every future incubation sees it and won't come back with a rephrasing. Its invented premises are retired.</p>` + field("Why not?", "reason", "", "required", 3), "Reject");
-    if (!r) return;
-    try { await api("POST", `/api/ideas/${id}/reject`, r); toast(`${id} rejected.`); } catch (err) { fail(err); }
-    loadInbox(); if (S.page === "ideas") renderIdeas();
-  });
-}
-
-async function takeIdea(i) {
-  const r = await ask(`Take ${i.id}`, `<p class="md small">${md(i.statement)}</p>
-    <div class="checks"><label><input type="checkbox" name="make" value="h"><span><b>Send to validation</b> — split out a falsifiable hypothesis</span></label></div>` +
-    field("Hypothesis", "h_statement", i.statement, "edit freely", 2) + field("Refuted if", "h_falsifier", i.falsifier, "", 2) +
-    field("How it will be tested", "h_validation", "", "required if sending to validation", 2) +
-    `<div class="checks"><label><input type="checkbox" name="make" value="i"><span><b>Keep as an insight</b> — interesting, not yet testable</span></label></div>` +
-    field("Insight", "i_statement", i.statement, "", 2) +
-    select("Firmness", "i_firmness", { hunch: "Hunch", working: "Working", settled: "Settled" }, "hunch") +
-    field("Note", "note", "", "optional — why you're taking it", 2) +
-    `<p class="meta">Leave both unchecked to just accept it and talk it through later. Its invented premises become ordinary premises either way.</p>`, "Take it");
-  if (!r) return;
-  const make = r.make || [];
-  const body = { note: r.note };
-  if (make.includes("h")) body.hypothesis = { statement: r.h_statement, falsifier: r.h_falsifier, validation: r.h_validation };
-  if (make.includes("i")) body.insight = { statement: r.i_statement, firmness: r.i_firmness };
-  try { const x = await api("POST", `/api/ideas/${i.id}/accept`, body); toast(`${i.id} accepted${x.made.length ? " → " + x.made.join(", ") : ""}.`); } catch (err) { fail(err); }
-  loadInbox(); loadOverview(); if (S.page === "ideas") renderIdeas();
-}
-
-async function showText(id) {
   try {
-    const t = await api("GET", `/api/text/${id}`);
-    const m = t.meta;
-    const head = id.startsWith("F")
-      ? `<p class="meta">Foundation of ${esc(m.session)}, round ${esc(m.round)}${m.parent ? ` · built from ${esc(m.parent)} plus ${esc(fmtv(m.delta))}` : " · the snapshot taken when incubation started"}. Frozen: a chain never sees it change.</p>`
-      : `<p class="meta">Chain ${esc(id)} · round ${esc(m.round)} · ${esc(m.status)} · from ${esc(m.foundation)}</p>`;
-    await ask(id.startsWith("F") ? `Foundation ${id}` : `Chain ${id}`, head + `<div class="md small textview">${md(t.body)}</div>`, "Close");
+    const x = await api("POST", "/api/evolve", pick ? {} : { seed });     // picked: the server records why it chose
+    toast(x.task ? `Evolving ${seed} (${x.task.id}) — the document lands in Evolution.` : `${seed} is already being evolved.`);
   } catch (err) { fail(err); }
+  if (S.page === "evolution") renderEvolution();
 }
 
-async function renderIdeas() {
-  $$("#ideas-seg button").forEach((b) => b.classList.toggle("on", b.dataset.v === S.ideasView));
-  const body = $("#ideas-body");
-  try {
-    if (S.ideasView === "all") {
-      S.ideas = (await api("GET", "/api/ideas")).ideas;
-      body.innerHTML = S.ideas.length ? S.ideas.slice().sort((a, b) => b.id.localeCompare(a.id, "en", { numeric: true })).map((i) => ideaCard(i)).join("")
-        : `<div class="empty">No ideas yet.</div>`;
-      bindIdeas(body);
-      return;
-    }
-    const v = await api("GET", "/api/incubation");
-    S.ideas = (await api("GET", "/api/ideas")).ideas;
-    if (!v.sessions.length) {
-      body.innerHTML = `<div class="empty">No incubation yet. Once the research question is formalized, start one from Chat with “Incubate ✦”.</div>`;
-      return;
-    }
-    const CH = { done: "recorded an idea", empty: "came back empty", interrupted: "was cut off" };
-    body.innerHTML = v.sessions.map((s) => `<section class="rsec">
-      <div class="rsec-head"><div><h2>Session ${esc(s.session)} <span class="count">${esc(s.created || "")}</span></h2>
-        ${s.note && !s.note.startsWith("（") ? `<p>${esc(s.note)}</p>` : ""}</div>
-        ${s.summary ? `<a href="#" data-summary="${esc(s.summary)}" class="btn ghost small">Summary ${esc(s.summary)}</a>` : ""}</div>
-      ${s.rounds.map((r) => {
-        const f = r.foundation;
-        return `<div class="round"><h3>Round ${r.round}</h3>
-        ${f ? `<div class="meta">Foundation <a href="#" data-foundation="${esc(f.id)}" class="mono">${esc(f.id)}</a>${f.parent ? ` — changed from ${esc(f.parent)} because of outside evidence ${esc(fmtv(f.delta))}` : " — snapshot taken at the start"}</div>`
-          : `<div class="meta">Same foundation as the round before — the last round brought back no outside evidence.</div>`}
-        ${(r.chains || []).map((c) => `<div class="chain-row"><span class="status ${c.status}">${T_STATUS[c.status] || c.status}</span>
-          <a href="#" data-chain="${esc(c.id)}" class="mono">${esc(c.id)}</a>
-          <span>${c.angle ? "Angle: " + esc(c.angle) : "<span class='meta'>no angle yet</span>"}</span>
-          <span class="meta">${c.record ? CH[c.record] || c.record : ""}</span></div>`).join("")}
-        ${(r.ideas || []).map((i) => ideaCard(S.ideas.find((x) => x.id === i.id) || i, false)).join("")}
-        </div>`;
-      }).join("")}
-    </section>`).join("");
-    $$("[data-summary]", body).forEach((a) => a.onclick = async (e) => {
-      e.preventDefault();
-      const d = await api("GET", `/api/objects/${a.dataset.summary}`);
-      await ask(`Incubation summary ${a.dataset.summary}`, `<div class="md small textview">${md(d.body)}</div>`, "Close");
-    });
-    bindIdeas(body);
-  } catch (err) { body.innerHTML = `<div class="empty">${esc(err.message)}</div>`; }
+async function renderEvolution(open) {
+  const body = $("#evolution-body");
+  let v;
+  try { v = await api("GET", "/api/evolutions"); } catch (err) { body.innerHTML = `<div class="empty">${esc(err.message)}</div>`; return; }
+  S.evolutions = v;
+  const live = v.live.map((t) => `<div class="banner info"><span class="thinking">${t.status === "running" ? "Evolving" : "Queued"} ${linkIds(esc(t.seed))} (${esc(t.id)})</span> — ${esc(t.why || "")}</div>`).join("");
+  const doc = (d, i) => `<details class="evo card" data-fold="evo.${d.id}" ${fold.get("evo." + d.id, i === 0 || d.id === open) ? "open" : ""}>
+      <summary><span class="id">${d.id}</span> <strong>${esc(d.title || "")}</strong>
+        <span class="meta">from ${idl(d.seeds)} · ${TRIGGER[d.trigger] || esc(d.trigger)} · ${esc(d.created || "")}</span></summary>
+      <div class="md">${md(d.body.replace(/^# .*\n/, ""))}</div>
+      <div class="acts"><a class="btn ghost small" href="#/obj/${d.id}">Open & discuss</a>
+        <button class="btn ghost small" data-evolve="${esc((d.seeds || [])[0] || "")}">Evolve ${esc((d.seeds || [])[0] || "")} further</button></div>
+    </details>`;
+  body.innerHTML = live + (v.docs.map(doc).join("") ||
+    `<div class="empty">No evolution documents yet. Press Evolve on a question or insight — or let the system pick; it also runs one on its own after you've been away for a while.</div>`);
+  bindFolds(body);
+  $$("[data-evolve]", body).forEach((b) => b.onclick = () => evolveFrom(b.dataset.evolve));
 }
+$("#evolve-pick").onclick = () => evolveFrom(null);
 
 // ================================================================ READING (M8: what, why, evidence chain)
 $$("#reading-seg button").forEach((b) => b.onclick = () => { S.readingView = b.dataset.v; renderReading(); });
@@ -1898,8 +1827,8 @@ function connect() {
       case "reply_reset": if (d.discussion === S.ds) { S.streaming = ""; renderStream(); } break;
       case "reply_delta": if (d.discussion === S.ds) { S.streaming += d.text; renderStream(); } break;
       case "turn": if (d.discussion === S.ds) S.streaming = ""; soon("ds", () => { refreshDs(); loadDiscussions(); }); break;
-      case "task": soon("task", () => { refreshDs(); loadDiscussions(); loadShift(); if (S.page === "system") renderSystem(); if (S.page === "reading") renderReading(); if (S.page === "ideas") renderIdeas(); loadMode(); }); break;
-      case "candidates": case "state": soon("inbox", loadInbox); soon("ov", loadOverview); if (S.page === "ideas") soon("ideas", renderIdeas, 400);
+      case "task": soon("task", () => { refreshDs(); loadDiscussions(); loadShift(); if (S.page === "system") renderSystem(); if (S.page === "reading") renderReading(); if (S.page === "evolution") renderEvolution(); loadMode(); }); break;
+      case "candidates": case "state": soon("inbox", loadInbox); soon("ov", loadOverview); if (S.page === "evolution") soon("evo", renderEvolution, 400);
         if (S.page === "obj" && S.objId && !$("#dlg").open) soon("obj", () => renderObject(S.objId), 300);
         soon("dsl", loadDiscussions, 300); break;
       case "quota": renderQuota(d); break;

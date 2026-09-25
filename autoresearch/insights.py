@@ -3,7 +3,7 @@
 AI 提出的理解只能经候选区（candidates.py）；这里是人直接记下、修订与放弃。
 修订不覆盖：新建一条并以 superseded_by 链接，旧的保留，理解的演变本身就是进展记录。
 """
-from . import reviews
+from . import reviews, schema
 from .store import today
 
 FIRMNESS = ("hunch", "working", "settled")
@@ -30,11 +30,12 @@ def _check(store, statement, firmness, basis, basis_note, informs):
 
 
 def _write(tx, store, iid, statement, firmness, basis, basis_note, informs, change_mind, extra="",
-           consolidates=None):
+           consolidates=None, starred=False):
     meta = {"id": iid, "type": "insight", "status": "active", "firmness": firmness,
             "basis": basis or None, "basis_note": (basis_note or "").strip() or None,
             "informs": informs or None, "change_mind": (change_mind or "").strip() or None,
-            "consolidates": consolidates or None, "created": today()}
+            "consolidates": consolidates or None, "starred": "true" if starred else None,
+            "created": today()}
     tx.write_obj(iid, meta, statement.strip() + "\n" + extra)
 
 
@@ -71,7 +72,7 @@ def revise(store, iid, statement, firmness, note="", basis=None, basis_note=None
     with store.tx(f"insight {iid}: 修订", actor="human") as tx:
         new = tx.new_id("insight")
         _write(tx, store, new, statement, firmness, basis, basis_note, informs, change_mind,
-               f"\n## 由来\n\n修订自 {iid}。{(note or '').strip()}\n")
+               f"\n## 由来\n\n修订自 {iid}。{(note or '').strip()}\n", starred=schema.is_starred(old))
         prev = store.provenance().get(iid) or {}
         rec = {"origin": origin, "source": source or iid,
                "note": f"修订自 {iid}（原提出者 {prev.get('origin', '未知')}）"}
@@ -118,7 +119,8 @@ def consolidate(store, supersedes, statement, firmness, basis=None, basis_note="
     with store.tx(f"insight: 合并 {', '.join(ids)}", actor=actor) as tx:
         new = tx.new_id("insight")
         _write(tx, store, new, statement, firmness, basis, basis_note, informs, change_mind,
-               f"\n## 由来\n\n合并自 {', '.join(ids)}。{(note or '').strip()}\n", consolidates=ids)
+               f"\n## 由来\n\n合并自 {', '.join(ids)}。{(note or '').strip()}\n", consolidates=ids,
+               starred=any(schema.is_starred(m) for m, _ in olds))     # 被合并的有星标，新条目继承
         prov = store.provenance()
         rec = {"origin": origin, "source": source or "direct",
                "note": f"合并自 {', '.join(ids)}（原提出者 " +
@@ -133,6 +135,25 @@ def consolidate(store, supersedes, statement, firmness, basis=None, basis_note="
                          f"{(note or '').strip()}\n")
         tx.note = new
     return new
+
+
+def set_starred(store, iid, on, actor="human"):
+    """星标（§5.17.2）：只由人切换。星标的 active 理解以全文进 briefing，其余一行。"""
+    meta, body = store.read_obj(iid)
+    if meta is None or meta.get("type") != "insight":
+        raise KeyError(f"{iid} 不存在")
+    on = on in (True, "true", "1", 1)
+    if on and meta.get("status") != "active":
+        raise ValueError(f"{iid} 已是 {meta.get('status')}：只有 active 的理解能标星。")
+    if on == schema.is_starred(meta):
+        return False
+    if on:
+        meta["starred"] = "true"
+    else:
+        meta.pop("starred", None)
+    with store.tx(f"insight {iid}: {'标星' if on else '取消星标'}", actor=actor) as tx:
+        tx.write_obj(iid, meta, body)
+    return True
 
 
 def abandon(store, iid, reason):

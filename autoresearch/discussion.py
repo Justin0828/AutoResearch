@@ -23,6 +23,9 @@ def rel_summary(ds):
 def focus_title(store, focus):
     """聚焦讨论的默认标题：<id> · <陈述首行截断>（§5.15.2）。"""
     meta, body = store.read_obj(focus)
+    if (meta or {}).get("type") == "evolution" and meta.get("title"):
+        t = meta["title"]
+        return f"{focus} · {t[:40]}{'…' if len(t) > 40 else ''}"
     first = next((l.strip() for l in (body or "").splitlines()
                   if l.strip() and not l.startswith("#") and not l.strip().startswith("（")), "")
     return f"{focus} · {first[:40]}{'…' if len(first) > 40 else ''}"

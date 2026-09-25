@@ -8,12 +8,10 @@ distill        真的启动 MCP server，提交一个候选并更新摘要
 distill_sleep  提交一个候选、记一条 checkpoint 后挂住
 distill_resolve 聚焦讨论的蒸馏：提一条 insight 候选，再提一条引用它（C###）结掉聚焦问题的 resolve 候选
 整理任务（协议里有“整理（Tidy up）”时自动进入）：把第 10 章的前两条理解提成合并候选；
-               FAKE_TIDY=blank（或 run/fake_mode 为 tidy_blank）交白卷
+               FAKE_TIDY=blank（或 run/fake_mode 为 tidy_blank）交白卷；rewrite / tidy_rewrite 把第一条理解改写成独立表述
 judge          按 briefing 里的任务种类驱动 Phase 2 的 MCP 工具（检索 / 精读 / 评估 / 扫描 / 接地）。
                FAKE_BAD_EDIT=1 时精读任务会越界改论文的 title（应被 runner 回滚）
-               对 Idea 的接地（ground_idea）：FAKE_GVERDICT=contradicted 时记一条反驳证据再下结论
-推演链（协议里有“不查文献的推演”时自动进入）：按 FAKE_INC_PLAN（逗号分隔，按调用次序取）行事——
-               ideaN 登记一条带 N 条新前提的想法 / blank 交白卷 / sleep 记下角度后挂住
+自演进（协议里有“做一次**自演进**”时自动进入）：最终回复是一篇演进文档；FAKE_EVOLVE=sleep / empty
 """
 import json
 import os
@@ -95,8 +93,13 @@ def main():
         return
     rate()
 
+    if "做一次**自演进**" in (arg("--append-system-prompt") or ""):
+        evolve(brief)
+        return
+
     if "整理（Tidy up）" in (arg("--append-system-prompt") or ""):
-        tidy(brief, blank=mode == "tidy_blank" or os.environ.get("FAKE_TIDY") == "blank")
+        tidy(brief, blank=mode == "tidy_blank" or os.environ.get("FAKE_TIDY") == "blank",
+             rewrite=mode == "tidy_rewrite" or os.environ.get("FAKE_TIDY") == "rewrite")
         return
 
     if mode in ("reply", "sleep"):
@@ -112,10 +115,6 @@ def main():
             time.sleep(120)
         text(reply)
         result(reply)
-        return
-
-    if "不查文献的推演" in (arg("--append-system-prompt") or ""):
-        incubate(brief)
         return
 
     if mode == "judge" or (mode == "reply" and "证据评判" in (arg("--append-system-prompt") or "")):
@@ -172,10 +171,16 @@ def main():
         return
 
 
-def tidy(brief, blank=False):
+def tidy(brief, blank=False, rewrite=False):
     mcp = Mcp()
     ch = brief.split("## 10. 待整理的全部内容", 1)[-1]
     ins = re.findall(r"^#### (IN\d+)", ch, re.M)
+    if rewrite and ins:
+        mcp.call("propose_candidate", kind="revision", target=ins[0], base_revision=1,
+                 statement="接口宜在时间上稀疏、信息上稠密：上层隔一段时间才下发一次指导，但每次给出足够完整的几何目标。",
+                 rationale="原文用了“上面那个方案”，离开讨论读不懂；只改措辞")
+        result("改写了 1 条理解。")
+        return
     if blank or len(ins) < 2:
         result("看过了全部理解与问题，没有值得合并或结掉的。")
         return
@@ -186,29 +191,22 @@ def tidy(brief, blank=False):
     result("提了 1 条合并。")
 
 
-def incubate(brief):
-    root = os.environ["AR_ROOT"]
-    counter = os.path.join(root, "run", "fake_inc_counter")
-    n = int(open(counter).read()) if os.path.exists(counter) else 0
-    open(counter, "w").write(str(n + 1))
-    plan = [x for x in os.environ.get("FAKE_INC_PLAN", "idea1").split(",") if x]
-    act = plan[n] if n < len(plan) else plan[-1]
+def evolve(brief):
+    """自演进（§5.18）：最终回复就是文档。FAKE_EVOLVE=sleep 时记一条进度后挂住（等着被切断），empty 时回复为空。"""
     mcp = Mcp()
-    mcp.call("checkpoint", note=f"角度：第 {n + 1} 次推演的角度")
-    if act == "sleep":
+    seed = re.search(r"- 出发点：\*\*(\w+)\*\*", brief).group(1)
+    prev = re.search(r"### 最近一篇 (EV\d+)", brief)
+    resumed = "本任务之前被切断过" in brief
+    mcp.call("checkpoint", note=f"从 {seed} 出发，先拆问法")
+    if os.environ.get("FAKE_EVOLVE") == "sleep" and not resumed:
         time.sleep(120)
-    if act.startswith("idea"):
-        k = int(act[4:] or 1)
-        mcp.call("check_dead_ends", description="想法")
-        ins = re.search(r"\*\*(IN\d+)\*\*", brief)
-        mcp.call("record_idea", statement=f"想法 {n + 1}：接触瞬间的反馈频率比数据规模更关键",
-                 falsifier="若固定低频 chunk 在更多数据下继续提升，则错", reasoning="从 A001 出发",
-                 new_premises=[f"新前提 {n + 1}.{i + 1}" for i in range(k)],
-                 builds_on=[ins.group(1)] if ins else [], relates_to=["H001"],
-                 relation_note="与 H001 相关")
-        result("登记了一条想法")
-    else:
-        result("推到一半发现站不住，本轮交白卷。")
+    if os.environ.get("FAKE_EVOLVE") == "empty":
+        result("")
+        return
+    doc = (f"# {seed} 的三种问法\n\n## 出发点\n\n{seed} 还很模糊。"
+           + (f"[接着:{prev.group(1)}]" if prev else "[第一次]") + ("[续写]" if resumed else "")
+           + "\n\n## 值得记下的想法\n\n- 接口的问题其实是“谁对接触负责”的问题。\n\n## 还没想通的\n\n- 怎么衡量。")
+    result(doc)
 
 
 def edit(path, old, new, tid="edit1"):
@@ -266,22 +264,6 @@ def judge(brief, prompt):
             mcp.call("examine_assumption", assumption_id=target, verdict="holds", evidence_ids=ids,
                      note="文献支持")
         result("评估完毕")
-    elif kind == "ground_idea":
-        verdict = os.environ.get("FAKE_GVERDICT", "prior_work")
-        pid = re.search(r"(?:已登记|已存在) (P\d+)", mcp.call("register_paper", ref="2401.00001", why="相近工作")).group(1)
-        refs = [pid]
-        if verdict == "contradicted":
-            mcp.call("open_paper", paper_id=pid)
-            lib = os.path.join(os.path.dirname(state), "library", pid, "anchors.json")
-            anchors = json.load(open(lib, encoding="utf-8"))
-            eid = re.search(r"(E\d+)", mcp.call(
-                "record_evidence", target_id=target, stance="contradict", source=pid,
-                locator=["s4.2-p1"], quote=anchors["s4.2-p1"][:80], note="原文直接反驳",
-                strength="moderate")).group(1)
-            refs.append(eid)
-        mcp.call("annotate_grounding", target_id=target, verdict=verdict, refs=refs,
-                 note="核查结果", hidden_premises=1, silent_challenges=0)
-        result("接地完毕")
     elif kind == "grounding":
         mcp.call("annotate_grounding", target_id=target, verdict="novel", note="没找到先例")
         result("接地完毕")

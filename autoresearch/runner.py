@@ -77,7 +77,7 @@ class Runner:
             "--no-session-persistence",
         ]
         if spec.get("sealed"):
-            # 推演链：不挂任何目录，--restricted 把文件读取关进只有 briefing 的任务目录（§5.9）
+            # 演进任务（sealed）：不挂任何目录，--restricted 把文件读取关进只有 briefing 的任务目录（§5.9）
             cmd += ["--restricted"]
         else:
             cmd += ["--add-dir", str(self.store.state)]
@@ -271,19 +271,19 @@ class SealError(RuntimeError):
 
 
 def check_sealed(cmd):
-    """推演链开跑前自检（§5.9）：配置回归比模型越界更可能发生，检索没关死就不启动。"""
+    """演进任务（sealed）开跑前自检（§5.9）：配置回归比模型越界更可能发生，检索没关死就不启动。"""
     tools = cmd[cmd.index("--tools") + 1].split(",") if "--tools" in cmd else None
     if "--add-dir" in cmd:
-        raise SealError("推演任务不能挂任何目录（--add-dir）")
+        raise SealError("演进任务不能挂任何目录（--add-dir）")
     if "--restricted" not in cmd:
-        raise SealError("推演任务必须带 --restricted")
+        raise SealError("演进任务必须带 --restricted")
     if tools is None or set(tools) - {"Read", "Grep", "Glob"}:
-        raise SealError(f"推演任务只能用 Read/Grep/Glob，实际 --tools={tools}")
+        raise SealError(f"演进任务只能用 Read/Grep/Glob，实际 --tools={tools}")
     with open(cmd[cmd.index("--mcp-config") + 1], encoding="utf-8") as f:
         mcp = json.load(f)
     ts = set(mcp["mcpServers"]["state"]["env"]["AR_TOOLSET"].split(","))
-    if ts - {"check_dead_ends", "record_idea", "checkpoint"}:
-        raise SealError(f"推演任务的 MCP 注册了联网 / 越权工具：{sorted(ts)}")
+    if ts - {"checkpoint"}:
+        raise SealError(f"演进任务的 MCP 只能有 checkpoint，实际注册了：{sorted(ts)}")
 
 
 def _blocks(ev):

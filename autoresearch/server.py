@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import (bootstrap, candidates, discussion, frontmatter, incubation, insights, metrics, objects, observe,
+from . import (bootstrap, candidates, discussion, evolution, frontmatter, insights, metrics, objects, observe,
                papers, questions, reviews, schema)
 from .library import Library
 
@@ -60,8 +60,7 @@ def make_handler(app):
                 "tidy": ({k: tidy[-1].get(k) for k in ("id", "status", "result_brief", "ended", "created")}
                          if tidy else None),
                 "questions": objs("question"), "insights": objs("insight"),
-                # 推演中新引入、所属想法未被接受的前提不算前提集（§5.10），在 Ideas 里看
-                "assumptions": [one(m, b) for m, b in incubation.real_assumptions(st)],
+                "assumptions": objs("assumption"),
                 "hypotheses": objs("hypothesis"), "uncertainties": objs("uncertainty"),
                 "dead_ends": objs("dead-end"), "evidence": objs("evidence"),
                 "papers": objs("paper"), "groundings": objs("grounding"),
@@ -279,6 +278,23 @@ def make_handler(app):
         app.bus.publish("state", {"insight": new})
         return {"id": new}
 
+    @route("POST", "/api/insights/(?P<iid>IN\\d+)/star")
+    def star_insight(req, q, iid):
+        """星标（§5.17.2）：星标的理解以全文进 briefing，其余一行。"""
+        changed = insights.set_starred(st, iid, req.json().get("starred"))
+        app.bus.publish("state", {"insight": iid})
+        return {"changed": changed}
+
+    @route("POST", "/api/insights/merge")
+    def merge_insights(req, q):
+        """研究者手动合并（§5.17.3）：自己写合并后的表述，不经候选。"""
+        b = req.json()
+        new = insights.consolidate(st, b.get("supersedes"), b.get("statement", ""), b.get("firmness", ""),
+                                   change_mind=b.get("change_mind", ""), note=b.get("note", ""),
+                                   origin="human", source="direct")
+        app.bus.publish("state", {"insight": new})
+        return {"id": new}
+
     @route("POST", "/api/insights/(?P<iid>IN\\d+)/abandon")
     def abandon_insight(req, q, iid):
         new = insights.abandon(st, iid, req.json().get("reason", ""))
@@ -323,75 +339,23 @@ def make_handler(app):
         app.bus.publish("state", {"mode": "discussion"})
         return {"decision": did}
 
-    @route("POST", "/api/mode/incubate")
-    def incubate(req, q):
-        did, fid = d.enter_incubation(req.json().get("note", ""))
-        app.bus.publish("state", {"mode": "incubation"})
-        return {"decision": did, "foundation": fid}
+    # ------------------------------------------------------------ 自演进（M11 v1.8，§5.18）
 
-    # ------------------------------------------------------------ 自演进（§5.10–5.14）
+    @route("GET", "/api/evolutions")
+    def evolutions(req, q):
+        """全部演进文档（最新在前）+ 在排队或在跑的演进任务 + 系统现在会挑哪个出发点。"""
+        docs = [evolution.as_dict(m, b) for m, b in evolution.docs(st)]
+        docs.reverse()
+        live = [{k: t.get(k) for k in ("id", "status", "seed", "trigger", "why", "created", "started")}
+                for t in d.ledger.all() if t["kind"] == "evolve" and t["status"] in ("queued", "running")]
+        seed, why = evolution.pick_seed(st)
+        return {"docs": docs, "live": live, "next": {"seed": seed, "why": why}}
 
-    @route("GET", "/api/ideas")
-    def ideas(req, q):
-        items = [incubation.as_dict(st, m, b) for m, b in st.list("idea")]
-        order = {m["id"]: i for i, m in enumerate(incubation.ranked(st, [m for m, _ in st.list("idea")]))}
-        items.sort(key=lambda x: order[x["id"]])
-        return {"ideas": items}
-
-    @route("POST", "/api/ideas/(?P<iid>I\\d+)/accept")
-    def accept_idea(req, q, iid):
-        b = req.json()
-        made = incubation.accept(st, iid, hypothesis=b.get("hypothesis"), insight=b.get("insight"),
-                                 note=b.get("note", ""))
-        app.bus.publish("state", {"idea": iid})
-        return {"ok": True, "made": made}
-
-    @route("POST", "/api/ideas/(?P<iid>I\\d+)/reject")
-    def reject_idea(req, q, iid):
-        incubation.reject(st, iid, req.json().get("reason", ""))
-        app.bus.publish("state", {"idea": iid})
-        return {"ok": True}
-
-    @route("GET", "/api/incubation")
-    def incubation_view(req, q):
-        """每个 session、每一轮：基本盘（以及因哪条外部证据而变）、推演链（角度、白卷与否）、想法。"""
-        fs = [m for m, _ in st.list("foundation")]
-        chains = [dict(m, body=b) for m, b in st.list("chain")]
-        ideas = {m["id"]: incubation.as_dict(st, m, b) for m, b in st.list("idea")}
-        live = {t["id"]: t for t in d.ledger.all() if t["kind"] in ("incubate", "ground_idea")}
-        summaries = {m.get("incubation_summary"): m["id"] for m, _ in st.list("decision")
-                     if m.get("incubation_summary")}
-        out = []
-        for did in dict.fromkeys(m.get("session") for m in fs):
-            dm, db = st.read_obj(did)
-            rounds = {}
-            for m in fs:
-                if m.get("session") == did:
-                    rounds.setdefault(int(m.get("round") or 1), {})["foundation"] = m
-            for t in live.values():
-                if t.get("incubation") == did and t["kind"] == "incubate":
-                    rr = rounds.setdefault(int(t.get("round") or 1), {})
-                    c = next((c for c in chains if c["id"] == t["id"]), None)
-                    rr.setdefault("chains", []).append({
-                        "id": t["id"], "status": t["status"], "angle": (c or {}).get("angle") or t.get("angle"),
-                        "record": (c or {}).get("status"), "ideas": (c or {}).get("ideas") or [],
-                        "result": t.get("result_brief")})
-            for i in ideas.values():
-                if i["session"] == did:
-                    rounds.setdefault(int(i.get("round") or 1), {}).setdefault("ideas", []).append(i)
-            out.append({"session": did, "created": (dm or {}).get("created"),
-                        "note": (db or "").split("## 为什么", 1)[-1].strip(),
-                        "summary": summaries.get(did),
-                        "rounds": [dict(v, round=k) for k, v in sorted(rounds.items())]})
-        out.reverse()
-        return {"sessions": out, "mode": d.mode_view()}
-
-    @route("GET", "/api/text/(?P<id>(?:F|T)\\d+)")
-    def text_obj(req, q, id):
-        meta, body = st.read_obj(id)
-        if meta is None:
-            raise ApiError(404, f"{id} 不存在")
-        return {"meta": meta, "body": body}
+    @route("POST", "/api/evolve")
+    def evolve(req, q):
+        """手动触发（§5.18.2）：seed 为空时由系统按“越 vague 越优先”挑。"""
+        t = d.request_evolve((req.json().get("seed") or "").strip() or None)
+        return {"task": t, "note": None if t else "同一出发点已有一篇在排队或在跑"}
 
     @route("POST", "/api/questions/(?P<qid>Q\\d+)/maturity")
     def set_maturity(req, q, qid):

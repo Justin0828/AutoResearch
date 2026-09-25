@@ -14,6 +14,7 @@
 | Phase 2.5 | 想法自演进 M11（1 周） | ✅ 完成（2026-09-24 用户确认） |
 | Phase 2.6 | 对象的持续打磨与讨论组织（§5.15） | ✅ 已合入 main（2026-09-24） |
 | Phase 2.7 | 让研究收敛：问题生命周期、活跃集、理解合并、问题树（§5.16） | 🟡 已实现（分支 `phase2.7`），待用户确认 |
+| Phase 2.8 | 理解的独立表述、星标、手动合并（§5.17）；自演进重做为演进文档（§5.18） | 🟡 已实现（分支 `phase2.8`），待用户确认 |
 | **Phase 3** | **实验 + 网络分流（3–4 周）** | ⬜ **下一步** |
 | Phase 4 | 完整自治 + 迁移到公司服务器 | ⬜ |
 
@@ -235,6 +236,39 @@ daemon / runner / briefing / MCP server / 前端的相应扩展。测试 72 个�
   “answered_by 可引用同批候选”诱发 agent 推广到了别的字段。修复：提交时拒绝（提示改用 promoted_to）、确认与 insights.revise 时兜底映射 / 去掉、
   协议写明引用规则（DESIGN §5.1 规则 4）。真实 State 以一次 `ar-human` 提交（57c2e01）清理了 IN002–IN005 → 校验 0 错误；
   待确认候选（C013、C015、C016、C019–C023）里的互相引用保留，确认时由兜底处理。测试 141 个全过。
+
+## Phase 2.8（2026-09-24，分支 `phase2.8`，待用户确认）
+
+- **起因**：用户问自演进的触发条件，并提出三点：新 insight 希望被系统自动往前推；insight 直接从上下文蒸出、过后读不懂；insight 偏多，要星标与合并。
+  澄清后定下（2026-09-24 用户选择）：**不做对理解的自动审查**（评判看不到理解的原则不破例）；自演进仍只能手动进入，但以**星标的与上次自演进后新增的**理解为本次重点；
+  星标**影响 briefing**（星标全文，其余一行）；手动合并**只由研究者写**表述，不经候选、不花额度。设计写入 DESIGN §5.17（v1.7）与 §7 Phase 2.8 验收标准。
+- **实现**：insight 可选 `starred`（`insights.set_starred`，修订与合并继承星标）；briefing 3b 分层（tidy 与自演进基本盘仍给全文）；`/api/insights/<IN>/star`、`/api/insights/merge`
+  （复用 `insights.consolidate`，origin human）；基本盘“当前理解”把重点条目排前并标【本次重点：原因】（`incubation.focus_insights`：星标 + 不在上个 session 首版基本盘里的），
+  推演协议要求优先从重点出发（选别的要在 checkpoint 说明理由）；蒸馏 / 讨论协议要求 insight 写成独立表述；Tidy up 增加第三种候选——对读不懂的理解提只改措辞的 revision
+  （source 为任务号，不许带 firmness / change_mind，只能针对 IN）。前端：Understanding 行首 ☆/★、星标排前、Merge… 多选对话框、首次标星提示与 >5 星提示；对象页 Star / Merge with…；修订卡显示“from tidy-up T#####”。
+- **测试 151 个全过**（新增 `tests/test_phase28.py` 10 个；假 claude 的整理任务加 `rewrite` / `tidy_rewrite`）。
+- **兼容与验收（当前真实 State 的副本，端口 8798，结束后按 PID 停掉；`~/autoresearch` 未动）**：新代码下校验 0 错误（1 条警告是 C021 引用了已撤下的 Q004，属预期提醒）；
+  jsdom 跑真实 `app.js`：给 IN006 标星 → 3b 章 IN006 全文、其余一行；Merge… 勾 IN002 + IN003 自写表述 → IN007（consolidates，旧条目折进 “How our understanding changed”）；
+  Tidy up（假 claude）对 IN006 提改写候选 C024 → 修订卡 “from tidy-up T00001” → 对照确认 → IN008 取代 IN006 且继承星标。全程无 JS 错误。
+- **没有跑真实 claude**：独立表述与“优先从重点出发”是协议层改动，效果要在真实使用中看。自演进仍要求主问题 formalized，当前真实 Q001 是 vague，所以 §5.17.4 暂时用不上。
+- **待用户**：重启 `./ar serve`；给重要的理解标星；读不懂的旧理解可以点一次 Tidy up 让它提改写候选。
+
+### 自演进重做（2026-09-24，同在 `phase2.8`；DESIGN M11 与 §5.18，v1.8）
+
+- **起因**：研究者重新定义自演进——“演进一种思考，形成一个文档，记录有 insight 的想法；出发点是 insight 和 question，越 vague 的 question 越要演进”；
+  现有的不兼容就删除。研究者选定：触发 = 手动 + 空闲自动；检索关闭、不接地；产出只有文档（不自动提候选）；不设门槛。
+- **删除**：`incubation` 模式与入场闸门（formalized）、Idea / Foundation / 推演记录三类对象、`record_idea`、Idea 接地（`ground_idea`）、停止条件与交卷、
+  Ideas 页与 Inbox 的 Ideas 分诊、Chat 的 Incubate 按钮、前提 / 假设上的 `idea` 字段与“推测性前提”、被否决 Idea 进 dead-end 一章、`AR_INCUBATE_*`、
+  `incubation.py` 与 `tests/test_incubation.py`。DESIGN §5.10–5.14 与 §5.17.4 标为废止（原文在 git 历史）。真实 State 里没有这些对象，删除不影响数据。
+- **新增**：`evolution.py`（选题：open 问题按 vague → 活跃 → 演进次数少 → 越久没演进；没有 open 问题时取星标 / 最新理解。briefing：出发点全文、相关理解、
+  同一出发点上一篇全文、研究全景（理解全文、问题 / 前提 / 假设各一行、已撤下的问题、全部 dead-end），剥离 origin 与论文标题）；任务 `evolve`
+  （sealed：不挂目录、`--restricted`、只有 Read/Grep/Glob 与 checkpoint，runner 开跑自检改为“MCP 只能有 checkpoint”）；最终回复写成 `evolutions/EV###.md`
+  （seeds / question / task / trigger / title / seen）；daemon：手动 `request_evolve`、讨论模式下空闲自动（排在夜间预习之后、每个空闲期至多一篇、受无人值守份额约束，
+  `AR_EVOLVE_AUTO`）；评判任务封读 `evolutions/**`；EV 可聚焦讨论（2b 章给全文，提示从中提炼理解 / 修订 / 新问题），理解的 basis 可引用 EV。
+  API：`GET /api/evolutions`、`POST /api/evolve`。前端：Evolution 页、问题 / 理解页 Evolve ✦、文档页 Discuss this。
+- **测试全过**（新增 `tests/test_evolution.py` 13 个；删掉 incubation 相关 17 个；`test_phase2` 的预习测试改为允许预习后自动演进）。
+- **验收（当前真实 State 的副本，端口 8796，结束后按 PID 停掉）**：校验 0 错误；系统挑中 Q001（“vague、还没演进过”）；问题页 Evolve ✦ → EV001；Evolution 页「Evolve…」→ EV002 带上了 EV001（接着往下写）；
+  实际下发的 briefing 四章齐全、无 origin；`--tools` 只有 Read/Grep/Glob；EV001 页 Discuss this 开出聚焦讨论。全程无 JS 错误。没有跑真实 claude。
 
 ## 已知缺口（Phase 2 之后）
 

@@ -7,7 +7,7 @@ import unittest
 import urllib.request
 from pathlib import Path
 
-from autoresearch import (bootstrap, briefing, candidates, discussion, incubation, insights, objects,
+from autoresearch import (bootstrap, briefing, candidates, discussion, evolution, insights, objects,
                           planner, questions, reviews, schema)
 from tests.test_phase26 import mk_ds, propose_q
 from tests.util import temp_cfg
@@ -251,11 +251,11 @@ class ActiveAndBriefingTest(Base):
         self.assertIn("就选 A。", ch3)
         self.assertNotIn(wd, ch3)
         self.assertIn(f"- {wd}：", text.split("## 已撤下")[1])
-        fb = incubation.foundation_body(self.st)
-        self.assertIn("当前关注", fb)
-        self.assertIn(act, fb)
-        self.assertIn("已有结论", fb)
-        self.assertNotIn(idle, fb)
+        fb = evolution.briefing(self.st, {"id": "T9", "seed": act})
+        self.assertIn(f"- 出发点：**{act}**", fb)
+        self.assertIn(f"{done}（answered）", fb.split("已有结论的问题")[1])
+        self.assertNotIn(wd, fb.split("研究者撤下的问题")[0])
+        self.assertIn(f"- {wd}：", fb.split("研究者撤下的问题")[1])
         self.ok()
         with self.assertRaisesRegex(ValueError, "只有 open"):
             questions.set_active(self.st, done, True)
